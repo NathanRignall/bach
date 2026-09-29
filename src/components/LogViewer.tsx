@@ -236,7 +236,7 @@ export function LogViewer({ task, onClose }: { task: TaskView; onClose: () => vo
 
       {error && <p className="border-b bg-destructive/10 px-4 py-1.5 text-xs text-destructive">{error}</p>}
 
-      <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-auto bg-muted/30 py-2 font-mono text-xs leading-relaxed">
+      <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-auto bg-muted/30 py-2 font-mono text-xs leading-relaxed select-text">
         {loading && (
           <div className="flex justify-center p-10">
             <Spinner className="size-5 text-muted-foreground" />

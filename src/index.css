@@ -128,7 +128,26 @@
   html {
     @apply font-sans;
     }
-  /* An app, not a page: only the panels inside scroll, and nothing rubber-bands. */
+  /* An app, not a page: the interface isn't selectable text (content opts back in with
+     `select-text`), and the pointer stays an arrow over it. */
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+    cursor: default;
+  }
+  input,
+  textarea,
+  [contenteditable] {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  /* Controls stay unselectable inside selectable content (tool cards, approval buttons). */
+  button,
+  [role="button"] {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  /* Only the panels inside scroll, and nothing rubber-bands. */
   html,
   body,
   #root {

@@ -55,7 +55,7 @@ export function ConnectionPicker() {
         </Button>
       </div>
       {status.state === "disconnected" && status.error && (
-        <div className="flex flex-col gap-1 rounded-md bg-destructive/10 px-2 py-1.5 text-destructive" role="alert">
+        <div className="flex flex-col gap-1 rounded-md bg-destructive/10 px-2 py-1.5 text-destructive select-text" role="alert">
           <p className="line-clamp-4 font-mono text-[11px] break-words whitespace-pre-wrap">{status.error}</p>
           {hint(status.error, host) && <p>{hint(status.error, host)}</p>}
           {status.retrying && <p className="text-muted-foreground">Trying again…</p>}

@@ -106,7 +106,7 @@ function Logs({ id, running }: { id: string; running: boolean }) {
         const el = e.currentTarget;
         pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
       }}
-      className="max-h-56 overflow-auto rounded-lg border bg-muted p-2 font-mono text-[11px] leading-snug whitespace-pre-wrap break-all"
+      className="max-h-56 overflow-auto rounded-lg border bg-muted p-2 font-mono text-[11px] leading-snug whitespace-pre-wrap break-all select-text"
     >
       {text === undefined
         ? "Loading…"
@@ -149,7 +149,7 @@ function TaskCard({ task, onChanged, onOpenViewer }: { task: TaskView; onChanged
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium">{task.name}</p>
           {task.command !== task.name && (
-            <p className="truncate font-mono text-[11px] text-muted-foreground" title={task.command}>
+            <p className="truncate font-mono text-[11px] text-muted-foreground select-text" title={task.command}>
               {task.command}
             </p>
           )}

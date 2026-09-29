@@ -33,9 +33,11 @@ export function NewSessionPage({ session, agents, draft, onDraft, onSend, starti
         <h1 className="text-center text-2xl font-medium tracking-tight">What should we work on?</h1>
 
         {/* Errors from a failed start stay here so the settings can be fixed and retried. */}
-        {session.blocks.map((b, i) => (
-          <BlockView key={i} block={b} live={false} />
-        ))}
+        <div className="contents select-text">
+          {session.blocks.map((b, i) => (
+            <BlockView key={i} block={b} live={false} />
+          ))}
+        </div>
         {error && <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
 
         <Composer
