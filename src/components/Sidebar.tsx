@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { ChevronDown, ChevronRight, GitFork, ListChecks, Plus, ShieldAlert, X, SquareTerminal } from "lucide-react";
+import { ChevronDown, ChevronRight, GitFork, ListChecks, Plus, ShieldAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
@@ -22,10 +22,9 @@ interface Props {
   onOpenCleanup: () => void;
   runningTasks: number;
   onToggleTasks: () => void;
-  onToggleTerminal: () => void;
 }
 
-export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onDelete, onRename, onOpenCleanup, runningTasks, onToggleTasks, onToggleTerminal }: Props) {
+export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onDelete, onRename, onOpenCleanup, runningTasks, onToggleTasks }: Props) {
   const [confirmDelete, setConfirmDelete] = useState<string>();
   const [editing, setEditing] = useState<{ id: string; draft: string }>();
   const cancelled = useRef(false);
@@ -149,10 +148,6 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
       </nav>
 
       <div className="flex flex-col gap-3 border-t pt-3">
-        <Button variant="ghost" size="sm" className="justify-start text-muted-foreground" title="Ctrl+`" onClick={onToggleTerminal}>
-          <SquareTerminal data-icon="inline-start" />
-          Terminal
-        </Button>
         <Button variant="ghost" size="sm" className="justify-start text-muted-foreground" onClick={onToggleTasks}>
           <ListChecks data-icon="inline-start" />
           Background tasks

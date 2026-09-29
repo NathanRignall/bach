@@ -7,7 +7,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { AnsiLine } from "@/lib/ansi";
 import { ComposeProcesses, ProcessTabs } from "./ComposeProcesses";
 import { LogViewer } from "./LogViewer";
-import { ForwardedPorts, PortLink, useForwarding } from "./Ports";
+import { PortLink, useForwarding } from "./Ports";
 import { projectName } from "@/session";
 
 /** Background tasks on the backend host: listed once, then kept current by the backend's task events. */
@@ -266,8 +266,6 @@ export function TasksPanel({ tasks, error, refresh, onClose }: Props) {
           <X />
         </Button>
       </header>
-
-      <ForwardedPorts forwarding={forwarding} />
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {error && <p className="mb-2 text-xs text-destructive">{error}</p>}

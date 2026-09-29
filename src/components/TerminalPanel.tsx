@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Plus, SquareTerminal, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Plus, SquareTerminal, X } from "lucide-react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -173,17 +173,29 @@ const savedHeight = () => {
     return 280;
   }
 };
+/** The bar's height when the panel is closed. */
+const BAR = 32;
+/** Dragged (or resized) lower than this, the panel closes. */
+const MIN_OPEN = 120;
+
+/** Whether a terminal belongs to a project: it started in the project's folder or somewhere inside it. */
+const inProject = (t: TerminalInfo, project: string, cwd: string) =>
+  t.cwd === project || t.cwd === cwd || t.cwd.startsWith(`${project}/`);
 
 /**
- * Terminals on the machine the agents run on, in a panel under the chat. They belong to the
- * backend: hiding the panel, reloading or reconnecting leaves them running.
+ * The current project's terminals, in a panel that's pulled up from a bar under the chat (or
+ * Ctrl+`). They belong to the backend: hiding the panel, reloading or reconnecting leaves them
+ * running, and every project sees only its own.
  */
-export function TerminalPanel({ open, onClose, cwd }: { open: boolean; onClose: () => void; cwd: string }) {
+export function TerminalPanel({ project, cwd }: { project: string; cwd: string }) {
   const [terms, setTerms] = useState<TerminalInfo[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [activeId, setActiveId] = useState<string>();
   const [error, setError] = useState<string>();
+  const [open, setOpen] = useState(false);
   const [height, setHeight] = useState(savedHeight);
+  /** The height while the bar is being dragged. */
+  const [dragging, setDragging] = useState<number>();
   const opening = useRef(false);
 
   useEffect(() => {
@@ -201,6 +213,21 @@ export function TerminalPanel({ open, onClose, cwd }: { open: boolean; onClose: 
     return () => (unEvents(), unReconnect());
   }, []);
 
+  // Ctrl+` shows and hides the panel, as in VS Code.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === "`") {
+        e.preventDefault();
+        setOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
+  const mine = terms.filter((t) => inProject(t, project, cwd));
+  const active = mine.find((t) => t.id === activeId) ?? mine[mine.length - 1];
+
   async function newTerminal() {
     if (opening.current) return;
     opening.current = true;
@@ -216,80 +243,131 @@ export function TerminalPanel({ open, onClose, cwd }: { open: boolean; onClose: 
     }
   }
 
-  // Opening the panel with no terminal starts one.
+  // Opening the panel on a project with no terminal starts one.
   useEffect(() => {
-    if (open && loaded && terms.length === 0) void newTerminal();
+    if (open && loaded && project && mine.length === 0) void newTerminal();
   }, [open, loaded]);
 
-  const active = terms.find((t) => t.id === activeId) ?? terms[terms.length - 1];
-
-  function startResize(e: React.PointerEvent) {
+  /**
+   * The bar is dragged up to open the panel (and to resize it once open), or clicked to toggle
+   * it. Buttons on the bar aren't drag handles.
+   */
+  function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (e.button !== 0 || (e.target as Element).closest("button")) return;
     e.preventDefault();
+    const bar = e.currentTarget;
     const startY = e.clientY;
-    const startHeight = height;
+    const startHeight = open ? height : BAR;
+    let moved = false;
+    let last = startHeight;
     const move = (ev: PointerEvent) => {
-      const h = Math.min(Math.max(startHeight + startY - ev.clientY, 120), window.innerHeight * 0.75);
-      setHeight(h);
+      const h = Math.min(Math.max(startHeight + startY - ev.clientY, BAR), window.innerHeight * 0.75);
+      if (!moved && Math.abs(ev.clientY - startY) < 4) return;
+      moved = true;
+      last = h;
+      setDragging(h);
+    };
+    const up = () => {
+      bar.removeEventListener("pointermove", move);
+      bar.removeEventListener("pointerup", up);
+      bar.removeEventListener("pointercancel", up);
+      setDragging(undefined);
+      if (!moved) return setOpen((v) => !v);
+      if (last < MIN_OPEN) return setOpen(false);
+      setOpen(true);
+      setHeight(last);
       try {
-        localStorage.setItem(HEIGHT_KEY, String(Math.round(h)));
+        localStorage.setItem(HEIGHT_KEY, String(Math.round(last)));
       } catch {}
     };
-    const up = () => (window.removeEventListener("pointermove", move), window.removeEventListener("pointerup", up));
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    bar.setPointerCapture(e.pointerId);
+    bar.addEventListener("pointermove", move);
+    bar.addEventListener("pointerup", up);
+    bar.addEventListener("pointercancel", up);
   }
+
+  if (!project) return null;
+
+  const shownHeight = dragging ?? (open ? height : BAR);
+  const shown = shownHeight > BAR;
+  const name = projectName(project);
 
   return (
     <section
       aria-label="Terminal"
-      style={{ height }}
-      className={cn("relative flex shrink-0 flex-col border-t bg-background", !open && "hidden")}
+      style={{ height: shownHeight }}
+      className={cn("relative flex shrink-0 flex-col border-t bg-background", !dragging && "transition-[height] duration-150")}
     >
       <div
-        role="separator"
-        aria-orientation="horizontal"
-        aria-label="Resize terminal"
-        onPointerDown={startResize}
-        className="absolute inset-x-0 -top-1 z-10 h-2 cursor-row-resize"
-      />
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b px-2 text-xs">
-        <SquareTerminal className="mx-1 size-3.5 text-muted-foreground" />
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-          {terms.map((t) => (
-            <div
-              key={t.id}
-              className={cn(
-                "group flex shrink-0 items-center rounded-md",
-                t.id === active?.id ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60",
-              )}
-            >
-              <button type="button" title={t.cwd} className="py-1 pl-2 pr-1" onClick={() => setActiveId(t.id)}>
-                {projectName(t.cwd) || t.shell}
-                {t.exited && <span className="ml-1 opacity-60">(ended)</span>}
-              </button>
-              <button
-                type="button"
-                aria-label={`Close terminal ${projectName(t.cwd)}`}
-                title="Close (ends the shell)"
-                className="mr-1 rounded p-0.5 opacity-60 hover:bg-background hover:opacity-100"
-                onClick={() => void closeTerminal(t.id).catch((e) => setError(ApiError.from(e).message))}
+        onPointerDown={onPointerDown}
+        className={cn(
+          "flex shrink-0 touch-none items-center gap-1 px-2 text-xs select-none",
+          shown ? "h-9 cursor-row-resize border-b" : "h-8 cursor-n-resize hover:bg-muted/40",
+        )}
+        style={{ height: BAR }}
+      >
+        <button
+          type="button"
+          aria-expanded={open}
+          title={open ? "Hide the terminal (Ctrl+`)" : "Show the terminal (Ctrl+`), or drag it up"}
+          className="flex items-center gap-1.5 rounded-md px-1 py-1 text-muted-foreground hover:text-foreground"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => setOpen((v) => !v)}
+        >
+          {shown ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />}
+          <SquareTerminal className="size-3.5" />
+          {!shown && (
+            <span>
+              Terminal
+              {mine.length > 0 && <span className="ml-1.5 tabular-nums opacity-70">{mine.length}</span>}
+            </span>
+          )}
+        </button>
+        {shown && (
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+            {mine.map((t) => (
+              <div
+                key={t.id}
+                className={cn(
+                  "group flex shrink-0 items-center rounded-md",
+                  t.id === active?.id ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60",
+                )}
               >
-                <X className="size-3" />
-              </button>
-            </div>
-          ))}
-          <Button variant="ghost" size="icon-xs" aria-label="New terminal" title={`New terminal${cwd ? ` in ${cwd}` : ""}`} onClick={() => void newTerminal()}>
-            <Plus />
-          </Button>
-        </div>
+                <button type="button" title={t.cwd} className="py-1 pr-1 pl-2" onClick={() => setActiveId(t.id)}>
+                  {projectName(t.cwd) || t.shell}
+                  {t.exited && <span className="ml-1 opacity-60">(ended)</span>}
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Close terminal ${projectName(t.cwd)}`}
+                  title="Close (ends the shell)"
+                  className="mr-1 rounded p-0.5 opacity-60 hover:bg-background hover:opacity-100"
+                  onClick={() => void closeTerminal(t.id).catch((e) => setError(ApiError.from(e).message))}
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
+            ))}
+            <Button variant="ghost" size="icon-xs" aria-label="New terminal" title={`New terminal in ${cwd || name}`} onClick={() => void newTerminal()}>
+              <Plus />
+            </Button>
+          </div>
+        )}
+        {!shown && <span className="flex-1 truncate text-muted-foreground/60">{name}</span>}
         {error && <span className="truncate text-destructive select-text">{error}</span>}
-        <Button variant="ghost" size="icon-xs" aria-label="Hide terminal" title="Hide (Ctrl+`)" onClick={onClose}>
-          <ChevronDown />
-        </Button>
       </div>
-      <div className="min-h-0 flex-1 py-1 pl-2">
+      <div className={cn("min-h-0 flex-1 py-1 pl-2", !shown && "hidden")}>
+        {shown && mine.length === 0 && (
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+            No terminal in {name}
+            <Button variant="outline" size="sm" onClick={() => void newTerminal()}>
+              <Plus data-icon="inline-start" />
+              New terminal
+            </Button>
+          </div>
+        )}
         {terms.map((t) => (
-          <TerminalView key={t.id} id={t.id} visible={open && t.id === active?.id} />
+          <TerminalView key={t.id} id={t.id} visible={shown && t.id === active?.id} />
         ))}
       </div>
     </section>

@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, ExternalLink, X } from "lucide-react";
+import { ArrowRight, Cable, ExternalLink, X } from "lucide-react";
 import { Forwarding, forwardPort, getForwarding, inTauri, onForwarding, openPort, setAutoForward, stopForward, taskHost } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 
@@ -66,11 +67,41 @@ export function PortLink({ port, forwarding, className }: { port: number; forwar
   );
 }
 
+/** The forwards to this computer, as a small icon that opens the list (only over SSH). */
+export function PortsButton({ forwarding }: { forwarding: Forwarding | null }) {
+  if (!forwarding?.available) return null;
+  const n = forwarding.forwards.length;
+  return (
+    <Popover>
+      <PopoverTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className={cn("relative", forwarding.error && "text-destructive")}
+            aria-label={`Forwarded ports${n ? ` (${n})` : ""}`}
+            title={n ? `${n} port${n === 1 ? "" : "s"} forwarded to this computer` : "Forwarded ports"}
+          />
+        }
+      >
+        <Cable />
+        {n > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 min-w-3.5 rounded-full bg-primary px-1 text-[9px] leading-3.5 font-medium text-primary-foreground tabular-nums">
+            {n}
+          </span>
+        )}
+      </PopoverTrigger>
+      <PopoverContent side="top" align="end" className="w-80">
+        <ForwardedPorts forwarding={forwarding} />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 /** The forwards to this computer, when agents run on another machine. */
-export function ForwardedPorts({ forwarding }: { forwarding: Forwarding | null }) {
+export function ForwardedPorts({ forwarding }: { forwarding: Forwarding }) {
   const [port, setPort] = useState("");
   const [error, setError] = useState<string>();
-  if (!forwarding?.available) return null;
 
   const add = async () => {
     const n = Number(port);
@@ -86,7 +117,7 @@ export function ForwardedPorts({ forwarding }: { forwarding: Forwarding | null }
   const problem = error ?? forwarding.error;
 
   return (
-    <section className="flex flex-col gap-2 border-b px-4 py-3" aria-label="Forwarded ports">
+    <section className="flex flex-col gap-2" aria-label="Forwarded ports">
       <div className="flex items-center gap-2">
         <h3 className="flex-1 text-xs font-medium text-muted-foreground">Forwarded ports</h3>
         <Label htmlFor="auto-forward" className="text-xs font-normal text-muted-foreground">
@@ -94,7 +125,7 @@ export function ForwardedPorts({ forwarding }: { forwarding: Forwarding | null }
         </Label>
         <Switch id="auto-forward" size="sm" checked={forwarding.auto} onCheckedChange={(v) => void setAutoForward(v)} />
       </div>
-      {forwarding.forwards.length > 0 && (
+      {forwarding.forwards.length > 0 ? (
         <ul className="flex flex-col gap-1">
           {forwarding.forwards.map((f) => (
             <li key={f.remote} className="flex items-center gap-2 text-xs">
@@ -114,6 +145,8 @@ export function ForwardedPorts({ forwarding }: { forwarding: Forwarding | null }
             </li>
           ))}
         </ul>
+      ) : (
+        <p className="text-xs text-muted-foreground">No ports forwarded.</p>
       )}
       <form
         className="flex gap-2"

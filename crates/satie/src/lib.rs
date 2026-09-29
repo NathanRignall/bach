@@ -436,6 +436,22 @@ impl Satie {
         }
         let failed = |e: std::io::Error| Error::Failed(format!("failed to start: {e}"));
 
+        // Starting the same command in the same folder again replaces its earlier, finished runs,
+        // so a restarted server doesn't pile up stopped copies of itself in the list.
+        let cwd_str = cwd.to_string_lossy();
+        let earlier: Vec<String> = self
+            .inner
+            .tasks
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|t| t.status != TaskStatus::Running && t.command == command && t.cwd == cwd_str)
+            .map(|t| t.id.clone())
+            .collect();
+        for old in earlier {
+            let _ = self.remove_task(&old);
+        }
+
         let log_path = self.inner.dir.join(format!("{id}.log"));
         let exit_path = self.exit_path(&id);
         let mut log = OpenOptions::new()
