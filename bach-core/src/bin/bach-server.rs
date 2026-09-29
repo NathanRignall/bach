@@ -42,9 +42,13 @@ async fn main() {
     let store = Store::open(&db).expect("open session database");
     eprintln!("sessions in {}", db.display());
     // Bach's own MCP server for agents (any free loopback port; agents are handed the URL).
-    let satie = Satie::start("127.0.0.1:0".parse().unwrap())
-        .await
-        .expect("start satie");
+    let satie = Satie::start(
+        "127.0.0.1:0".parse().unwrap(),
+        store.clone(),
+        db.parent().map_or_else(|| ".".into(), |p| p.join("tasks")),
+    )
+    .await
+    .expect("start satie");
     eprintln!("satie (MCP) on {}", satie.url());
     eprintln!("bach-server listening on ws://127.0.0.1:{port}");
     axum::serve(

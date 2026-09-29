@@ -113,6 +113,11 @@ class Bridge {
   }
 
   async call<T>(cmd: string, args: object = {}): Promise<T> {
+    // Arguments are sent next to the request's own `id` and `cmd`; reusing those names would
+    // silently corrupt the request.
+    for (const reserved of ["id", "cmd"]) {
+      if (reserved in args) throw new Error(`\`${reserved}\` is reserved; rename the argument of ${cmd}`);
+    }
     const ws = await this.connect();
     const id = ++this.nextId;
     return new Promise<T>((resolve, reject) => {
@@ -204,6 +209,35 @@ export interface WorktreeEntry {
 export const listWorktrees = () => call<WorktreeEntry[]>("list_worktrees");
 export const removeWorktree = (args: { path: string; discard?: boolean; deleteBranch?: boolean }) =>
   call<void>("remove_worktree", args);
+
+export type TaskStatus = "running" | "exited" | "failed" | "stopped" | "lost";
+
+/** A background process managed by Satie, Bach's launcher (see bach-core/src/satie.rs). */
+export interface TaskView {
+  id: string;
+  name: string;
+  command: string;
+  cwd: string;
+  project: string | null;
+  runId: string | null;
+  pid: number;
+  startedAt: number;
+  endedAt: number | null;
+  status: TaskStatus;
+  exitCode: number | null;
+  logPath: string;
+  /** TCP ports its processes are listening on. */
+  ports: number[];
+}
+
+export const listTasks = () => call<TaskView[]>("list_tasks");
+export const taskLogs = (id: string, lines = 200) => call<string>("task_logs", { taskId: id, lines });
+export const stopTask = (id: string) => call<unknown>("stop_task", { taskId: id });
+export const removeTask = (id: string) => call<void>("remove_task", { taskId: id });
+export const startTask = (args: { command: string; cwd: string; name?: string }) => call<unknown>("start_task", args);
+
+/** Host to reach a task's ports on, when the UI can tell (a page served by the backend host, or a local app). */
+export const taskHost = (): string | null => (bridge ? (inTauri ? null : location.hostname) : "localhost");
 
 /** Sessions are saved by whichever backend is in use (local app data, or the bach-server host). */
 export const listSessions = () => call<unknown[]>("list_sessions");

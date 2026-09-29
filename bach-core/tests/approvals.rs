@@ -72,7 +72,13 @@ async fn begin(dir: &Path, request: &str, rules: &[&str]) -> Waiting {
     );
 
     let (tx, rx) = mpsc::channel();
-    let satie = Satie::start("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let satie = Satie::start(
+        "127.0.0.1:0".parse().unwrap(),
+        bach_core::store::Store::in_memory().unwrap(),
+        dir.join("tasks"),
+    )
+    .await
+    .unwrap();
     let runs = Runs::with_satie(Some(satie.clone()));
     let run_id = runs
         .start(
@@ -223,6 +229,14 @@ async fn approvals_round_trip() {
         assert!(o.args.contains(flag), "missing `{flag}` in: {}", o.args);
     }
     // Claude Code is handed Bach's MCP server (Satie), with a per-run token, and it is revoked after.
+    assert!(
+        o.args.contains("--append-system-prompt ") && o.args.contains("task_start"),
+        "guidance missing"
+    );
+    assert!(
+        o.args.contains("--settings ") && o.args.contains("PreToolUse"),
+        "hook settings missing"
+    );
     let cfg = &o.args[o.args.find("--mcp-config ").expect("--mcp-config missing") + 13..];
     assert!(cfg.starts_with(r#"{"mcpServers":{"satie":{"#), "{cfg}");
     assert!(

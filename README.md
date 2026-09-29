@@ -92,3 +92,21 @@ Bach shows an approval card, and the run waits for your answer.
   a reload, closes any open request.
 - Hover one of your messages for a **Retry** button (resends it as a new message; the agent still
   remembers the earlier one). Error messages have a Retry too.
+
+## Background tasks (Satie)
+
+Anything an agent starts in the background with its own tools dies when the turn ends, because Bach
+runs one agent process per message. **Satie** is Bach's own launcher for things that must keep running:
+
+- Processes start *detached* (own session, output in a log file, exit code in a file) and are recorded
+  in the database, so they survive turns, agents and even a `bach-server` restart; on startup Bach
+  finds them again, notices ones that ended, and can still stop them.
+- Agents reach it as an MCP server (`satie`, loopback only, one bearer token per run): `task_start`
+  (optionally waits for a `port`), `task_list`, `task_logs`, `task_stop`. Agents only see their own
+  project's tasks. Claude Code runs also get a system-prompt note and a hook that refuses Bash
+  `run_in_background` and points at `task_start`.
+- The **Background tasks** panel (sidebar) lists them with status, uptime, listening ports (clickable),
+  live logs, Stop and Remove, and can start a command by hand.
+- Task files live in a `tasks/` folder next to the session database (`~/.local/share/bach/tasks`).
+
+Unix only (`setsid`, `/proc` for ports). Codex and opencode don't get the MCP server yet.

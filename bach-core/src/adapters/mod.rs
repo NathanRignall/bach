@@ -5,6 +5,7 @@ mod claude;
 mod codex;
 mod opencode;
 
+use crate::satie::SatieArgs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -39,7 +40,8 @@ impl AgentKind {
     ///
     /// `model` is only honoured by Claude Code so far (`--model`, e.g. `opus` or a full id).
     ///
-    /// `mcp_config` is `--mcp-config` JSON adding Bach's own MCP servers (Claude Code only).
+    /// `satie` adds Bach's background-task launcher as an MCP server, with guidance and a hook
+    /// steering the agent to it (Claude Code only).
     ///
     /// `allowed_tools` are permission rules (e.g. `Bash(tmux ls *)`) approved earlier in the
     /// session; only Claude Code takes them.
@@ -49,10 +51,10 @@ impl AgentKind {
         session_id: Option<&str>,
         model: Option<&str>,
         allowed_tools: &[String],
-        mcp_config: Option<&str>,
+        satie: Option<&SatieArgs>,
     ) -> Vec<String> {
         match self {
-            AgentKind::Claude => claude::args(session_id, model, allowed_tools, mcp_config),
+            AgentKind::Claude => claude::args(session_id, model, allowed_tools, satie),
             AgentKind::Codex => codex::args(prompt, session_id, model),
             AgentKind::Opencode => opencode::args(prompt, session_id, model),
         }

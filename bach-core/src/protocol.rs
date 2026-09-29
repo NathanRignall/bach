@@ -60,6 +60,26 @@ pub enum Request {
         #[serde(rename = "deleteBranch", default)]
         delete_branch: bool,
     },
+    ListTasks,
+    // `taskId`, not `id`: that name is the envelope's request id.
+    TaskLogs {
+        #[serde(rename = "taskId")]
+        task_id: String,
+        lines: Option<usize>,
+    },
+    StopTask {
+        #[serde(rename = "taskId")]
+        task_id: String,
+    },
+    RemoveTask {
+        #[serde(rename = "taskId")]
+        task_id: String,
+    },
+    StartTask {
+        command: String,
+        cwd: String,
+        name: Option<String>,
+    },
     ListSessions,
     SaveSession {
         session: Value,
@@ -92,5 +112,24 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(env.request, Request::StartRun { session_id: Some(s), .. } if s == "s"));
+    }
+
+    #[test]
+    fn no_request_reuses_the_envelope_id_name() {
+        // Every command's arguments must coexist with the envelope's numeric `id`.
+        for body in [
+            r#"{"id":1,"cmd":"task_logs","taskId":"abc","lines":50}"#,
+            r#"{"id":2,"cmd":"stop_task","taskId":"abc"}"#,
+            r#"{"id":3,"cmd":"remove_task","taskId":"abc"}"#,
+            r#"{"id":4,"cmd":"start_task","command":"ls","cwd":"/tmp"}"#,
+            r#"{"id":5,"cmd":"list_tasks"}"#,
+            r#"{"id":6,"cmd":"delete_session","sessionId":"s"}"#,
+        ] {
+            let env: Envelope =
+                serde_json::from_str(body).unwrap_or_else(|e| panic!("{body}: {e}"));
+            assert!(env.id >= 1, "{body}");
+        }
+        // The old spelling is refused rather than silently mis-parsed.
+        assert!(serde_json::from_str::<Envelope>(r#"{"id":"abc","cmd":"stop_task"}"#).is_err());
     }
 }

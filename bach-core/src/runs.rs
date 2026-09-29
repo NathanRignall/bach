@@ -1,6 +1,6 @@
 use crate::{
     adapters::{AgentEvent, AgentKind},
-    satie::{RunInfo, Satie, TokenGuard},
+    satie::{RunInfo, Satie},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -198,13 +198,13 @@ impl Runs {
         // Claude Code gets Bach's MCP server, with a token that lets us tell which run calls it.
         // The guard revokes the token when the run ends (or if launching fails below).
         let run_id = uuid::Uuid::new_v4().to_string();
-        let (mcp_config, token): (Option<String>, Option<TokenGuard>) = match (&self.satie, agent) {
+        let (satie_args, token) = match (&self.satie, agent) {
             (Some(satie), AgentKind::Claude) => {
-                let (config, guard) = satie.register_run(RunInfo {
+                let (args, guard) = satie.register_run(RunInfo {
                     run_id: run_id.clone(),
                     cwd: project.as_ref().map(|p| p.to_string_lossy().into_owned()),
                 });
-                (Some(config), Some(guard))
+                (Some(args), Some(guard))
             }
             _ => (None, None),
         };
@@ -215,7 +215,7 @@ impl Runs {
             session_id.as_deref(),
             model.as_deref(),
             &allowed_tools,
-            mcp_config.as_deref(),
+            satie_args.as_ref(),
         ))
         .stdin(if stdin_prompt.is_some() {
             Stdio::piped()

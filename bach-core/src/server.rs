@@ -6,7 +6,7 @@ use crate::{
     list_agents,
     protocol::{Envelope, Request},
     runs::{Emit, RunRequest, Runs},
-    satie::Satie,
+    satie::{Satie, StartTask},
     store::Store,
 };
 use axum::{
@@ -31,6 +31,7 @@ pub struct Config {
 }
 
 struct AppState {
+    satie: Option<Satie>,
     runs: Runs,
     git: Git,
     store: Store,
@@ -50,7 +51,8 @@ pub fn router(config: Config, store: Store, satie: Option<Satie>) -> Router {
         })
     };
     let state = Arc::new(AppState {
-        runs: Runs::with_satie(satie),
+        runs: Runs::with_satie(satie.clone()),
+        satie,
         git: Git::new(config.worktrees_dir.clone()),
         store,
         events,
@@ -200,6 +202,47 @@ async fn handle(st: &AppState, req: Request) -> Result<Value, String> {
             .remove_worktree(path, discard, delete_branch)
             .await
             .map(|_| Value::Null),
+        Request::ListTasks => {
+            let satie = st
+                .satie
+                .as_ref()
+                .ok_or("Background tasks are unavailable.")?;
+            Ok(serde_json::to_value(satie.list(None)).unwrap())
+        }
+        Request::TaskLogs { task_id, lines } => st
+            .satie
+            .as_ref()
+            .ok_or("Background tasks are unavailable.")?
+            .logs(&task_id, lines.unwrap_or(200).clamp(1, 2000))
+            .map(Value::String),
+        Request::StopTask { task_id } => {
+            let satie = st
+                .satie
+                .as_ref()
+                .ok_or("Background tasks are unavailable.")?;
+            satie
+                .stop_task(&task_id)
+                .await
+                .map(|t| serde_json::to_value(t).unwrap())
+        }
+        Request::RemoveTask { task_id } => st
+            .satie
+            .as_ref()
+            .ok_or("Background tasks are unavailable.")?
+            .remove_task(&task_id)
+            .map(|_| Value::Null),
+        Request::StartTask { command, cwd, name } => st
+            .satie
+            .as_ref()
+            .ok_or("Background tasks are unavailable.")?
+            .start_task(StartTask {
+                command,
+                cwd: Some(cwd.clone()),
+                name,
+                project: Some(cwd),
+                run_id: None,
+            })
+            .map(|t| serde_json::to_value(t).unwrap()),
         Request::ListSessions => st.store.list().map(Value::Array),
         Request::SaveSession { session } => st.store.save(&session).map(|_| Value::Null),
         Request::DeleteSession { session_id } => st.store.delete(&session_id).map(|_| Value::Null),

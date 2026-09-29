@@ -17,6 +17,7 @@ import {
 } from "@/api";
 import { BlockView, TranscriptContext } from "@/components/Transcript";
 import { WorktreeCleanup } from "@/components/WorktreeCleanup";
+import { TasksPanel, useTasks } from "@/components/TasksPanel";
 import { Composer } from "@/components/Composer";
 import { NewSessionPage } from "@/components/NewSessionPage";
 import { SessionHeader } from "@/components/SessionHeader";
@@ -56,6 +57,8 @@ export function App() {
   const [connectionError, setConnectionError] = useState<string>();
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [tasksOpen, setTasksOpen] = useState(false);
+  const tasks = useTasks();
   // Events can arrive before startRun resolves and the session learns its run id.
   const early = useRef(new Map<string, RunEvent[]>());
   // What the backend already has, so unchanged sessions aren't re-saved (a save reorders history).
@@ -302,6 +305,8 @@ export function App() {
         onDelete={(id) => void remove(id)}
         onRename={(id, title) => patch(id, (s) => ({ ...s, title, titleEdited: true }))}
         onOpenCleanup={() => setCleanupOpen(true)}
+        runningTasks={tasks.tasks.filter((t) => t.status === "running").length}
+        onToggleTasks={() => setTasksOpen((v) => !v)}
       />
 
       {cleanupOpen && (
@@ -395,6 +400,16 @@ export function App() {
           </>
         )}
       </main>
+
+      {tasksOpen && (
+        <TasksPanel
+          tasks={tasks.tasks}
+          error={tasks.error}
+          refresh={() => void tasks.refresh()}
+          defaultCwd={(active?.workdir ?? active?.cwd ?? "").trim()}
+          onClose={() => setTasksOpen(false)}
+        />
+      )}
     </div>
   );
 }

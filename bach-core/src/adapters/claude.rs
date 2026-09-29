@@ -1,4 +1,5 @@
 use super::AgentEvent;
+use crate::satie::SatieArgs;
 use serde_json::Value;
 
 /// The prompt goes over stdin (see [`user_message`]) so the process can also receive answers
@@ -7,7 +8,7 @@ pub fn args(
     session_id: Option<&str>,
     model: Option<&str>,
     allowed_tools: &[String],
-    mcp_config: Option<&str>,
+    satie: Option<&SatieArgs>,
 ) -> Vec<String> {
     let mut a: Vec<String> = [
         "-p",
@@ -29,9 +30,10 @@ pub fn args(
         a.push("--model".into());
         a.push(m.into());
     }
-    if let Some(cfg) = mcp_config {
-        a.push("--mcp-config".into());
-        a.push(cfg.into());
+    if let Some(satie) = satie {
+        a.extend(["--mcp-config".into(), satie.mcp_config.clone()]);
+        a.extend(["--append-system-prompt".into(), satie.system_prompt.clone()]);
+        a.extend(["--settings".into(), satie.settings.clone()]);
     }
     if !allowed_tools.is_empty() {
         a.push("--allowedTools".into());

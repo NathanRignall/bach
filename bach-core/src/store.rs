@@ -4,11 +4,12 @@ use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub struct Store(Mutex<Connection>);
+#[derive(Clone)]
+pub struct Store(Arc<Mutex<Connection>>);
 
 /// `$BACH_DB`, else `$XDG_DATA_HOME/bach/bach.db`, else `~/.local/share/bach/bach.db`.
 pub fn default_db_path() -> PathBuf {
@@ -41,10 +42,15 @@ impl Store {
                  id         TEXT PRIMARY KEY,
                  data       TEXT NOT NULL,
                  updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS tasks (
+                 id         TEXT PRIMARY KEY,
+                 data       TEXT NOT NULL,
+                 started_at INTEGER NOT NULL
              );",
         )
         .map_err(|e| e.to_string())?;
-        Ok(Self(Mutex::new(conn)))
+        Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
     /// All sessions, most recently saved first.
@@ -84,6 +90,45 @@ impl Store {
             params![id, session.to_string(), updated_at],
         )
         .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Background tasks (see `satie`), oldest first. Stored as JSON; only `id` is read here.
+    pub fn list_tasks(&self) -> Result<Vec<Value>, String> {
+        let conn = self.0.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT data FROM tasks ORDER BY started_at ASC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        rows.map(|r| {
+            serde_json::from_str(&r.map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+        })
+        .collect()
+    }
+
+    pub fn save_task(&self, task: &Value) -> Result<(), String> {
+        let id = task["id"].as_str().ok_or("task has no string `id`")?;
+        let started = task["startedAt"].as_i64().unwrap_or(0);
+        self.0
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO tasks (id, data, started_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+                params![id, task.to_string(), started],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn delete_task(&self, id: &str) -> Result<(), String> {
+        self.0
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM tasks WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 

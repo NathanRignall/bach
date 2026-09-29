@@ -109,6 +109,49 @@ async fn remove_worktree(
 }
 
 #[tauri::command]
+fn list_tasks(satie: State<'_, Satie>) -> Vec<bach_core::satie::TaskView> {
+    satie.list(None)
+}
+
+#[tauri::command]
+fn task_logs(
+    satie: State<'_, Satie>,
+    task_id: String,
+    lines: Option<usize>,
+) -> Result<String, String> {
+    satie.logs(&task_id, lines.unwrap_or(200).clamp(1, 2000))
+}
+
+#[tauri::command]
+async fn stop_task(
+    satie: State<'_, Satie>,
+    task_id: String,
+) -> Result<bach_core::satie::Task, String> {
+    satie.stop_task(&task_id).await
+}
+
+#[tauri::command]
+fn remove_task(satie: State<'_, Satie>, task_id: String) -> Result<(), String> {
+    satie.remove_task(&task_id)
+}
+
+#[tauri::command]
+fn start_task(
+    satie: State<'_, Satie>,
+    command: String,
+    cwd: String,
+    name: Option<String>,
+) -> Result<bach_core::satie::Task, String> {
+    satie.start_task(bach_core::satie::StartTask {
+        command,
+        cwd: Some(cwd.clone()),
+        name,
+        project: Some(cwd),
+        run_id: None,
+    })
+}
+
+#[tauri::command]
 fn list_sessions(store: State<'_, Store>) -> Result<Vec<Value>, String> {
     store.list()
 }
@@ -131,9 +174,14 @@ pub fn run() {
             app.manage(Store::open(&dir.join("bach.db"))?);
             app.manage(Git::new(dir.join("worktrees")));
             // Bach's own MCP server for agents, on any free loopback port.
-            let satie =
-                tauri::async_runtime::block_on(Satie::start("127.0.0.1:0".parse().unwrap()))?;
-            app.manage(Runs::with_satie(Some(satie)));
+            let store = app.state::<Store>().inner().clone();
+            let satie = tauri::async_runtime::block_on(Satie::start(
+                "127.0.0.1:0".parse().unwrap(),
+                store,
+                dir.join("tasks"),
+            ))?;
+            app.manage(Runs::with_satie(Some(satie.clone())));
+            app.manage(satie);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -141,6 +189,11 @@ pub fn run() {
             start_run,
             cancel_run,
             respond_approval,
+            list_tasks,
+            task_logs,
+            stop_task,
+            remove_task,
+            start_task,
             list_dir,
             git_info,
             prepare_workspace,

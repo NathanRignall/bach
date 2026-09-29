@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { ChevronDown, ChevronRight, GitFork, Plus, ShieldAlert, X } from "lucide-react";
+import { ChevronDown, ChevronRight, GitFork, ListChecks, Plus, ShieldAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
@@ -19,9 +19,11 @@ interface Props {
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onOpenCleanup: () => void;
+  runningTasks: number;
+  onToggleTasks: () => void;
 }
 
-export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onDelete, onRename, onOpenCleanup }: Props) {
+export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onDelete, onRename, onOpenCleanup, runningTasks, onToggleTasks }: Props) {
   const [confirmDelete, setConfirmDelete] = useState<string>();
   const [editing, setEditing] = useState<{ id: string; draft: string }>();
   const cancelled = useRef(false);
@@ -143,6 +145,11 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
       </nav>
 
       <div className="flex flex-col gap-3 border-t pt-3">
+        <Button variant="ghost" size="sm" className="justify-start text-muted-foreground" onClick={onToggleTasks}>
+          <ListChecks data-icon="inline-start" />
+          Background tasks
+          {runningTasks > 0 && <span className="ml-auto rounded-full bg-primary/15 px-1.5 text-xs font-medium tabular-nums text-primary">{runningTasks} running</span>}
+        </Button>
         <Button variant="ghost" size="sm" className="justify-start text-muted-foreground" onClick={onOpenCleanup}>
           <GitFork data-icon="inline-start" />
           Clean up worktrees…
