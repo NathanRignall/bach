@@ -1,0 +1,94 @@
+//! One adapter per agent CLI. Each knows how to build the headless command and how to
+//! translate one line of the CLI's JSON stream into normalized [`AgentEvent`]s.
+
+mod claude;
+mod codex;
+mod opencode;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentKind {
+    Claude,
+    Codex,
+    Opencode,
+}
+
+impl AgentKind {
+    pub const ALL: [AgentKind; 3] = [AgentKind::Claude, AgentKind::Codex, AgentKind::Opencode];
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            AgentKind::Claude => "Claude Code",
+            AgentKind::Codex => "Codex",
+            AgentKind::Opencode => "opencode",
+        }
+    }
+
+    pub fn binary(self) -> &'static str {
+        match self {
+            AgentKind::Claude => "claude",
+            AgentKind::Codex => "codex",
+            AgentKind::Opencode => "opencode",
+        }
+    }
+
+    /// Arguments for a headless, JSON-streaming invocation.
+    pub fn args(self, prompt: &str, session_id: Option<&str>) -> Vec<String> {
+        match self {
+            AgentKind::Claude => claude::args(prompt, session_id),
+            AgentKind::Codex => codex::args(prompt, session_id),
+            AgentKind::Opencode => opencode::args(prompt, session_id),
+        }
+    }
+
+    pub fn parse_line(self, line: &str) -> Vec<AgentEvent> {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            return vec![AgentEvent::Raw { line: line.to_string() }];
+        };
+        match self {
+            AgentKind::Claude => claude::parse(&v),
+            AgentKind::Codex => codex::parse(&v),
+            AgentKind::Opencode => opencode::parse(&v),
+        }
+    }
+}
+
+/// Agent-independent events the UI renders.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentEvent {
+    /// The agent's own session id, usable to resume the conversation.
+    Session { id: String },
+    Text { text: String },
+    Thinking { text: String },
+    ToolUse { id: String, name: String, input: Value },
+    ToolResult { id: String, output: String, is_error: bool },
+    Done { cost_usd: Option<f64>, is_error: bool },
+    Error { message: String },
+    /// A line we could not parse as JSON or don't understand yet.
+    Raw { line: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_stream_maps_to_events() {
+        let lines = [
+            r#"{"type":"system","subtype":"init","session_id":"abc"}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok","is_error":false}]}}"#,
+            r#"{"type":"result","is_error":false,"total_cost_usd":0.01}"#,
+        ];
+        let events: Vec<_> = lines.iter().flat_map(|l| AgentKind::Claude.parse_line(l)).collect();
+        assert!(matches!(&events[0], AgentEvent::Session { id } if id == "abc"));
+        assert!(matches!(&events[1], AgentEvent::Text { text } if text == "hi"));
+        assert!(matches!(&events[2], AgentEvent::ToolUse { name, .. } if name == "Bash"));
+        assert!(matches!(&events[3], AgentEvent::ToolResult { output, .. } if output == "ok"));
+        assert!(matches!(&events[4], AgentEvent::Done { .. }));
+    }
+}

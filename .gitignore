@@ -1,0 +1,7 @@
+node_modules
+dist
+target
+.direnv
+result
+.playwright-mcp
+src-tauri/gen
