@@ -70,6 +70,14 @@ pub enum Request {
         task_id: String,
         lines: Option<usize>,
     },
+    /// A piece of a task's log: from a byte offset, or (without one) its tail.
+    TaskLogChunk {
+        #[serde(rename = "taskId")]
+        task_id: String,
+        from: Option<u64>,
+        #[serde(rename = "maxBytes")]
+        max_bytes: Option<u64>,
+    },
     StopTask {
         #[serde(rename = "taskId")]
         task_id: String,
@@ -123,6 +131,7 @@ mod tests {
         for body in [
             r#"{"id":1,"cmd":"task_logs","taskId":"abc","lines":50}"#,
             r#"{"id":2,"cmd":"stop_task","taskId":"abc"}"#,
+            r#"{"id":7,"cmd":"task_log_chunk","taskId":"abc","from":10,"maxBytes":4096}"#,
             r#"{"id":3,"cmd":"remove_task","taskId":"abc"}"#,
             r#"{"id":4,"cmd":"start_task","command":"ls","cwd":"/tmp"}"#,
             r#"{"id":5,"cmd":"list_tasks"}"#,

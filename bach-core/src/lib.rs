@@ -1,6 +1,7 @@
 pub mod adapters;
 pub mod fs;
 pub mod git;
+pub mod probe;
 pub mod protocol;
 pub mod runs;
 pub mod satie;

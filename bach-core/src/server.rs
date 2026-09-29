@@ -217,6 +217,16 @@ async fn handle(st: &AppState, req: Request) -> Result<Value, String> {
             .ok_or("Background tasks are unavailable.")?
             .logs(&task_id, lines.unwrap_or(200).clamp(1, 2000))
             .map(Value::String),
+        Request::TaskLogChunk {
+            task_id,
+            from,
+            max_bytes,
+        } => st
+            .satie
+            .as_ref()
+            .ok_or("Background tasks are unavailable.")?
+            .log_chunk(&task_id, from, max_bytes.unwrap_or(512 * 1024))
+            .map(|c| serde_json::to_value(c).unwrap()),
         Request::StopTask { task_id } => {
             let satie = st
                 .satie
@@ -243,6 +253,7 @@ async fn handle(st: &AppState, req: Request) -> Result<Value, String> {
                 name,
                 project: Some(cwd),
                 run_id: None,
+                ports: vec![],
             })
             .map(|t| serde_json::to_value(t).unwrap()),
         Request::ListSessions => st.store.list().map(Value::Array),

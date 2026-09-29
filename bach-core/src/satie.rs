@@ -24,7 +24,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     net::SocketAddr,
     os::unix::process::CommandExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -68,6 +68,9 @@ pub struct Task {
     pub status: TaskStatus,
     pub exit_code: Option<i32>,
     pub log_path: String,
+    /// Ports the task should come up on; a missing one is a sign a part of it failed.
+    #[serde(default)]
+    pub expected_ports: Vec<u16>,
 }
 
 /// A task plus what is only known by looking at the machine right now.
@@ -76,8 +79,16 @@ pub struct Task {
 pub struct TaskView {
     #[serde(flatten)]
     pub task: Task,
-    /// TCP ports the task's processes are listening on.
+    /// TCP ports the task's processes are listening on (recognisable ones; see `presentable_ports`).
     pub ports: Vec<u16>,
+    /// Expected ports that are listening right now.
+    pub up_ports: Vec<u16>,
+    /// Expected ports that are not listening, once the task has had a moment to start.
+    pub missing_ports: Vec<u16>,
+    /// What looks wrong: ports already taken by something else, expected ports that never came up.
+    pub problems: Vec<String>,
+    /// What is running in it, e.g. `workerd ×8`.
+    pub processes: Vec<String>,
 }
 
 #[derive(Default)]
@@ -87,6 +98,15 @@ pub struct StartTask {
     pub name: Option<String>,
     pub project: Option<String>,
     pub run_id: Option<String>,
+    /// Ports it is expected to listen on.
+    pub ports: Vec<u16>,
+}
+
+/// An HTTP check a task must pass to count as ready.
+pub struct Ready {
+    pub url: String,
+    /// Required status; by default anything below 500 counts as the server answering.
+    pub status: Option<u16>,
 }
 
 /// Who an MCP token belongs to.
@@ -118,7 +138,7 @@ fn now_ms() -> i64 {
 }
 
 /// `(state, start time in ticks)` from `/proc/<pid>/stat`, if the process exists.
-fn proc_stat(pid: u32) -> Option<(char, u64)> {
+pub(crate) fn proc_stat(pid: u32) -> Option<(char, u64)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // The command name is in parentheses and may contain spaces; fields follow the last `)`.
     let rest = &stat[stat.rfind(')')? + 2..];
@@ -129,7 +149,7 @@ fn proc_stat(pid: u32) -> Option<(char, u64)> {
     ))
 }
 
-fn process_group_of(pid: u32) -> Option<u32> {
+pub(crate) fn process_group_of(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let rest = &stat[stat.rfind(')')? + 2..];
     rest.split(' ').nth(2)?.parse().ok() // field 5, pgrp
@@ -151,52 +171,110 @@ fn signal_group(pgid: u32, sig: i32) {
 
 /// Listening TCP ports of every process in group `pgid` (Linux; empty elsewhere).
 fn ports_of_group(pgid: u32) -> Vec<u16> {
-    let Ok(procs) = std::fs::read_dir("/proc") else {
-        return vec![];
-    };
-    let mut inodes = std::collections::HashSet::new();
-    for p in procs.filter_map(Result::ok) {
-        let Some(pid) = p.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
-            continue;
-        };
-        if process_group_of(pid) != Some(pgid) {
-            continue;
-        }
-        let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
-            continue;
-        };
-        for fd in fds.filter_map(Result::ok) {
-            if let Ok(target) = std::fs::read_link(fd.path()) {
-                if let Some(i) = target.to_str().and_then(|t| t.strip_prefix("socket:[")) {
-                    if let Ok(n) = i.trim_end_matches(']').parse::<u64>() {
-                        inodes.insert(n);
-                    }
-                }
-            }
-        }
-    }
-    let mut ports = vec![];
-    for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
-        let Ok(text) = std::fs::read_to_string(table) else {
-            continue;
-        };
-        for line in text.lines().skip(1) {
-            let f: Vec<&str> = line.split_whitespace().collect();
-            // f[1] local address "HEXIP:HEXPORT", f[3] state (0A = LISTEN), f[9] socket inode.
-            if f.len() > 9 && f[3] == "0A" && f[9].parse().is_ok_and(|i| inodes.contains(&i)) {
-                if let Some(port) = f[1]
-                    .rsplit(':')
-                    .next()
-                    .and_then(|p| u16::from_str_radix(p, 16).ok())
-                {
-                    ports.push(port);
-                }
-            }
-        }
-    }
+    let mut group_of: std::collections::HashMap<u32, Option<u32>> =
+        std::collections::HashMap::new();
+    let mut ports: Vec<u16> = crate::probe::socket_owners()
+        .into_iter()
+        .filter_map(|(port, pid)| {
+            let pid = pid?;
+            (*group_of.entry(pid).or_insert_with(|| process_group_of(pid)) == Some(pgid))
+                .then_some(port)
+        })
+        .collect();
     ports.sort_unstable();
     ports.dedup();
     ports
+}
+
+/// A task must be this old before a port that isn't listening yet counts as a problem.
+const SETTLE_MS: i64 = 10_000;
+
+/// Who holds a port, in words an agent (or a person) can act on.
+fn holder_text(
+    holder: &crate::probe::Listener,
+    tasks_by_group: &std::collections::HashMap<u32, (String, String)>,
+) -> String {
+    if let Some((id, name)) = holder.pgid.and_then(|g| tasks_by_group.get(&g)) {
+        return format!("Satie task {id} \"{name}\"");
+    }
+    let Some(pid) = holder.pid else {
+        return holder.command.clone();
+    };
+    let mut w = format!("pid {pid} (`{}`", holder.command);
+    if let Some(cwd) = &holder.cwd {
+        w += &format!(", in {cwd}");
+    }
+    if let Some(up) = holder.up_secs {
+        w += &format!(", up {}", crate::probe::age(up));
+    }
+    w + "), not a Satie task"
+}
+
+/// Says what looks wrong with a task: ports it needs that something else already holds, and
+/// expected ports that never came up. Returns `(problems, missing expected ports)`.
+fn diagnose(
+    task: &Task,
+    own: &[u16],
+    listening: &[crate::probe::Listener],
+    tasks_by_group: &std::collections::HashMap<u32, (String, String)>,
+    settle_ms: i64,
+) -> (Vec<String>, Vec<u16>) {
+    let foreign = |port: u16| {
+        listening
+            .iter()
+            .find(|l| l.port == port && l.pgid != Some(task.pid))
+    };
+    let mut problems = vec![];
+    let mut explained: Vec<u16> = vec![];
+
+    // Ports the log complains are taken, and who really holds them right now.
+    let log = crate::probe::log_for_scanning(Path::new(&task.log_path));
+    for port in crate::probe::ports_named_in_conflicts(&log) {
+        if let Some(holder) = foreign(port) {
+            problems.push(format!(
+                "Port {port} is already in use by {}.",
+                holder_text(holder, tasks_by_group)
+            ));
+            explained.push(port);
+        }
+    }
+
+    // Ports it should be serving that it isn't: taken by something else, or just not up. A task
+    // that is still starting gets a moment; one that already failed is judged straight away.
+    let unmet: Vec<u16> = match task.status {
+        TaskStatus::Running if now_ms() - task.started_at >= settle_ms => task
+            .expected_ports
+            .iter()
+            .copied()
+            .filter(|p| !own.contains(p))
+            .collect(),
+        TaskStatus::Failed => task
+            .expected_ports
+            .iter()
+            .copied()
+            .filter(|p| !own.contains(p))
+            .collect(),
+        _ => vec![],
+    };
+    for p in &unmet {
+        if explained.contains(p) {
+            continue;
+        }
+        problems.push(match foreign(*p) {
+            Some(holder) => format!(
+                "Port {p} is already in use by {}.",
+                holder_text(holder, tasks_by_group)
+            ),
+            None => format!("Expected port {p} is not listening; check the task's logs."),
+        });
+    }
+    // Only a running task can still bring its ports up.
+    let missing = if task.status == TaskStatus::Running {
+        unmet
+    } else {
+        vec![]
+    };
+    (problems, missing)
 }
 
 /// Dev stacks open dozens of sockets: inspector ports, random high ports for internal IPC.
@@ -222,6 +300,8 @@ struct Inner {
     tasks: Mutex<HashMap<String, Task>>,
     store: Store,
     dir: PathBuf,
+    /// How long a task gets to open its ports before a missing one is called a problem.
+    settle_ms: std::sync::atomic::AtomicI64,
 }
 
 /// Handle to Satie. Cheap to clone.
@@ -294,6 +374,7 @@ impl Satie {
                 tasks: Mutex::new(tasks),
                 store,
                 dir,
+                settle_ms: std::sync::atomic::AtomicI64::new(SETTLE_MS),
             }),
         };
         satie.tick(); // reconcile: what ran while we were down?
@@ -423,25 +504,76 @@ impl Satie {
 
     /// Tasks (newest first), optionally only those started from `project`.
     pub fn list(&self, project: Option<&str>) -> Vec<TaskView> {
-        let mut tasks: Vec<Task> = self
-            .inner
-            .tasks
-            .lock()
-            .unwrap()
-            .values()
+        self.list_settled(
+            project,
+            self.inner
+                .settle_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// How long a task gets to open its expected ports before a missing one counts as a problem.
+    pub fn set_settle_ms(&self, ms: i64) {
+        self.inner
+            .settle_ms
+            .store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `settle_ms`: how old a task must be before a not-yet-listening port counts as a problem.
+    fn list_settled(&self, project: Option<&str>, settle_ms: i64) -> Vec<TaskView> {
+        let all: Vec<Task> = self.inner.tasks.lock().unwrap().values().cloned().collect();
+        let mut tasks: Vec<Task> = all
+            .iter()
             .filter(|t| project.is_none_or(|p| t.project.as_deref() == Some(p)))
             .cloned()
             .collect();
         tasks.sort_by_key(|t| std::cmp::Reverse(t.started_at));
+
+        // One look at the machine serves every task.
+        let listening = crate::probe::listeners();
+        let by_group: std::collections::HashMap<u32, (String, String)> = all
+            .iter()
+            .map(|t| (t.pid, (t.id.clone(), t.name.clone())))
+            .collect();
         tasks
             .into_iter()
             .map(|task| {
-                let ports = if task.status == TaskStatus::Running {
-                    presentable_ports(ports_of_group(task.pid))
-                } else {
-                    vec![]
-                };
-                TaskView { task, ports }
+                let running = task.status == TaskStatus::Running;
+                let mut own: Vec<u16> = listening
+                    .iter()
+                    .filter(|l| l.pgid == Some(task.pid))
+                    .map(|l| l.port)
+                    .collect();
+                own.sort_unstable();
+                own.dedup();
+                let (problems, missing_ports) =
+                    if matches!(task.status, TaskStatus::Running | TaskStatus::Failed) {
+                        diagnose(&task, &own, &listening, &by_group, settle_ms)
+                    } else {
+                        (vec![], vec![])
+                    };
+                let up_ports: Vec<u16> = task
+                    .expected_ports
+                    .iter()
+                    .copied()
+                    .filter(|p| own.contains(p))
+                    .collect();
+                TaskView {
+                    up_ports,
+                    ports: if running {
+                        presentable_ports(own)
+                    } else {
+                        vec![]
+                    },
+                    missing_ports,
+                    problems,
+                    processes: if running {
+                        crate::probe::process_summary(task.pid)
+                    } else {
+                        vec![]
+                    },
+                    task,
+                }
             })
             .collect()
     }
@@ -520,6 +652,7 @@ impl Satie {
             status: TaskStatus::Running,
             exit_code: None,
             log_path: log_path.to_string_lossy().into_owned(),
+            expected_ports: req.ports,
             id: id.clone(),
         };
         self.inner.tasks.lock().unwrap().insert(id, task.clone());
@@ -581,29 +714,73 @@ impl Satie {
 
     /// Waits until the task listens on `port` (if given), ends, or `max` passes. Without a port,
     /// gives it a moment to fail fast.
-    pub async fn wait_ready(&self, id: &str, port: Option<u16>, max: Duration) {
+    pub async fn wait_ready(
+        &self,
+        id: &str,
+        ports: &[u16],
+        ready: Option<&Ready>,
+        max: Duration,
+    ) -> Option<Result<crate::probe::HttpProbe, String>> {
         let started = std::time::Instant::now();
-        let min = if port.is_some() {
-            max
-        } else {
-            Duration::from_millis(1500).min(max)
-        };
+        let mut last_check = std::time::Instant::now();
+        let mut last = None;
         loop {
-            let Some(t) = self.get(id) else { return };
+            let Some(t) = self.get(id) else { return last };
             if t.status != TaskStatus::Running {
-                return;
+                return last;
             }
-            if port.is_some_and(|p| ports_of_group(t.pid).contains(&p)) {
-                return;
+            let listening = ports_of_group(t.pid);
+            let ports_ok = ports.iter().all(|p| listening.contains(p));
+            let mut http_ok = true;
+            if let Some(r) = ready {
+                http_ok = false;
+                if ports_ok {
+                    let probe = crate::probe::http_get(&r.url, Duration::from_millis(1500)).await;
+                    http_ok = matches!(&probe, Ok(p) if r.status.map_or(p.status < 500, |want| p.status == want));
+                    last = Some(probe);
+                }
             }
-            if port.is_none() && started.elapsed() >= min {
-                return;
+            let has_expectations = !ports.is_empty() || ready.is_some();
+            if ports_ok
+                && http_ok
+                && (has_expectations || started.elapsed() >= Duration::from_millis(1500))
+            {
+                return last;
+            }
+            // Waiting won't help if every missing port is held by another process right now.
+            if !ports_ok
+                && started.elapsed() >= Duration::from_secs(1)
+                && last_check.elapsed() >= Duration::from_secs(1)
+            {
+                last_check = std::time::Instant::now();
+                let now = crate::probe::listeners();
+                let held = |p: &u16| now.iter().any(|l| l.port == *p && l.pgid != Some(t.pid));
+                if ports.iter().filter(|p| !listening.contains(p)).all(held) {
+                    return last;
+                }
             }
             if started.elapsed() >= max {
-                return;
+                return last;
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
+    }
+
+    /// A piece of a task's log, for viewers that follow it: see [`crate::probe::read_chunk`].
+    pub fn log_chunk(
+        &self,
+        id: &str,
+        from: Option<u64>,
+        max_bytes: u64,
+    ) -> Result<crate::probe::Chunk, String> {
+        let task = self.get(id).ok_or("No such task.")?;
+        crate::probe::read_chunk(
+            Path::new(&task.log_path),
+            from,
+            max_bytes.clamp(1024, 8 * 1024 * 1024),
+            task.status == TaskStatus::Running,
+        )
+        .map_err(|e| e.to_string())
     }
 
     // ----- MCP -------------------------------------------------------------------------------
@@ -613,19 +790,23 @@ impl Satie {
         json!([
             {
                 "name": "task_start",
-                "description": "Start a long-running background process (dev server, simulation, watcher, long job) that keeps running after this turn ends. Use this instead of running such commands in the background yourself, which are stopped when the turn ends. The user sees and can stop it in Bach's Tasks panel. Returns the task id, its state and the first output.",
+                "description": "Start a long-running background process (dev server, simulation, watcher, long job) that keeps running after this turn ends. Use this instead of running such commands in the background yourself, which are stopped when the turn ends. The user sees and can stop it in Bach's Tasks panel. Give every port it should serve on in `ports`: the call waits for them and reports any that do not come up, and why if another process holds the port. Returns the task id, its state and the first output.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "command": { "type": "string", "description": "Shell command to run" },
                         "name": { "type": "string", "description": "Short label shown to the user" },
                         "cwd": { "type": "string", "description": "Working directory; defaults to the project folder" },
-                        "port": { "type": "integer", "description": "If it serves on a TCP port, wait (up to 30s) until it is listening there" }
+                        "ports": { "type": "array", "items": { "type": "integer" }, "description": "TCP ports the task should be listening on; wait (up to 30s) for all of them" },
+                        "port": { "type": "integer", "description": "Shorthand for a single entry in `ports`" },
+                        "ready_url": { "type": "string", "description": "A local http://localhost:PORT/... URL that must answer before the task counts as ready; the response status is reported" },
+                        "ready_status": { "type": "integer", "description": "Exact status `ready_url` must return (default: anything below 500)" },
+                        "timeout_seconds": { "type": "integer", "description": "How long to wait for `ports` / `ready_url` (default 30, at most 120)" }
                     },
                     "required": ["command"]
                 }
             },
-            { "name": "task_list", "description": "List this project's background tasks with their state and listening ports.", "inputSchema": { "type": "object", "properties": {} } },
+            { "name": "task_list", "description": "List this project's background tasks with their state, ports, running processes and any problems found (a port already taken, an expected port not listening).", "inputSchema": { "type": "object", "properties": {} } },
             {
                 "name": "task_logs",
                 "description": "Show the latest output of a background task.",
@@ -635,15 +816,29 @@ impl Satie {
                     "required": ["id"]
                 }
             },
-            { "name": "task_stop", "description": "Stop a background task and everything it started.", "inputSchema": id }
+            { "name": "task_stop", "description": "Stop a background task and everything it started.", "inputSchema": id },
+            {
+                "name": "port_info",
+                "description": "Say what is listening on TCP ports on this machine: the process, its command line, folder and age, and whether it is one of Bach's background tasks. Use it to find out who holds a port before deciding what to do about a conflict. Without `ports`, lists the recognisable listeners.",
+                "inputSchema": { "type": "object", "properties": { "ports": { "type": "array", "items": { "type": "integer" } } } }
+            },
+            {
+                "name": "http_check",
+                "description": "Request a local http://localhost:PORT/... URL and report the HTTP status. Only localhost can be checked.",
+                "inputSchema": { "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] }
+            }
         ])
     }
 
     fn describe(view: &TaskView) -> String {
         let t = &view.task;
-        let mut s = format!("Task {} \"{}\": {:?}", t.id, t.name, t.status)
-            .to_lowercase()
-            .replacen("task", "Task", 1);
+        // First line: state and ports. Details, if any, follow on their own lines.
+        let mut s = format!(
+            "Task {} \"{}\": {}",
+            t.id,
+            t.name,
+            format!("{:?}", t.status).to_lowercase()
+        );
         if let Some(code) = t.exit_code {
             s += &format!(" (exit code {code})");
         }
@@ -654,7 +849,85 @@ impl Satie {
             let ports: Vec<String> = view.ports.iter().map(|p| p.to_string()).collect();
             s += &format!(", listening on {}", ports.join(", "));
         }
+        if t.status == TaskStatus::Running && !t.expected_ports.is_empty() {
+            let parts: Vec<String> = t
+                .expected_ports
+                .iter()
+                .map(|p| {
+                    let state = if view.up_ports.contains(p) {
+                        "up"
+                    } else if view.missing_ports.contains(p) {
+                        "NOT listening"
+                    } else {
+                        "not up yet"
+                    };
+                    format!("{p} {state}")
+                })
+                .collect();
+            s += &format!("\n  Expected ports: {}", parts.join(", "));
+        }
+        if !view.processes.is_empty() {
+            s += &format!("\n  Processes: {}", view.processes.join(", "));
+        }
+        for p in &view.problems {
+            s += &format!("\n  Problem: {p}");
+        }
         s
+    }
+
+    /// Who is listening on `wanted` ports (or, with none given, on the recognisable ones).
+    fn port_report(&self, wanted: &[u16]) -> String {
+        let all = crate::probe::listeners();
+        let tasks: std::collections::HashMap<u32, (String, String)> = self
+            .inner
+            .tasks
+            .lock()
+            .unwrap()
+            .values()
+            .map(|t| (t.pid, (t.id.clone(), t.name.clone())))
+            .collect();
+        let line = |l: &crate::probe::Listener| {
+            let owner = match l.pgid.and_then(|g| tasks.get(&g)) {
+                Some((id, name)) => format!("Satie task {id} \"{name}\""),
+                None => "not a Satie task".to_string(),
+            };
+            match l.pid {
+                Some(pid) => format!(
+                    "Port {}: pid {pid} `{}`{}{} - {owner}",
+                    l.port,
+                    l.command,
+                    l.cwd
+                        .as_ref()
+                        .map(|c| format!(", in {c}"))
+                        .unwrap_or_default(),
+                    l.up_secs
+                        .map(|u| format!(", up {}", crate::probe::age(u)))
+                        .unwrap_or_default(),
+                ),
+                None => format!("Port {}: {}", l.port, l.command),
+            }
+        };
+        let mut lines = vec![];
+        if wanted.is_empty() {
+            let mut shown = all.clone();
+            shown.retain(|l| l.port < 32768);
+            shown.dedup_by_key(|l| (l.port, l.pid));
+            lines.extend(shown.iter().take(60).map(line));
+            if lines.is_empty() {
+                lines.push("Nothing is listening on a recognisable port.".into());
+            }
+        } else {
+            for p in wanted {
+                let mut holders: Vec<&crate::probe::Listener> =
+                    all.iter().filter(|l| l.port == *p).collect();
+                holders.dedup_by_key(|l| l.pid);
+                if holders.is_empty() {
+                    lines.push(format!("Port {p}: nothing is listening."));
+                }
+                lines.extend(holders.into_iter().map(line));
+            }
+        }
+        lines.join("\n")
     }
 
     /// A task, checked to belong to the calling run's project.
@@ -675,21 +948,68 @@ impl Satie {
     async fn call(&self, run: &RunInfo, name: &str, args: &Value) -> Result<String, String> {
         match name {
             "task_start" => {
+                let mut ports: Vec<u16> = args["ports"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .chain(args.get("port"))
+                    .filter_map(|p| {
+                        p.as_u64()
+                            .and_then(|p| u16::try_from(p).ok())
+                            .filter(|p| *p > 0)
+                    })
+                    .collect();
+                ports.sort_unstable();
+                ports.dedup();
+                if let Some(url) = args["ready_url"].as_str() {
+                    // Fail before launching anything: a URL we would never request can't become ready.
+                    crate::probe::validate_local_url(url)
+                        .map_err(|e| format!("`ready_url`: {e}"))?;
+                }
+                let wait = Duration::from_secs(
+                    args["timeout_seconds"].as_u64().unwrap_or(30).clamp(1, 120),
+                );
+                let ready = args["ready_url"].as_str().map(|url| Ready {
+                    url: url.to_string(),
+                    status: args["ready_status"]
+                        .as_u64()
+                        .and_then(|p| u16::try_from(p).ok()),
+                });
                 let task = self.start_task(StartTask {
                     command: args["command"].as_str().unwrap_or_default().to_string(),
                     cwd: args["cwd"].as_str().map(String::from),
                     name: args["name"].as_str().map(String::from),
                     project: run.cwd.clone(),
                     run_id: Some(run.run_id.clone()),
+                    ports: ports.clone(),
                 })?;
-                let port = args["port"].as_u64().and_then(|p| u16::try_from(p).ok());
-                self.wait_ready(&task.id, port, Duration::from_secs(30))
+                let probe = self
+                    .wait_ready(&task.id, &ports, ready.as_ref(), wait)
                     .await;
-                let view = self.view(&task.id).ok_or("The task disappeared.")?;
+                // The wait is over: anything still not listening is a problem now, not "still starting".
+                let view = self
+                    .list_settled(None, 0)
+                    .into_iter()
+                    .find(|v| v.task.id == task.id)
+                    .ok_or("The task disappeared.")?;
                 let mut text = Self::describe(&view);
-                if let Some(p) = port {
-                    if !view.ports.contains(&p) {
-                        text += &format!("\nWarning: not listening on port {p} yet.");
+                if let Some(r) = &ready {
+                    match probe {
+                        Some(Ok(p)) => {
+                            text += &format!(
+                                "\n  HTTP check: GET {} -> {} ({} ms)",
+                                r.url, p.status, p.ms
+                            )
+                        }
+                        Some(Err(e)) => {
+                            text += &format!("\n  HTTP check: GET {} did not answer: {e}", r.url)
+                        }
+                        None => {
+                            text += &format!(
+                            "\n  HTTP check: GET {} was not attempted (the ports did not come up)",
+                            r.url
+                        )
+                        }
                     }
                 }
                 let out = self.logs(&task.id, 15).unwrap_or_default();
@@ -697,6 +1017,24 @@ impl Satie {
                     text += &format!("\nOutput so far:\n{out}");
                 }
                 Ok(text)
+            }
+            "port_info" => {
+                let wanted: Vec<u16> = args["ports"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|p| p.as_u64().and_then(|p| u16::try_from(p).ok()))
+                    .collect();
+                Ok(self.port_report(&wanted))
+            }
+            "http_check" => {
+                let url = args["url"].as_str().unwrap_or_default();
+                Ok(
+                    match crate::probe::http_get(url, Duration::from_secs(4)).await {
+                        Ok(p) => format!("GET {url} -> {} ({} ms)", p.status, p.ms),
+                        Err(e) => format!("GET {url} did not answer: {e}"),
+                    },
+                )
             }
             "task_list" => {
                 let views = self.list(run.cwd.as_deref());
@@ -798,7 +1136,6 @@ async fn mcp(State(satie): State<Satie>, headers: HeaderMap, Json(body): Json<Va
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -1001,7 +1338,7 @@ mod tests {
             ))
             .unwrap();
         satie
-            .wait_ready(&t.id, Some(port), Duration::from_secs(10))
+            .wait_ready(&t.id, &[port], None, Duration::from_secs(10))
             .await;
         let view = satie.view(&t.id).unwrap();
         assert_eq!(view.ports, vec![port], "{view:?}");
@@ -1031,10 +1368,12 @@ mod tests {
         let view = satie.view(&t.id).unwrap();
         assert_eq!(view.ports, vec![named], "{view:?}");
         assert!(Satie::describe(&view).contains(&format!("listening on {named}")));
+        // The first line is state + ports; any details follow on their own lines.
+        let first = Satie::describe(&view);
+        let first = first.lines().next().unwrap();
         assert!(
-            Satie::describe(&view).ends_with(&format!("listening on {named}")),
-            "the description lists just the named port: {}",
-            Satie::describe(&view)
+            first.ends_with(&format!("listening on {named}")),
+            "the description lists just the named port: {first}"
         );
         satie.stop_task(&t.id).await.unwrap();
 
@@ -1166,7 +1505,17 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["task_start", "task_list", "task_logs", "task_stop"]);
+        assert_eq!(
+            names,
+            [
+                "task_start",
+                "task_list",
+                "task_logs",
+                "task_stop",
+                "port_info",
+                "http_check"
+            ]
+        );
 
         // Start: defaults to the run's project, waits briefly, reports state and first output.
         let (err, text) = call(
@@ -1234,6 +1583,370 @@ mod tests {
                 .0,
             401
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ----- diagnosing conflicts, several ports, HTTP readiness ------------------------------
+
+    /// A process that is not a Satie task, listening on `port`.
+    struct Foreign(std::process::Child);
+    impl Foreign {
+        async fn listening_on(port: u16, dir: &Path) -> Foreign {
+            let child = std::process::Command::new("python3")
+                .args([
+                    "-m",
+                    "http.server",
+                    &port.to_string(),
+                    "--bind",
+                    "127.0.0.1",
+                ])
+                .current_dir(dir)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            until("foreign listener", || {
+                std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+            })
+            .await;
+            Foreign(child)
+        }
+        fn pid(&self) -> u32 {
+            self.0.id()
+        }
+    }
+    impl Drop for Foreign {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    fn run_in(dir: &Path) -> RunInfo {
+        RunInfo {
+            run_id: "r".into(),
+            cwd: Some(dir.to_string_lossy().into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn explains_who_holds_a_port_a_task_could_not_get() {
+        let dir = tmp("conflict");
+        let satie = satie_in(&Store::in_memory().unwrap(), &dir).await;
+        let port = free_port();
+        let squatter = Foreign::listening_on(port, &dir).await;
+
+        // 1) The log names the port (as vite/node do): the holder is found and described.
+        let t = satie
+            .start_task(req(
+                &format!("echo 'Error: Port {port} is already in use'; exit 1"),
+                &dir,
+            ))
+            .unwrap();
+        until("failed", || status(&satie, &t.id) == TaskStatus::Failed).await;
+        let view = satie.view(&t.id).unwrap();
+        let text = view.problems.join("\n");
+        assert!(
+            text.contains(&format!(
+                "Port {port} is already in use by pid {}",
+                squatter.pid()
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains("not a Satie task") && text.contains(dir.to_str().unwrap()),
+            "{text}"
+        );
+        assert!(
+            Satie::describe(&view).contains("Problem: Port"),
+            "{}",
+            Satie::describe(&view)
+        );
+
+        // 2) The holder can be one of our own tasks, and is named as such.
+        let other = satie
+            .start_task(req(
+                &format!("python3 -m http.server {} --bind 127.0.0.1", free_port()),
+                &dir,
+            ))
+            .unwrap();
+        let ported = satie.start_task(req("sleep 60", &dir)).unwrap();
+        let _ = (other, ported);
+
+        // 3) port_info answers the question directly, for one port and for a port nobody has.
+        let report = satie.port_report(&[port, free_port()]);
+        assert!(
+            report.contains(&format!("Port {port}: pid {}", squatter.pid())),
+            "{report}"
+        );
+        assert!(
+            report.contains("not a Satie task") && report.contains("up "),
+            "{report}"
+        );
+        assert!(report.contains("nothing is listening"), "{report}");
+        for t in satie.list(None) {
+            let _ = satie.stop_task(&t.task.id).await;
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn port_info_recognises_its_own_tasks() {
+        let dir = tmp("portinfo");
+        let satie = satie_in(&Store::in_memory().unwrap(), &dir).await;
+        let port = free_port();
+        let t = satie
+            .start_task(req(
+                &format!("python3 -m http.server {port} --bind 127.0.0.1"),
+                &dir,
+            ))
+            .unwrap();
+        satie
+            .wait_ready(&t.id, &[port], None, Duration::from_secs(10))
+            .await;
+        let report = satie.port_report(&[port]);
+        assert!(report.contains(&format!("Satie task {}", t.id)), "{report}");
+        assert!(!report.contains("not a Satie task"), "{report}");
+
+        // A second task that wants the same port is told exactly which task has it.
+        let clash = satie
+            .start_task(StartTask {
+                ports: vec![port],
+                ..req(
+                    &format!("python3 -m http.server {port} --bind 127.0.0.1"),
+                    &dir,
+                )
+            })
+            .unwrap();
+        until("clash exits", || {
+            status(&satie, &clash.id) != TaskStatus::Running
+        })
+        .await;
+        let view = satie
+            .list_settled(None, 0)
+            .into_iter()
+            .find(|v| v.task.id == clash.id)
+            .unwrap();
+        assert!(
+            view.problems.iter().any(|p| p.contains(&format!(
+                "Port {port} is already in use by Satie task {}",
+                t.id
+            ))),
+            "{:?}",
+            view.problems
+        );
+        satie.stop_task(&t.id).await.unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn task_start_reports_which_expected_ports_came_up_and_gives_up_early() {
+        let dir = tmp("expected");
+        let satie = satie_in(&Store::in_memory().unwrap(), &dir).await;
+        satie.set_settle_ms(3000); // a short grace period so the test can see both sides of it
+        let (good, taken) = (free_port(), free_port());
+        let squatter = Foreign::listening_on(taken, &dir).await;
+        let a = format!("python3 -m http.server {good} --bind 127.0.0.1");
+        let b = format!("python3 -m http.server {taken} --bind 127.0.0.1");
+
+        // Two services, one of which cannot get its port: like `just dev` with a stale vite.
+        let started = std::time::Instant::now();
+        let (err, text) = {
+            let run = run_in(&dir);
+            let r = satie
+                .call(&run, "task_start", &json!({ "command": format!("{a} & {b} & wait"), "name": "stack", "ports": [good, taken] }))
+                .await;
+            (r.is_err(), r.unwrap_or_else(|e| e))
+        };
+        let waited = started.elapsed();
+        assert!(!err, "{text}");
+        assert!(
+            waited < Duration::from_secs(12),
+            "must not sit out the full 30s timeout: {waited:?}"
+        );
+        let expected_line = text
+            .lines()
+            .find(|l| l.contains("Expected ports:"))
+            .expect("an Expected ports line");
+        assert!(
+            expected_line.contains(&format!("{good} up"))
+                && expected_line.contains(&format!("{taken} NOT listening")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "Problem: Port {taken} is already in use by pid {}",
+                squatter.pid()
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains("Processes:") && text.contains("python3"),
+            "which processes are alive: {text}"
+        );
+
+        // The same picture is available later, from task_list.
+        let (_, list) = (
+            0,
+            satie
+                .call(&run_in(&dir), "task_list", &json!({}))
+                .await
+                .unwrap(),
+        );
+        // (still inside the grace period: not yet called a failure, and not claimed to be up)
+        assert!(list.contains(&format!("{taken} not up yet")), "{list}");
+        assert!(!list.contains(&format!("{taken} up")), "{list}");
+        tokio::time::sleep(Duration::from_millis(3200)).await;
+        let later = satie
+            .call(&run_in(&dir), "task_list", &json!({}))
+            .await
+            .unwrap();
+        assert!(later.contains(&format!("{taken} NOT listening")), "{later}");
+        assert!(later.contains("Problem: Port"), "{later}");
+        // ...but a task that is simply still starting is not reported as broken.
+        let slow = satie
+            .start_task(StartTask {
+                ports: vec![free_port()],
+                ..req("sleep 30", &dir)
+            })
+            .unwrap();
+        let view = satie.view(&slow.id).unwrap();
+        assert!(
+            view.problems.is_empty() && view.missing_ports.is_empty(),
+            "{:?}",
+            view.problems
+        );
+
+        for t in satie.list(None) {
+            satie.stop_task(&t.task.id).await.unwrap();
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn waits_for_all_expected_ports_and_an_http_answer() {
+        let dir = tmp("ready");
+        std::fs::write(dir.join("index.html"), "hi").unwrap();
+        let satie = satie_in(&Store::in_memory().unwrap(), &dir).await;
+        let (p1, p2) = (free_port(), free_port());
+        let cmd = format!("python3 -m http.server {p1} --bind 127.0.0.1 & python3 -m http.server {p2} --bind 127.0.0.1 & wait");
+        let run = run_in(&dir);
+        let text = satie
+            .call(&run, "task_start", &json!({ "command": cmd, "ports": [p1, p2], "ready_url": format!("http://localhost:{p2}/index.html") }))
+            .await
+            .unwrap();
+        let expected_line = text
+            .lines()
+            .find(|l| l.contains("Expected ports:"))
+            .expect("an Expected ports line");
+        assert!(
+            expected_line.contains(&format!("{p1} up"))
+                && expected_line.contains(&format!("{p2} up")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "HTTP check: GET http://localhost:{p2}/index.html -> 200"
+            )),
+            "{text}"
+        );
+
+        // A required status that is not what the server returns is reported, not hidden.
+        let text2 = satie
+            .call(
+                &run,
+                "task_start",
+                &json!({ "command": "sleep 30", "ready_url": format!("http://localhost:{p1}/nope.html"), "ready_status": 200, "ports": [], "timeout_seconds": 2 }),
+            )
+            .await
+            .unwrap();
+        assert!(
+            text2.contains("HTTP check: GET") && text2.contains("-> 404"),
+            "{text2}"
+        );
+
+        // Only local URLs are ever requested, and a bad one is refused before anything is launched.
+        let before = satie.list(None).len();
+        let started = std::time::Instant::now();
+        let bad = satie
+            .call(
+                &run,
+                "task_start",
+                &json!({ "command": "sleep 30", "ready_url": "http://example.com/" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            bad.contains("ready_url") && bad.contains("Only localhost"),
+            "{bad}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "must fail at once, not time out"
+        );
+        assert_eq!(satie.list(None).len(), before, "no task was started");
+        let check = satie
+            .call(
+                &run,
+                "http_check",
+                &json!({ "url": format!("http://127.0.0.1:{p1}/index.html") }),
+            )
+            .await
+            .unwrap();
+        assert!(check.contains("-> 200"), "{check}");
+        let closed = satie
+            .call(
+                &run,
+                "http_check",
+                &json!({ "url": format!("http://127.0.0.1:{}/", free_port()) }),
+            )
+            .await
+            .unwrap();
+        assert!(closed.contains("did not answer"), "{closed}");
+        for t in satie.list(None) {
+            satie.stop_task(&t.task.id).await.unwrap();
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn serves_a_task_log_in_chunks_that_follow_it() {
+        let dir = tmp("chunk");
+        let satie = satie_in(&Store::in_memory().unwrap(), &dir).await;
+        let t = satie
+            .start_task(req("echo first; sleep 1; echo second; sleep 30", &dir))
+            .unwrap();
+        // (The log's first line echoes the command, so match whole lines.)
+        let has_line = |c: &crate::probe::Chunk, l: &str| c.text.lines().any(|x| x == l);
+        until("first line", || {
+            satie
+                .log_chunk(&t.id, None, 4096)
+                .is_ok_and(|c| has_line(&c, "first"))
+        })
+        .await;
+        let c1 = satie.log_chunk(&t.id, None, 4096).unwrap();
+        until("second line", || {
+            satie
+                .log_chunk(&t.id, Some(c1.next), 4096)
+                .is_ok_and(|c| has_line(&c, "second"))
+        })
+        .await;
+        let c2 = satie.log_chunk(&t.id, Some(c1.next), 4096).unwrap();
+        assert!(
+            has_line(&c2, "second") && !has_line(&c2, "first"),
+            "a continuation, not a re-read: {c2:?}"
+        );
+        assert_eq!(c2.offset, c1.next);
+        assert!(satie.log_chunk("nope", None, 100).is_err());
+        satie.stop_task(&t.id).await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 

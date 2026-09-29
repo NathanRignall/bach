@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Ban, CheckCircle2, ScrollText, Square, Trash2, X, XCircle } from "lucide-react";
+import { AlertTriangle, Ban, CheckCircle2, Maximize2, ScrollText, Square, Trash2, X, XCircle } from "lucide-react";
 import { TaskStatus, TaskView, listTasks, removeTask, startTask, stopTask, taskHost, taskLogs } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
+import { AnsiLine } from "@/lib/ansi";
+import { LogViewer } from "./LogViewer";
 import { projectName } from "@/session";
 
 /** Background tasks on the backend host, refreshed every few seconds. */
@@ -97,12 +99,20 @@ function Logs({ id, running }: { id: string; running: boolean }) {
       }}
       className="max-h-56 overflow-auto rounded-lg border bg-muted p-2 font-mono text-[11px] leading-snug whitespace-pre-wrap break-all"
     >
-      {text === undefined ? "Loading…" : text || "(no output yet)"}
+      {text === undefined
+        ? "Loading…"
+        : text
+          ? text.split("\n").map((line, i) => (
+              <div key={i}>
+                <AnsiLine text={line} />
+              </div>
+            ))
+          : "(no output yet)"}
     </pre>
   );
 }
 
-function TaskCard({ task, onChanged }: { task: TaskView; onChanged: () => void }) {
+function TaskCard({ task, onChanged, onOpenViewer }: { task: TaskView; onChanged: () => void; onOpenViewer: () => void }) {
   const [showLogs, setShowLogs] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -163,10 +173,29 @@ function TaskCard({ task, onChanged }: { task: TaskView; onChanged: () => void }
         )}
       </div>
 
+      {task.missingPorts.length > 0 && (
+        <p className="text-xs text-destructive">Not listening: {task.missingPorts.map((p) => `:${p}`).join(" ")}</p>
+      )}
+      {task.problems.map((p) => (
+        <p key={p} className="flex items-start gap-1.5 text-xs text-destructive">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0 break-words">{p}</span>
+        </p>
+      ))}
+      {running && task.processes.length > 0 && (
+        <p className="truncate text-[11px] text-muted-foreground" title={task.processes.join(", ")}>
+          {task.processes.join(" · ")}
+        </p>
+      )}
+
       <div className="flex items-center gap-1.5">
         <Button variant="outline" size="xs" onClick={() => setShowLogs((v) => !v)} aria-expanded={showLogs}>
           <ScrollText data-icon="inline-start" />
           Logs
+        </Button>
+        <Button variant="outline" size="xs" onClick={onOpenViewer} aria-label={`Open ${task.name} log full screen`} title="Full-screen log">
+          <Maximize2 data-icon="inline-start" />
+          Full screen
         </Button>
         {running ? (
           <Button variant="outline" size="xs" disabled={busy} onClick={() => void act(() => stopTask(task.id))}>
@@ -200,6 +229,8 @@ export function TasksPanel({ tasks, error, refresh, defaultCwd, onClose }: Props
   const [command, setCommand] = useState("");
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string>();
+  const [viewing, setViewing] = useState<string>();
+  const viewed = tasks.find((t) => t.id === viewing);
 
   async function start() {
     if (!command.trim() || !defaultCwd) return;
@@ -258,10 +289,11 @@ export function TasksPanel({ tasks, error, refresh, defaultCwd, onClose }: Props
         )}
         <ul className="flex flex-col gap-2">
           {tasks.map((t) => (
-            <TaskCard key={t.id} task={t} onChanged={refresh} />
+            <TaskCard key={t.id} task={t} onChanged={refresh} onOpenViewer={() => setViewing(t.id)} />
           ))}
         </ul>
       </div>
+      {viewed && <LogViewer task={viewed} onClose={() => setViewing(undefined)} />}
     </aside>
   );
 }

@@ -230,10 +230,32 @@ export interface TaskView {
   logPath: string;
   /** TCP ports its processes are listening on. */
   ports: number[];
+  /** Ports it was started expecting to serve on, and which of those are up right now. */
+  expectedPorts: number[];
+  upPorts: number[];
+  /** Expected ports that are not listening (reported once the task has had a moment to start). */
+  missingPorts: number[];
+  /** What looks wrong: a port already taken by something else, an expected port that never came up. */
+  problems: string[];
+  /** What is running in it, e.g. "workerd ×8". */
+  processes: string[];
+}
+
+export interface LogChunk {
+  text: string;
+  /** Where `text` starts in the log file, and where to continue from. */
+  offset: number;
+  next: number;
+  size: number;
+  /** Not a continuation of the previous chunk (output was skipped, or the log was truncated). */
+  restarted: boolean;
 }
 
 export const listTasks = () => call<TaskView[]>("list_tasks");
 export const taskLogs = (id: string, lines = 200) => call<string>("task_logs", { taskId: id, lines });
+/** A piece of a task's log: from a byte offset, or (without one) its tail. */
+export const taskLogChunk = (id: string, from?: number, maxBytes?: number) =>
+  call<LogChunk>("task_log_chunk", { taskId: id, from, maxBytes });
 export const stopTask = (id: string) => call<unknown>("stop_task", { taskId: id });
 export const removeTask = (id: string) => call<void>("remove_task", { taskId: id });
 export const startTask = (args: { command: string; cwd: string; name?: string }) => call<unknown>("start_task", args);

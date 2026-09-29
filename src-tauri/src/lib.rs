@@ -125,6 +125,16 @@ fn task_logs(
 }
 
 #[tauri::command]
+fn task_log_chunk(
+    satie: State<'_, Satie>,
+    task_id: String,
+    from: Option<u64>,
+    max_bytes: Option<u64>,
+) -> Result<bach_core::probe::Chunk, String> {
+    satie.log_chunk(&task_id, from, max_bytes.unwrap_or(512 * 1024))
+}
+
+#[tauri::command]
 async fn stop_task(
     satie: State<'_, Satie>,
     task_id: String,
@@ -150,6 +160,7 @@ fn start_task(
         name,
         project: Some(cwd),
         run_id: None,
+        ports: vec![],
     })
 }
 
@@ -199,6 +210,7 @@ pub fn run() {
             respond_approval,
             list_tasks,
             task_logs,
+            task_log_chunk,
             stop_task,
             remove_task,
             start_task,

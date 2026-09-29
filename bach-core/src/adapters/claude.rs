@@ -37,9 +37,14 @@ pub fn args(
     }
     // Reading a task's state or output changes nothing, so those never need a card; starting
     // and stopping still do.
-    let read_only = satie
-        .iter()
-        .flat_map(|_| ["mcp__satie__task_list", "mcp__satie__task_logs"]);
+    let read_only = satie.iter().flat_map(|_| {
+        [
+            "mcp__satie__task_list",
+            "mcp__satie__task_logs",
+            "mcp__satie__port_info",
+            "mcp__satie__http_check",
+        ]
+    });
     let allowed: Vec<String> = allowed_tools
         .iter()
         .cloned()
