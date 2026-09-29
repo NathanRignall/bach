@@ -37,10 +37,10 @@ interface Props {
 
 /** The chat input card, shared by the new-session page and the running chat. */
 const MODELS = [
-  { value: "default", label: "Default model" },
-  { value: "opus", label: "Opus" },
-  { value: "sonnet", label: "Sonnet" },
-  { value: "haiku", label: "Haiku" },
+  { value: "default", label: "Default model", description: "Whatever Claude Code picks" },
+  { value: "opus", label: "Opus", description: "Most capable, for hard problems" },
+  { value: "sonnet", label: "Sonnet", description: "Fast and capable for everyday work" },
+  { value: "haiku", label: "Haiku", description: "Fastest, for small tasks" },
 ];
 
 /** Claude Code's `--permission-mode` choices, worded as its own picker does. */
@@ -52,8 +52,50 @@ const PERMISSION_MODES = [
   { value: "bypassPermissions", label: "Bypass permissions", description: "Run everything without asking" },
 ];
 
+const AGENT_DESCRIPTIONS: Record<AgentKind, string> = {
+  claude: "Anthropic's coding agent",
+  codex: "OpenAI's coding agent",
+  opencode: "The open-source coding agent",
+};
+
+interface Choice {
+  value: string;
+  label: string;
+  description: string;
+  disabled?: boolean;
+}
+
+/** A small picker whose menu explains each choice, in the style of Claude Code's own. */
+function Picker({ heading, label, choices, value, disabled, onChange }: { heading: string; label: string; choices: Choice[]; value: string; disabled?: boolean; onChange: (v: string) => void }) {
+  return (
+    <Select items={choices} value={value} disabled={disabled} onValueChange={(v) => v && onChange(v)}>
+      <SelectTrigger size="sm" aria-label={label}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent className="min-w-64" align="end" alignItemWithTrigger={false}>
+        <SelectGroup>
+          <SelectLabel>{heading}</SelectLabel>
+          {choices.map((c) => (
+            <SelectItem key={c.value} value={c.value} disabled={c.disabled} className="py-1.5">
+              <span className="flex flex-col gap-0.5">
+                <span>{c.label}</span>
+                <span className="text-xs font-normal text-muted-foreground">{c.description}</span>
+              </span>
+            </SelectItem>
+          ))}
+        </SelectGroup>
+      </SelectContent>
+    </Select>
+  );
+}
+
 export function Composer(p: Props) {
-  const items = p.agents.map((a) => ({ value: a.kind, label: a.installed ? a.name : `${a.name} (not installed)` }));
+  const agents: Choice[] = p.agents.map((a) => ({
+    value: a.kind,
+    label: a.installed ? a.name : `${a.name} (not installed)`,
+    description: AGENT_DESCRIPTIONS[a.kind],
+    disabled: !a.installed,
+  }));
   const canSend = !!p.draft.trim() && !p.blockedReason && !p.starting;
   return (
     <div className="rounded-2xl border bg-card p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/30">
@@ -75,51 +117,10 @@ export function Composer(p: Props) {
         <div className="ml-auto flex items-center gap-2">
           {p.indicator}
           {p.agent === "claude" && p.onPermissionMode && (
-            <Select items={PERMISSION_MODES} value={p.permissionMode ?? "default"} onValueChange={(v) => v && p.onPermissionMode!(v)}>
-              <SelectTrigger size="sm" aria-label="Permission mode">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="min-w-64" align="end" alignItemWithTrigger={false}>
-                <SelectGroup>
-                  <SelectLabel>Mode</SelectLabel>
-                  {PERMISSION_MODES.map((m) => (
-                    <SelectItem key={m.value} value={m.value} className="py-1.5">
-                      <span className="flex flex-col gap-0.5">
-                        <span>{m.label}</span>
-                        <span className="text-xs font-normal text-muted-foreground">{m.description}</span>
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
+            <Picker heading="Mode" label="Permission mode" choices={PERMISSION_MODES} value={p.permissionMode ?? "default"} onChange={p.onPermissionMode} />
           )}
-          {p.agent === "claude" && p.onModel && (
-            <Select items={MODELS} value={p.modelChoice ?? "default"} onValueChange={(v) => v && p.onModel!(v)}>
-              <SelectTrigger size="sm" aria-label="Model">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {MODELS.map((m) => (
-                  <SelectItem key={m.value} value={m.value}>
-                    {m.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-          <Select items={items} value={p.agent} disabled={p.agentLocked} onValueChange={(v) => v && p.onAgent(v as AgentKind)}>
-            <SelectTrigger size="sm" aria-label="Agent">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {p.agents.map((a) => (
-                <SelectItem key={a.kind} value={a.kind} disabled={!a.installed}>
-                  {a.installed ? a.name : `${a.name} (not installed)`}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {p.agent === "claude" && p.onModel && <Picker heading="Model" label="Model" choices={MODELS} value={p.modelChoice ?? "default"} onChange={p.onModel} />}
+          <Picker heading="Agent" label="Agent" choices={agents} value={p.agent} disabled={p.agentLocked} onChange={(v) => p.onAgent(v as AgentKind)} />
 
           {p.running ? (
             <Button variant="outline" size="sm" onClick={p.onStop}>
