@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { PortsButton, useForwarding } from "./Ports";
 
 const MODES = [
   { value: "local", label: "On this computer" },
@@ -32,6 +33,7 @@ const where = (s: ConnectionStatus) => (s.connection.mode === "local" ? "this co
 export function ConnectionPicker() {
   const [status, setStatus] = useState<ConnectionStatus>();
   const [open, setOpen] = useState(false);
+  const forwarding = useForwarding();
   useEffect(() => {
     if (!inTauri) return;
     void getConnection().then(setStatus);
@@ -50,6 +52,7 @@ export function ConnectionPicker() {
         <span className="min-w-0 flex-1 truncate text-muted-foreground" title={status.version ? `bach-server ${status.version}` : undefined}>
           {status.state === "connecting" ? `Connecting to ${where(status)}…` : `Agents on ${where(status)}`}
         </span>
+        <PortsButton forwarding={forwarding} />
         <Button variant="ghost" size="icon-xs" aria-label="Connection settings" title="Where agents run" onClick={() => setOpen(true)}>
           <Settings2 />
         </Button>

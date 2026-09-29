@@ -80,8 +80,9 @@ up. Its status and any SSH error are shown in the sidebar.
 
 **Port forwarding.** Over SSH, the ports background tasks listen on are forwarded to the Mac as
 they come and go (like VS Code), so `http://localhost:5173` on the Mac reaches the dev server on
-orion; switch it off in the tasks panel's "Forwarded ports", which also forwards any other port by
-hand. Clicking a port anywhere opens it in the browser, forwarding it first if needed. Forwards
+orion. The cable icon next to the connection in the sidebar (shown over SSH, with a count) lists
+the forwards, switches the automatic ones off, and forwards any other port by hand. Clicking a
+port anywhere opens it in the browser, forwarding it first if needed. Forwards
 use the app's own SSH connection (it runs as a `ControlMaster`; each forward is
 `ssh -O forward -L 127.0.0.1:<local>:localhost:<port>`), so there's no second login, they listen
 on the Mac's loopback only, and they come back after a reconnect. When a port is taken on the Mac
@@ -178,9 +179,10 @@ Bach shows an approval card, and the run waits for your answer.
 
 ## Terminal
 
-**Terminal** in the sidebar (or Ctrl+`) opens a panel of terminals under the chat: your login shell
-on the machine the agents run on (so direnv and dev shells load as usual), starting in the current
-session's folder. Tabs hold several; drag the top edge to resize.
+The **Terminal** bar under the chat is dragged up (or clicked, or Ctrl+`) to open a panel of the
+current project's terminals: your login shell on the machine the agents run on (so direnv and dev
+shells load as usual), starting in the current session's folder. Tabs hold several; drag the bar
+to resize, or down to put it away. Each project sees only the terminals started in its folder.
 
 Terminals belong to the backend (`crates/bach-core/src/terminals.rs`, a PTY each), not the window:
 hiding the panel, reloading, or the Mac reconnecting leaves them running, and any client can pick
@@ -195,7 +197,8 @@ runs one agent process per message. **Satie** is Bach's own launcher for things 
 
 - Processes start *detached* (own session, output in a log file, exit code in a file) and are recorded
   in the database, so they survive turns, agents and even a `bach-server` restart; on startup Bach
-  finds them again, notices ones that ended, and can still stop them.
+  finds them again, notices ones that ended, and can still stop them. Starting the same command
+  in the same folder again replaces its earlier, finished runs, so a restarted server is listed once.
 - Agents reach it as an MCP server (`satie`, loopback only, one bearer token per run): `task_start`
   (optionally waits for a `port`), `task_list`, `task_logs`, `task_stop`. Agents only see their own
   project's tasks. Claude Code runs also get a system-prompt note and a hook that refuses Bash

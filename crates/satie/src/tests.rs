@@ -155,6 +155,34 @@
     }
 
     #[tokio::test]
+    async fn starting_the_same_command_again_replaces_its_finished_runs() {
+        let dir = tmp("again");
+        let satie = satie_in(&dir).await;
+        let first = satie.start_task(req("exit 0", &dir)).unwrap();
+        until("first ended", || status(&satie, &first.id) == TaskStatus::Exited).await;
+        // A running one, and a finished one of a different command, stay.
+        let running = satie.start_task(req("sleep 4709", &dir)).unwrap();
+        let other = satie.start_task(req("exit 1", &dir)).unwrap();
+        until("other ended", || status(&satie, &other.id) == TaskStatus::Failed).await;
+
+        let again = satie.start_task(req("exit 0", &dir)).unwrap();
+        assert!(satie.get(&first.id).is_none(), "the finished run is replaced");
+        assert!(!Path::new(&first.log_path).exists(), "and its log is gone");
+        assert!(satie.get(&again.id).is_some());
+        assert!(satie.get(&running.id).is_some() && satie.get(&other.id).is_some());
+
+        // The same command in another folder is a different thing.
+        let elsewhere = tmp("again-elsewhere");
+        let there = satie.start_task(req("exit 0", &elsewhere)).unwrap();
+        assert!(satie.get(&again.id).is_some());
+        assert!(satie.get(&there.id).is_some());
+
+        satie.stop_task(&running.id).await.unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(elsewhere);
+    }
+
+    #[tokio::test]
     async fn tasks_survive_a_restart_and_are_reconciled() {
         let dir = tmp("restart");
         let before = satie_in(&dir).await;
