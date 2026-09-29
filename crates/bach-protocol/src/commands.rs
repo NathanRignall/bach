@@ -164,14 +164,23 @@ pub struct StartSessionArgs {
     pub model_choice: Option<String>,
     pub permission_mode: Option<String>,
     pub prompt: String,
+    /// Images sent with the prompt, as `data:` URLs (Claude Code only).
+    #[serde(default)]
+    #[ts(as = "Option<Vec<String>>")]
+    pub images: Vec<String>,
 }
 
 /// Sends a message to a session's agent; while it is busy, the message is queued instead.
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(optional_fields)]
 pub struct SendMessageArgs {
     pub session_id: String,
     pub prompt: String,
+    /// Images sent with the prompt, as `data:` URLs (Claude Code only).
+    #[serde(default)]
+    #[ts(as = "Option<Vec<String>>")]
+    pub images: Vec<String>,
 }
 
 /// Sends a queued message now. The session must not be running.

@@ -11,6 +11,8 @@ interface Props {
   agents: AgentInfo[];
   draft: string;
   onDraft: (v: string) => void;
+  images: string[];
+  onImages: (images: string[]) => void;
   onSend: () => void;
   starting: boolean;
   recentProjects: string[];
@@ -21,7 +23,7 @@ interface Props {
 }
 
 /** Where a session is set up: the chat input with the project folder and branch beside it. */
-export function NewSessionPage({ session, agents, draft, onDraft, onSend, starting, recentProjects, onChange, error, indicator }: Props) {
+export function NewSessionPage({ session, agents, draft, onDraft, images, onImages, onSend, starting, recentProjects, onChange, error, indicator }: Props) {
   const git = useGitInfo(session, onChange);
   const hasFolder = !!session.cwd.trim();
   const setProject = (cwd: string) => onChange({ cwd, branch: undefined, worktree: false, newBranch: undefined });
@@ -44,6 +46,8 @@ export function NewSessionPage({ session, agents, draft, onDraft, onSend, starti
           tall
           draft={draft}
           onDraft={onDraft}
+          images={images}
+          onImages={onImages}
           onSend={onSend}
           onStop={() => {}}
           running={false}

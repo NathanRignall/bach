@@ -115,10 +115,28 @@ pub fn args(
     a
 }
 
-/// One line of stream-json input: a user turn.
-pub fn user_message(prompt: &str) -> String {
-    serde_json::json!({ "type": "user", "message": { "role": "user", "content": prompt } })
-        .to_string()
+/// One line of stream-json input: a user turn. Images (`data:` URLs) go first as base64 image
+/// blocks, then the text; without images the content is just the text.
+pub fn user_message(prompt: &str, images: &[String]) -> String {
+    let content = if images.is_empty() {
+        json!(prompt)
+    } else {
+        let mut blocks: Vec<Value> = images.iter().filter_map(|url| image_block(url)).collect();
+        if !prompt.is_empty() {
+            blocks.push(json!({ "type": "text", "text": prompt }));
+        }
+        json!(blocks)
+    };
+    json!({ "type": "user", "message": { "role": "user", "content": content } }).to_string()
+}
+
+/// `data:image/png;base64,AAAA` as an image content block.
+fn image_block(url: &str) -> Option<Value> {
+    let (media_type, data) = url.strip_prefix("data:")?.split_once(";base64,")?;
+    Some(json!({
+        "type": "image",
+        "source": { "type": "base64", "media_type": media_type, "data": data },
+    }))
 }
 
 /// Folders the agent offers to add access to (a command reaching outside the project).

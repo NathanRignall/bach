@@ -19,4 +19,14 @@ if (macTitleBar) {
     .catch(console.error);
 }
 
+// A file dropped anywhere but the composer would replace the page with it.
+for (const type of ["dragover", "drop"]) {
+  window.addEventListener(type, (e) => {
+    const drag = e as DragEvent;
+    if (drag.defaultPrevented || !drag.dataTransfer?.types.includes("Files")) return;
+    drag.preventDefault();
+    drag.dataTransfer.dropEffect = "none";
+  });
+}
+
 createRoot(document.getElementById("root")!).render(<App />);

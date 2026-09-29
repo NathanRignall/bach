@@ -72,6 +72,7 @@ export function App() {
   /** What the create page is setting up. */
   const [newDraft, setNewDraft] = useState<NewSession>(() => newSession("claude"));
   const [draft, setDraft] = useState("");
+  const [draftImages, setDraftImages] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [connectionError, setConnectionError] = useState<string>();
@@ -268,20 +269,24 @@ export function App() {
    * Sends the draft, or `again` (a retry) as a new message; while the agent is busy the backend
    * queues it instead. On the create page, this starts the session.
    */
-  async function send(again?: string) {
-    const prompt = (again ?? draft).trim();
-    if (!prompt || starting) return;
+  async function send(again?: { text: string; images?: string[] }) {
+    const prompt = (again?.text ?? draft).trim();
+    const images = again ? (again.images ?? []) : draftImages;
+    if ((!prompt && !images.length) || starting) return;
     if (active && !canRun(active)) return;
     const queueing = !!active?.runId;
     // A retry of what's sitting in the composer (a failed start puts it back) consumes it.
-    if (again === undefined || draft.trim() === prompt) setDraft("");
+    if (again === undefined || draft.trim() === prompt) {
+      setDraft("");
+      setDraftImages([]);
+    }
     if (!queueing) {
       setStarting(true);
       followLatest();
     }
     try {
       if (active) {
-        const s = await sendMessage(active.id, prompt);
+        const s = await sendMessage(active.id, prompt, images);
         setSessions((all) => upsert(all, s));
       } else {
         // A retry from the create page shouldn't stack up errors from earlier attempts.
@@ -295,13 +300,17 @@ export function App() {
           modelChoice: newDraft.modelChoice ?? undefined,
           permissionMode: newDraft.permissionMode ?? undefined,
           prompt,
+          images,
         });
         setSessions((all) => upsert(all, s));
         setActiveId(s.id);
         setNewDraft(newSession(s.agent, s.cwd));
       }
     } catch (e) {
-      if (again === undefined) setDraft(prompt);
+      if (again === undefined) {
+        setDraft(prompt);
+        setDraftImages(images);
+      }
       const err = ApiError.from(e);
       if (!active) setNewDraft((d) => ({ ...d, blocks: [{ kind: "error", text: err.message, retryText: prompt }] }));
       // A message the agent couldn't take is in the transcript already, with a Retry.
@@ -329,10 +338,12 @@ export function App() {
       .catch((e) => setConnectionError(message(e)));
 
   /** Sends a message again as a new turn (the agent still remembers the earlier one). */
-  function retry(text?: string) {
+  function retry(text?: string, images?: string[]) {
     const last = [...(transcript?.blocks ?? [])].reverse().find((b) => b.kind === "user");
-    const prompt = text ?? (last?.kind === "user" ? last.text : undefined);
-    if (prompt) void send(prompt);
+    if (last?.kind !== "user" && text === undefined) return;
+    // A failed message only remembers its text; its images are the last message's.
+    const sameAsLast = last?.kind === "user" && (text === undefined || text === last.text);
+    void send({ text: text ?? (last?.kind === "user" ? last.text : ""), images: images ?? (sameAsLast ? last.images : undefined) });
   }
 
   if (loading) {
@@ -412,6 +423,8 @@ export function App() {
             agents={agents}
             draft={draft}
             onDraft={setDraft}
+            images={draftImages}
+            onImages={setDraftImages}
             onSend={() => void send()}
             starting={starting}
             recentProjects={recentProjects}
@@ -469,6 +482,8 @@ export function App() {
               <Composer
                 draft={draft}
                 onDraft={setDraft}
+                images={draftImages}
+                onImages={setDraftImages}
                 onSend={() => void send()}
                 queued={active.queued}
                 onSendQueued={(id) => {
@@ -480,7 +495,10 @@ export function App() {
                 onRemoveQueued={(id, edit) => {
                   const q = active.queued.find((m) => m.id === id);
                   // Editing takes it back into the composer, after anything already there.
-                  if (edit && q) setDraft((d) => (d.trim() ? `${d.trimEnd()}\n\n${q.text}` : q.text));
+                  if (edit && q) {
+                    setDraft((d) => (d.trim() ? `${d.trimEnd()}\n\n${q.text}` : q.text));
+                    setDraftImages((imgs) => [...imgs, ...(q.images ?? [])]);
+                  }
                   removeQueued(active.id, id)
                     .then((s) => setSessions((all) => upsert(all, s)))
                     .catch((e) => setConnectionError(message(e)));

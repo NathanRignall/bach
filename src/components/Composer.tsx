@@ -1,16 +1,20 @@
-import { Fragment, ReactNode } from "react";
-import { ArrowUp, ListPlus, Pencil, Square, X } from "lucide-react";
+import { DragEvent, Fragment, ReactNode, useState } from "react";
+import { ArrowUp, ImagePlus, ListPlus, Pencil, Square, X } from "lucide-react";
 import { AgentInfo, AgentKind, QueuedMessage } from "@/api";
 import { AgentBadge } from "@/components/AgentBadge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { imageFiles, toDataUrl } from "@/lib/images";
 import { cn } from "@/lib/utils";
 
 interface Props {
   draft: string;
   onDraft: (v: string) => void;
+  /** Images to send with the draft, as `data:` URLs (dropped or pasted in). */
+  images: string[];
+  onImages: (images: string[]) => void;
   onSend: () => void;
   onStop: () => void;
   /** Messages waiting for the agent to finish; sending while it runs adds to them. */
@@ -131,46 +135,118 @@ export function Composer(p: Props) {
     description: AGENT_DESCRIPTIONS[a.kind],
     disabled: !a.installed,
   }));
-  const canSend = !!p.draft.trim() && !p.blockedReason && !p.starting;
+  // Only Claude Code takes images so far.
+  const takesImages = p.agent === "claude";
+  const blockedReason = p.blockedReason ?? (p.images.length && !takesImages ? "Only Claude Code can be sent images" : undefined);
+  const canSend = (!!p.draft.trim() || p.images.length > 0) && !blockedReason && !p.starting;
+  const [dragging, setDragging] = useState(false);
+  const [imageError, setImageError] = useState<string>();
+
+  async function attach(files: File[]) {
+    if (!files.length) return;
+    setImageError(undefined);
+    const read = await Promise.allSettled(files.map(toDataUrl));
+    const ok = read.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+    if (ok.length < files.length) setImageError("Some images couldn't be read.");
+    p.onImages([...p.images, ...ok]);
+  }
+
+  const hasFiles = (e: DragEvent) => e.dataTransfer.types.includes("Files");
+  const onDragOver = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = takesImages ? "copy" : "none";
+    setDragging(takesImages);
+  };
+  const onDrop = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    setDragging(false);
+    if (takesImages) void attach(imageFiles(e.dataTransfer.files));
+  };
+
   return (
     <div className="flex flex-col gap-2">
       {/* Where the message goes: project and branch, above the card. */}
       {p.left && <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-1">{p.left}</div>}
       {!!p.queued?.length && <QueuedList {...p} queued={p.queued} />}
       {/* The message on its own: a card with just the text and the Send button. */}
-      <div className="flex items-end gap-2 rounded-2xl border bg-card p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/30">
-        <Textarea
-          autoFocus={p.autoFocus}
-          value={p.draft}
-          placeholder={p.placeholder}
-          className={cn("resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent", p.tall ? "min-h-24" : "min-h-14")}
-          onChange={(e) => p.onDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              if (canSend) p.onSend();
-            }
-          }}
-        />
-        {p.running ? (
-          <div className="flex gap-2">
-            {p.draft.trim() && (
-              <Button size="sm" onClick={p.onSend} disabled={!canSend} title="Send once the agent is done">
-                <ListPlus data-icon="inline-start" />
-                Queue
-              </Button>
-            )}
-            <Button variant="outline" size="sm" onClick={p.onStop}>
-              <Square data-icon="inline-start" className="fill-current" />
-              Stop
-            </Button>
-          </div>
-        ) : (
-          <Button size="sm" onClick={p.onSend} disabled={!canSend} title={p.blockedReason}>
-            {p.starting ? <Spinner data-icon="inline-start" /> : <ArrowUp data-icon="inline-start" />}
-            Send
-          </Button>
+      <div
+        className={cn(
+          "relative flex flex-col gap-2 rounded-2xl border bg-card p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/30",
+          dragging && "ring-2 ring-primary/50",
         )}
+        onDragOver={onDragOver}
+        onDragLeave={(e) => {
+          // Leaving for one of the card's own children isn't leaving.
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+        }}
+        onDrop={onDrop}
+      >
+        {dragging && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-2xl bg-card/90 text-sm text-muted-foreground">
+            <ImagePlus className="size-4" /> Drop images to attach
+          </div>
+        )}
+        {p.images.length > 0 && (
+          <div className="flex flex-wrap gap-2 px-1 pt-1">
+            {p.images.map((src, i) => (
+              <div key={i} className="group/img relative">
+                <img src={src} alt={`Attached image ${i + 1}`} className="size-16 rounded-lg border object-cover" />
+                <button
+                  type="button"
+                  title="Remove image"
+                  aria-label={`Remove image ${i + 1}`}
+                  className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full border bg-background text-muted-foreground opacity-0 shadow-sm group-hover/img:opacity-100 hover:text-foreground focus-visible:opacity-100"
+                  onClick={() => p.onImages(p.images.filter((_, j) => j !== i))}
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {imageError && <p className="px-1 text-xs text-destructive">{imageError}</p>}
+        <div className="flex items-end gap-2">
+          <Textarea
+            autoFocus={p.autoFocus}
+            value={p.draft}
+            placeholder={p.placeholder}
+            className={cn("resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent", p.tall ? "min-h-24" : "min-h-14")}
+            onChange={(e) => p.onDraft(e.target.value)}
+            onPaste={(e) => {
+              const files = imageFiles(e.clipboardData.files);
+              if (!files.length || !takesImages) return;
+              e.preventDefault();
+              void attach(files);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (canSend) p.onSend();
+              }
+            }}
+          />
+          {p.running ? (
+            <div className="flex gap-2">
+              {(p.draft.trim() || p.images.length > 0) && (
+                <Button size="sm" onClick={p.onSend} disabled={!canSend} title="Send once the agent is done">
+                  <ListPlus data-icon="inline-start" />
+                  Queue
+                </Button>
+              )}
+              <Button variant="outline" size="sm" onClick={p.onStop}>
+                <Square data-icon="inline-start" className="fill-current" />
+                Stop
+              </Button>
+            </div>
+          ) : (
+            <Button size="sm" onClick={p.onSend} disabled={!canSend} title={blockedReason}>
+              {p.starting ? <Spinner data-icon="inline-start" /> : <ArrowUp data-icon="inline-start" />}
+              Send
+            </Button>
+          )}
+        </div>
       </div>
       {/* How it runs: usage, mode, model and agent, below the card. */}
       <div className="flex flex-wrap items-center justify-end gap-2 px-1">
@@ -201,6 +277,13 @@ function QueuedList(p: Props & { queued: QueuedMessage[] }) {
       </p>
       {p.queued.map((m) => (
         <div key={m.id} className="group flex items-start gap-2 text-sm">
+          {!!m.images?.length && (
+            <div className="flex shrink-0 gap-1 py-1">
+              {m.images.map((src, i) => (
+                <img key={i} src={src} alt={`Queued image ${i + 1}`} className="size-8 rounded border object-cover" />
+              ))}
+            </div>
+          )}
           <span className="line-clamp-2 min-w-0 flex-1 py-1 whitespace-pre-wrap">{m.text}</span>
           {!p.running && !p.blockedReason && (
             <Button variant="ghost" size="icon-sm" title="Send now" aria-label="Send now" onClick={() => p.onSendQueued?.(m.id)}>

@@ -29,6 +29,8 @@ pub struct RunEvent {
 pub struct RunRequest {
     pub agent: AgentKind,
     pub prompt: String,
+    /// Images sent with the prompt, as `data:` URLs (Claude Code only).
+    pub images: Vec<String>,
     pub cwd: Option<String>,
     /// The agent's own session id, to continue an earlier conversation.
     pub session_id: Option<String>,
@@ -158,6 +160,7 @@ impl Runs {
         let RunRequest {
             agent,
             prompt,
+            images,
             cwd,
             session_id,
             model,
@@ -213,7 +216,7 @@ impl Runs {
             .as_ref()
             .map(|d| d.canonicalize().unwrap_or_else(|_| d.clone()));
 
-        let stdin_prompt = agent.stdin_prompt(&prompt);
+        let stdin_prompt = agent.stdin_prompt(&prompt, &images);
 
         // Claude Code gets Satie as an MCP server, with a token scoped to this project. The grant
         // is revoked when the run ends (or if launching fails below).
@@ -478,6 +481,7 @@ mod tests {
         RunRequest {
             agent: AgentKind::Claude,
             prompt: "hi".into(),
+            images: vec![],
             cwd: cwd.map(String::from),
             session_id: None,
             model: model.map(String::from),

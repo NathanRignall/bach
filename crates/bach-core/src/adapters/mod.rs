@@ -34,8 +34,9 @@ pub trait AgentCli: Copy {
     ) -> Vec<String>;
 
     /// For agents driven over stdin (Claude Code, so it can ask for approvals): the first
-    /// line to send. Those agents stay open for control messages until the run ends.
-    fn stdin_prompt(self, prompt: &str) -> Option<String>;
+    /// line to send, with `images` (`data:` URLs) alongside the text. Those agents stay open
+    /// for control messages until the run ends.
+    fn stdin_prompt(self, prompt: &str, images: &[String]) -> Option<String>;
 
     fn parse_line(self, line: &str) -> Vec<AgentEvent>;
 }
@@ -67,9 +68,9 @@ impl AgentCli for AgentKind {
         }
     }
 
-    fn stdin_prompt(self, prompt: &str) -> Option<String> {
+    fn stdin_prompt(self, prompt: &str, images: &[String]) -> Option<String> {
         match self {
-            AgentKind::Claude => Some(claude::user_message(prompt)),
+            AgentKind::Claude => Some(claude::user_message(prompt, images)),
             _ => None,
         }
     }
@@ -121,6 +122,28 @@ mod tests {
         assert!(matches!(&events[2], AgentEvent::ToolUse { name, .. } if name == "Bash"));
         assert!(matches!(&events[3], AgentEvent::ToolResult { output, .. } if output == "ok"));
         assert!(matches!(&events[4], AgentEvent::Done { .. }));
+    }
+
+    #[test]
+    fn claude_prompt_images_become_image_blocks() {
+        let plain: Value =
+            serde_json::from_str(&AgentKind::Claude.stdin_prompt("hi", &[]).unwrap()).unwrap();
+        assert_eq!(plain["message"]["content"], "hi");
+
+        let images = ["data:image/png;base64,AAAA".to_string()];
+        let line = AgentKind::Claude.stdin_prompt("look", &images).unwrap();
+        let v: Value = serde_json::from_str(&line).unwrap();
+        let content = &v["message"]["content"];
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[0]["source"]["media_type"], "image/png");
+        assert_eq!(content[0]["source"]["data"], "AAAA");
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "look");
+
+        // Images alone need no empty text block.
+        let line = AgentKind::Claude.stdin_prompt("", &images).unwrap();
+        let v: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["message"]["content"].as_array().unwrap().len(), 1);
     }
 
     #[test]

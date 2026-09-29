@@ -82,6 +82,10 @@ pub struct Session {
 pub struct QueuedMessage {
     pub id: String,
     pub text: String,
+    /// Images sent with it, as `data:` URLs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<String>>")]
+    pub images: Vec<String>,
 }
 
 /// One step of a session's transcript.
@@ -89,7 +93,13 @@ pub struct QueuedMessage {
 #[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum Entry {
     /// What the user sent.
-    User { text: String },
+    User {
+        text: String,
+        /// Images sent with it, as `data:` URLs.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[ts(optional, as = "Option<Vec<String>>")]
+        images: Vec<String>,
+    },
     /// Something the agent did during run `runId`.
     Agent { run_id: String, event: AgentEvent },
     /// The user answered an approval request (or a question).

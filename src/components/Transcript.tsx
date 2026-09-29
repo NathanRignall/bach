@@ -9,13 +9,14 @@ import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 import { ApprovalBlock, Block, ToolBlock, isSubagent } from "@/session";
 
 /** What the transcript can ask the app to do on the user's behalf. */
 export interface TranscriptActions {
   decide: (requestId: string, decision: Decision, answers?: Record<string, string>) => Promise<void>;
   /** Sends a message again; with no text, the last one. Not offered while a run is going. */
-  retry?: (text?: string) => void;
+  retry?: (text?: string, images?: string[]) => void;
 }
 export const TranscriptContext = createContext<TranscriptActions>({ decide: async () => {} });
 
@@ -57,7 +58,7 @@ function Elapsed({ since }: { since?: number }) {
 export function BlockView({ block, live }: { block: Block; live: boolean }) {
   switch (block.kind) {
     case "user":
-      return <UserMessage text={block.text} />;
+      return <UserMessage text={block.text} images={block.images} />;
 
     case "text":
       return (
@@ -103,22 +104,25 @@ export function BlockView({ block, live }: { block: Block; live: boolean }) {
   }
 }
 
-/** Images a tool returned, shown under its card; click one to see it full size. */
-function ToolImages({ images, name }: { images: string[]; name: string }) {
+/**
+ * Images a tool returned (under its card) or the user sent (above their message); click one to
+ * see it full size.
+ */
+function Images({ images, alt, className, thumbClass = "max-h-72" }: { images: string[]; alt: string; className?: string; thumbClass?: string }) {
   const [open, setOpen] = useState<string>();
   return (
     <>
-      <div className="mt-2 flex flex-wrap gap-2">
+      <div className={cn("flex flex-wrap gap-2", className)}>
         {images.map((src, i) => (
           <button key={i} onClick={() => setOpen(src)} title="View full size" className="overflow-hidden rounded-lg border bg-muted">
-            <img src={src} alt={`Image from ${toolLabel(name)}`} className="block max-h-72 max-w-full object-contain" />
+            <img src={src} alt={alt} className={cn("block max-w-full object-contain", thumbClass)} />
           </button>
         ))}
       </div>
       <Dialog open={!!open} onOpenChange={(o) => !o && setOpen(undefined)}>
         <DialogContent className="max-h-[90vh] w-auto max-w-[90vw] overflow-auto p-2 sm:max-w-[90vw]">
-          <DialogTitle className="sr-only">Image from {toolLabel(name)}</DialogTitle>
-          {open && <img src={open} alt={`Image from ${toolLabel(name)}`} className="block max-h-[85vh] max-w-full object-contain select-text" />}
+          <DialogTitle className="sr-only">{alt}</DialogTitle>
+          {open && <img src={open} alt={alt} className="block max-h-[85vh] max-w-full object-contain select-text" />}
         </DialogContent>
       </Dialog>
     </>
@@ -155,7 +159,7 @@ function ToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
         )}
       </CollapsibleContent>
     </Collapsible>
-    {!!block.images?.length && <ToolImages images={block.images} name={block.name} />}
+    {!!block.images?.length && <Images images={block.images} alt={`Image from ${toolLabel(block.name)}`} className="mt-2" />}
     </div>
   );
 }
@@ -225,7 +229,7 @@ function SubagentCard({ block, live }: { block: ToolBlock; live: boolean }) {
   );
 }
 
-function UserMessage({ text }: { text: string }) {
+function UserMessage({ text, images }: { text: string; images?: string[] }) {
   const { retry } = useContext(TranscriptContext);
   return (
     <div className="group/msg ml-auto flex max-w-[85%] items-center gap-1.5">
@@ -236,12 +240,15 @@ function UserMessage({ text }: { text: string }) {
           className="opacity-0 group-hover/msg:opacity-100 focus-visible:opacity-100"
           title="Send this message again"
           aria-label="Retry message"
-          onClick={() => retry(text)}
+          onClick={() => retry(text, images)}
         >
           <RotateCcw />
         </Button>
       )}
-      <div className="w-fit rounded-2xl bg-secondary px-4 py-2 text-sm whitespace-pre-wrap">{text}</div>
+      <div className="flex flex-col items-end gap-1.5">
+        {!!images?.length && <Images images={images} alt="Image you sent" className="justify-end" thumbClass="max-h-40" />}
+        {text && <div className="w-fit rounded-2xl bg-secondary px-4 py-2 text-sm whitespace-pre-wrap">{text}</div>}
+      </div>
     </div>
   );
 }
