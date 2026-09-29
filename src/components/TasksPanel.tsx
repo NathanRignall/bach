@@ -11,13 +11,23 @@ import { projectName } from "@/session";
 export function useTasks(intervalMs = 3000) {
   const [tasks, setTasks] = useState<TaskView[]>([]);
   const [error, setError] = useState<string>();
+  const outdated = useRef(false);
   const refresh = () =>
     listTasks()
       .then((t) => (setTasks(t), setError(undefined)))
-      .catch((e) => setError(String(e.message ?? e)));
+      .catch((e) => {
+        const message = String(e.message ?? e);
+        // A backend built before background tasks existed rejects the command as unknown.
+        if (/unknown variant/.test(message)) {
+          outdated.current = true;
+          return setError("This bach-server is older than the app and doesn't support background tasks. Restart it to update.");
+        }
+        setError(message);
+      });
   useEffect(() => {
     void refresh();
-    const t = setInterval(() => void refresh(), intervalMs);
+    // No point asking an out-of-date backend again every few seconds.
+    const t = setInterval(() => !outdated.current && void refresh(), intervalMs);
     return () => clearInterval(t);
   }, [intervalMs]);
   return { tasks, error, refresh };
