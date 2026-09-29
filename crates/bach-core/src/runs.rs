@@ -8,7 +8,7 @@ use serde::Serialize;
 use satie::{Satie, Scope};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     os::unix::{fs::DirBuilderExt, process::ExitStatusExt},
     path::PathBuf,
     process::Stdio,
@@ -379,6 +379,9 @@ impl Runs {
             let _image_files = image_files; // removed when the run ends
             let mut lines = BufReader::new(stdout).lines();
             let mut done = false;
+            // Sub-agents still working after the main agent's turn ended. Claude reports the
+            // turn's result straight away, then takes another turn once they finish.
+            let mut background = HashSet::new();
             loop {
                 tokio::select! {
                     _ = &mut cancel_rx => {
@@ -413,6 +416,16 @@ impl Runs {
                                     AgentEvent::ApprovalCancelled { request_id } => {
                                         pending.lock().unwrap().remove(request_id);
                                     }
+                                    AgentEvent::Task { id, status: Some(status), background: bg, agent_type, .. } => {
+                                        if status != "running" {
+                                            background.remove(id);
+                                        } else if *bg == Some(true) && agent_type.is_some() {
+                                            background.insert(id.clone());
+                                        }
+                                    }
+                                    // Not the end of the run yet: keep stdin open for the
+                                    // sub-agents' approvals and wait for the next result.
+                                    AgentEvent::Done { .. } if !background.is_empty() => continue,
                                     AgentEvent::Done { .. } => {
                                         done = true;
                                         // The turn is over; closing stdin lets the process exit.
