@@ -35,13 +35,25 @@ async fn main() {
         .await
         .expect("bind");
     let db = default_db_path();
+    let worktrees_dir = db
+        .parent()
+        .map_or_else(|| ".".into(), |p| p.join("worktrees"));
     let store = Store::open(&db).expect("open session database");
     eprintln!("sessions in {}", db.display());
     eprintln!("bach-server listening on ws://127.0.0.1:{port}");
-    axum::serve(listener, router(Config { allowed_origins }, store))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await
-        .unwrap();
+    axum::serve(
+        listener,
+        router(
+            Config {
+                allowed_origins,
+                worktrees_dir,
+            },
+            store,
+        ),
+    )
+    .with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await
+    .unwrap();
 }

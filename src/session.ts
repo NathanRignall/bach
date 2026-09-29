@@ -12,7 +12,16 @@ export interface Session {
   id: string;
   title: string;
   agent: AgentKind;
+  /** The project folder; sessions are grouped by it. */
   cwd: string;
+  /** Git branch to run on (or, with `worktree`, to branch from). Defaults to the current one. */
+  branch?: string;
+  /** Run in an isolated git worktree on a new branch. */
+  worktree?: boolean;
+  /** Where the agent actually runs once started (a worktree path, or `cwd`). */
+  workdir?: string;
+  /** The branch the session runs on once started. */
+  gitBranch?: string;
   agentSessionId?: string;
   runId?: string;
   blocks: Block[];
@@ -28,6 +37,21 @@ export const newSession = (agent: AgentKind, cwd = ""): Session => ({
   cwd,
   blocks: [],
 });
+
+/** Git settings and the project folder can't change once the session has started. */
+export const isStarted = (s: Session) => !!s.agentSessionId || !!s.workdir;
+
+/** e.g. "Fix the login bug!" -> "bach/fix-the-login-bug-a3f1" */
+export function branchNameFor(prompt: string): string {
+  const slug = prompt
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .split("-")
+    .slice(0, 5)
+    .join("-");
+  return `bach/${slug || "session"}-${Math.random().toString(16).slice(2, 6)}`;
+}
 
 // Sessions saved before folders were mandatory may have none but can still be resumed.
 export const canRun = (s: Session) => !!s.cwd.trim() || !!s.agentSessionId;

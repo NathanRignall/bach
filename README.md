@@ -52,3 +52,15 @@ Run the tunnel as above, then start the Tauri app on the Mac (`pnpm tauri dev`) 
 sidebar, set "Agents run" to "on a remote bach-server" (`ws://localhost:3421`) and Apply. The
 choice is saved in the app. Working directories are then paths on orion. The server accepts
 the Tauri webview origins (`tauri://localhost`, `http://tauri.localhost`) by default.
+
+## Branches and worktrees
+
+For a git project folder, a new session shows a branch picker and a Worktree switch:
+
+- **Off** (default): the agent runs in the folder itself; picking a different branch switches the
+  folder to it first (git refuses if uncommitted changes conflict).
+- **On**: a new branch `bach/<prompt words>-<id>` is created from the picked branch in an isolated
+  worktree under `<data dir>/worktrees/` (next to the session database), and the agent runs there.
+  Your own checkout is untouched. Worktrees are not deleted when a session is.
+
+This happens when the first message is sent; the folder, branch and worktree are then fixed.

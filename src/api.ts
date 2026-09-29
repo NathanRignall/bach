@@ -125,6 +125,29 @@ export interface DirListing {
 /** Lists sub-directories on the backend host (where agents run), for the folder picker. */
 export const listDir = (path?: string, showHidden = false) => call<DirListing>("list_dir", { path, showHidden });
 
+export interface GitInfo {
+  isRepo: boolean;
+  root: string | null;
+  current: string | null;
+  branches: string[];
+  dirty: boolean;
+}
+
+export interface Workspace {
+  workdir: string;
+  branch: string | null;
+  worktree: boolean;
+}
+
+export const gitInfo = (path: string) => call<GitInfo>("git_info", { path });
+
+/**
+ * Readies where a new session runs: switches `cwd` to `branch`, or (with `worktree`) creates
+ * `newBranch` from `branch` in an isolated worktree.
+ */
+export const prepareWorkspace = (args: { cwd: string; branch?: string; worktree: boolean; newBranch?: string }) =>
+  call<Workspace>("prepare_workspace", args);
+
 /** Sessions are saved by whichever backend is in use (local app data, or the bach-server host). */
 export const listSessions = () => call<unknown[]>("list_sessions");
 export const saveSession = (session: object) => call<void>("save_session", { session });

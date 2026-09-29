@@ -2,6 +2,7 @@
 //! Runs agent CLIs as the current user, so it must only be reachable locally (SSH tunnel)
 //! and only from allowed browser origins.
 use crate::{
+    git::Git,
     list_agents,
     protocol::{Envelope, Request},
     runs::{Emit, Runs},
@@ -24,10 +25,13 @@ use tokio::sync::{broadcast, mpsc};
 
 pub struct Config {
     pub allowed_origins: HashSet<String>,
+    /// Where new git worktrees are created.
+    pub worktrees_dir: std::path::PathBuf,
 }
 
 struct AppState {
     runs: Runs,
+    git: Git,
     store: Store,
     events: broadcast::Sender<Value>,
     emit: Emit,
@@ -46,6 +50,7 @@ pub fn router(config: Config, store: Store) -> Router {
     };
     let state = Arc::new(AppState {
         runs: Runs::default(),
+        git: Git::new(config.worktrees_dir.clone()),
         store,
         events,
         emit,
@@ -146,6 +151,21 @@ async fn handle(st: &AppState, req: Request) -> Result<Value, String> {
             .map(Value::String),
         Request::ListDir { path, show_hidden } => crate::fs::list_dir(path.as_deref(), show_hidden)
             .map(|l| serde_json::to_value(l).unwrap()),
+        Request::GitInfo { path } => st
+            .git
+            .info(path)
+            .await
+            .map(|i| serde_json::to_value(i).unwrap()),
+        Request::PrepareWorkspace {
+            cwd,
+            branch,
+            worktree,
+            new_branch,
+        } => st
+            .git
+            .prepare(cwd, branch, worktree, new_branch)
+            .await
+            .map(|w| serde_json::to_value(w).unwrap()),
         Request::ListSessions => st.store.list().map(Value::Array),
         Request::SaveSession { session } => st.store.save(&session).map(|_| Value::Null),
         Request::DeleteSession { session_id } => st.store.delete(&session_id).map(|_| Value::Null),

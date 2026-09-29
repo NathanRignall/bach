@@ -1,5 +1,6 @@
 use bach_core::{
     adapters::AgentKind,
+    git::{Git, GitInfo, Workspace},
     list_agents as core_list_agents,
     runs::{Emit, Runs},
     store::Store,
@@ -45,6 +46,23 @@ fn list_dir(
 }
 
 #[tauri::command]
+async fn git_info(git: State<'_, Git>, path: String) -> Result<GitInfo, String> {
+    git.info(path).await
+}
+
+#[tauri::command]
+async fn prepare_workspace(
+    git: State<'_, Git>,
+    cwd: String,
+    branch: Option<String>,
+    worktree: Option<bool>,
+    new_branch: Option<String>,
+) -> Result<Workspace, String> {
+    git.prepare(cwd, branch, worktree.unwrap_or(false), new_branch)
+        .await
+}
+
+#[tauri::command]
 fn list_sessions(store: State<'_, Store>) -> Result<Vec<Value>, String> {
     store.list()
 }
@@ -64,8 +82,9 @@ pub fn run() {
     tauri::Builder::default()
         .manage(Runs::default())
         .setup(|app| {
-            let db = app.path().app_data_dir()?.join("bach.db");
-            app.manage(Store::open(&db)?);
+            let dir = app.path().app_data_dir()?;
+            app.manage(Store::open(&dir.join("bach.db"))?);
+            app.manage(Git::new(dir.join("worktrees")));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -73,6 +92,8 @@ pub fn run() {
             start_run,
             cancel_run,
             list_dir,
+            git_info,
+            prepare_workspace,
             list_sessions,
             save_session,
             delete_session

@@ -27,6 +27,17 @@ pub enum Request {
         #[serde(rename = "showHidden", default)]
         show_hidden: bool,
     },
+    GitInfo {
+        path: String,
+    },
+    PrepareWorkspace {
+        cwd: String,
+        branch: Option<String>,
+        #[serde(default)]
+        worktree: bool,
+        #[serde(rename = "newBranch")]
+        new_branch: Option<String>,
+    },
     ListSessions,
     SaveSession {
         session: Value,

@@ -9,17 +9,19 @@ import {
   listAgents,
   listSessions,
   onAgentEvent,
+  prepareWorkspace,
   saveSession,
   startRun,
 } from "@/api";
 import { BlockView } from "@/components/Transcript";
+import { BranchBar } from "@/components/BranchBar";
 import { CwdInput } from "@/components/CwdInput";
 import { Sidebar } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { Session, applyEvent, canRun, isKept, newSession, projectKey } from "@/session";
+import { Session, applyEvent, branchNameFor, canRun, isKept, isStarted, newSession, projectKey } from "@/session";
 
 const COLLAPSED_KEY = "bach.collapsedProjects";
 const loadCollapsed = (): Set<string> => {
@@ -128,11 +130,30 @@ export function App() {
     const prompt = draft.trim();
     setDraft("");
     setStarting(true);
+    const fail = (err: unknown) => {
+      setDraft(prompt);
+      const message = String((err as Error).message ?? err);
+      patch(active.id, (s) => ({ ...s, blocks: [...s.blocks, { kind: "error", text: message }] }));
+    };
     try {
+      // First message: settle where the agent runs (branch switch or a fresh worktree).
+      let workdir = active.workdir;
+      if (!isStarted(active) && active.cwd.trim()) {
+        const ws = await prepareWorkspace({
+          cwd: active.cwd.trim(),
+          branch: active.branch,
+          worktree: !!active.worktree,
+          newBranch: active.worktree ? branchNameFor(prompt) : undefined,
+        }).catch((e) => void fail(e));
+        if (!ws) return;
+        workdir = ws.workdir;
+        patch(active.id, (s) => ({ ...s, workdir: ws.workdir, gitBranch: ws.branch ?? undefined, worktree: ws.worktree }));
+      }
+
       const runId = await startRun({
         agent: active.agent,
         prompt,
-        cwd: active.cwd.trim() || undefined,
+        cwd: (workdir ?? active.cwd).trim() || undefined,
         sessionId: active.agentSessionId,
       });
       const buffered = early.current.get(runId) ?? [];
@@ -146,9 +167,7 @@ export function App() {
         }),
       );
     } catch (err) {
-      setDraft(prompt);
-      const message = String((err as Error).message ?? err);
-      patch(active.id, (s) => ({ ...s, blocks: [...s.blocks, { kind: "error", text: message }] }));
+      fail(err);
     } finally {
       setStarting(false);
     }
@@ -182,13 +201,16 @@ export function App() {
         {!active && connectionError && <p className="p-6 text-sm text-destructive">{connectionError}</p>}
         {active && (
           <>
-            <header className="flex items-center gap-2 border-b px-5 py-2.5">
-              <CwdInput
-                key={active.id}
-                value={active.cwd}
-                locked={!!active.agentSessionId}
-                onCommit={(cwd) => patch(active.id, (s) => ({ ...s, cwd }))}
-              />
+            <header className="flex flex-col gap-2 border-b px-5 py-2.5">
+              <div className="flex items-center gap-2">
+                <CwdInput
+                  key={active.id}
+                  value={active.cwd}
+                  locked={isStarted(active)}
+                  onCommit={(cwd) => patch(active.id, (s) => ({ ...s, cwd, branch: undefined, worktree: false }))}
+                />
+              </div>
+              <BranchBar key={active.id} session={active} onChange={(p) => patch(active.id, (s) => ({ ...s, ...p }))} />
             </header>
 
             <div className="flex-1 overflow-y-auto">
