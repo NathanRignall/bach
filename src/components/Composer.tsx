@@ -127,21 +127,36 @@ export function Composer(p: Props) {
   }));
   const canSend = !!p.draft.trim() && !p.blockedReason && !p.starting;
   return (
-    <div className="rounded-2xl border bg-card p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/30">
-      <Textarea
-        autoFocus={p.autoFocus}
-        value={p.draft}
-        placeholder={p.placeholder}
-        className={cn("resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent", p.tall ? "min-h-24" : "min-h-14")}
-        onChange={(e) => p.onDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            if (canSend) p.onSend();
-          }
-        }}
-      />
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-1 pt-1">
+    <div className="flex flex-col gap-2">
+      {/* The message on its own: a card with just the text and the Send button. */}
+      <div className="flex items-end gap-2 rounded-2xl border bg-card p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/30">
+        <Textarea
+          autoFocus={p.autoFocus}
+          value={p.draft}
+          placeholder={p.placeholder}
+          className={cn("resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent", p.tall ? "min-h-24" : "min-h-14")}
+          onChange={(e) => p.onDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              if (canSend) p.onSend();
+            }
+          }}
+        />
+        {p.running ? (
+          <Button variant="outline" size="sm" onClick={p.onStop}>
+            <Square data-icon="inline-start" className="fill-current" />
+            Stop
+          </Button>
+        ) : (
+          <Button size="sm" onClick={p.onSend} disabled={!canSend} title={p.blockedReason}>
+            {p.starting ? <Spinner data-icon="inline-start" /> : <ArrowUp data-icon="inline-start" />}
+            Send
+          </Button>
+        )}
+      </div>
+      {/* What the message goes to: project and branch on the left, agent settings on the right. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-1">
         {p.left}
         <div className="ml-auto flex items-center gap-2">
           {p.indicator}
@@ -150,18 +165,6 @@ export function Composer(p: Props) {
           )}
           {p.agent === "claude" && p.onModel && <Picker heading="Model" label="Model" choices={MODELS} value={p.modelChoice ?? "default"} onChange={p.onModel} />}
           <Picker heading="Agent" label="Agent" choices={agents} value={p.agent} disabled={p.agentLocked} onChange={(v) => p.onAgent(v as AgentKind)} />
-
-          {p.running ? (
-            <Button variant="outline" size="sm" onClick={p.onStop}>
-              <Square data-icon="inline-start" className="fill-current" />
-              Stop
-            </Button>
-          ) : (
-            <Button size="sm" onClick={p.onSend} disabled={!canSend} title={p.blockedReason}>
-              {p.starting ? <Spinner data-icon="inline-start" /> : <ArrowUp data-icon="inline-start" />}
-              Send
-            </Button>
-          )}
         </div>
       </div>
     </div>
