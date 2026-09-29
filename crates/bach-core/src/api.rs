@@ -569,6 +569,10 @@ impl Handler for Api {
         Ok(self.git.info(a.path).await?)
     }
 
+    async fn git_diff(&self, a: GitDiffArgs) -> Result<GitDiff, ApiError> {
+        Ok(self.git.diff(a.path, a.base_branch).await?)
+    }
+
     async fn list_worktrees(&self, _: ListWorktreesArgs) -> Result<Vec<WorktreeEntry>, ApiError> {
         Ok(self.git.list_worktrees().await)
     }

@@ -87,6 +87,7 @@ export const deleteSession = (sessionId: string) => call("delete_session", { ses
 
 export const listDir = (path?: string, showHidden = false) => call("list_dir", { path, showHidden });
 export const gitInfo = (path: string) => call("git_info", { path });
+export const gitDiff = (path: string, baseBranch?: string) => call("git_diff", { path, baseBranch });
 export const listWorktrees = () => call("list_worktrees");
 export const removeWorktree = (args: Args<"remove_worktree">) => call("remove_worktree", args);
 

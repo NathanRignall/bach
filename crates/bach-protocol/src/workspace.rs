@@ -53,3 +53,69 @@ pub struct WorktreeEntry {
     /// Commits on the branch that exist on no other local or remote branch.
     pub unmerged: u32,
 }
+
+/// The changes in a checkout, file by file.
+#[derive(Debug, Default, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct GitDiff {
+    /// The commit the working tree is compared with (abbreviated), or none before the first commit.
+    pub base: Option<String>,
+    pub files: Vec<FileDiff>,
+    /// Some files' lines were left out to keep the diff a reasonable size.
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FileStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDiff {
+    pub path: String,
+    /// Where a renamed file was.
+    pub old_path: Option<String>,
+    pub status: FileStatus,
+    /// Not yet tracked by git.
+    pub untracked: bool,
+    pub binary: bool,
+    pub additions: u32,
+    pub deletions: u32,
+    /// Empty for binary files, and for files too large to show (`omitted`).
+    pub hunks: Vec<DiffHunk>,
+    pub omitted: bool,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffHunk {
+    /// The `@@ -a,b +c,d @@ context` line.
+    pub header: String,
+    pub lines: Vec<DiffLine>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum LineKind {
+    Context,
+    Add,
+    Delete,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffLine {
+    pub kind: LineKind,
+    pub text: String,
+    /// Line number in the old file (none for added lines).
+    pub old: Option<u32>,
+    /// Line number in the new file (none for deleted lines).
+    pub new: Option<u32>,
+    /// The file doesn't end with a newline after this line.
+    pub no_newline: bool,
+}

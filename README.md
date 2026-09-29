@@ -148,6 +148,12 @@ For a git project folder, a new session shows a branch picker and a Worktree swi
 
 This happens when the first message is sent; the folder, branch and worktree are then fixed.
 
+A session's **Changes** tab (the switcher at the top, or Ctrl/Cmd+Shift+D) shows the diff of
+where it runs, untracked files included. For a worktree session it defaults to everything since
+the branch it was created from (committed or not); **Uncommitted** narrows it to what isn't
+committed yet. It refreshes when a run ends, and every few seconds while the agent is working
+and the tab is open.
+
 ## Sub-agents, long-running calls and models
 
 - Claude's sub-agent (`Agent`/`Task`) calls render as a card with the sub-agent's title, type,

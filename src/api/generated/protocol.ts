@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "60a7ed8edabe2c83";
+export const PROTOCOL = "e0325b170e0133ae";
 
 /**
  * Agent-independent events the UI renders.
@@ -141,6 +141,26 @@ export type Decision = "allow" | "allow_session" | "allow_always" | "deny";
  */
 export type DeleteSessionArgs = { sessionId: string, };
 
+export type DiffHunk = { 
+/**
+ * The `@@ -a,b +c,d @@ context` line.
+ */
+header: string, lines: Array<DiffLine>, };
+
+export type DiffLine = { kind: LineKind, text: string, 
+/**
+ * Line number in the old file (none for added lines).
+ */
+old: number | null, 
+/**
+ * Line number in the new file (none for deleted lines).
+ */
+new: number | null, 
+/**
+ * The file doesn't end with a newline after this line.
+ */
+noNewline: boolean, };
+
 export type DirEntry = { name: string, path: string, 
 /**
  * Contains a `.git`, i.e. probably a project root.
@@ -164,6 +184,22 @@ images?: Array<string>, } | { "type": "agent", runId: string, event: AgentEvent,
 export type ErrorCode = "invalid" | "not_found" | "unavailable" | "failed";
 
 export type ExitStatus = { code: number | null, };
+
+export type FileDiff = { path: string, 
+/**
+ * Where a renamed file was.
+ */
+oldPath: string | null, status: FileStatus, 
+/**
+ * Not yet tracked by git.
+ */
+untracked: boolean, binary: boolean, additions: number, deletions: number, 
+/**
+ * Empty for binary files, and for files too large to show (`omitted`).
+ */
+hunks: Array<DiffHunk>, omitted: boolean, };
+
+export type FileStatus = "added" | "modified" | "deleted" | "renamed";
 
 /**
  * Port forwarding in the desktop app. Sent on the `bach-forwards` channel as it changes.
@@ -191,6 +227,25 @@ export type GetSessionArgs = { sessionId: string, afterSeq?: number, };
  * The account's usage limits as last reported by an agent run (none before the first run).
  */
 export type GetUsageArgs = Record<symbol, never>;
+
+/**
+ * The changes in a checkout, file by file.
+ */
+export type GitDiff = { 
+/**
+ * The commit the working tree is compared with (abbreviated), or none before the first commit.
+ */
+base: string | null, files: Array<FileDiff>, 
+/**
+ * Some files' lines were left out to keep the diff a reasonable size.
+ */
+truncated: boolean, };
+
+/**
+ * The changes in the checkout at `path`: uncommitted ones (including untracked files), or with
+ * `baseBranch`, everything since the branch left it (committed or not).
+ */
+export type GitDiffArgs = { path: string, baseBranch?: string, };
 
 export type GitInfo = { isRepo: boolean, root: string | null, 
 /**
@@ -225,6 +280,8 @@ utilization: number,
  * When the window resets (ms since the epoch).
  */
 resetsAt: number | null, };
+
+export type LineKind = "context" | "add" | "delete";
 
 /**
  * The agent CLIs Bach knows, and which are installed on the backend host.
@@ -761,6 +818,11 @@ export type Commands = {
    * Branches and state of the repository containing `path`.
    */
   git_info: { args: GitInfoArgs; output: GitInfo };
+  /**
+   * The changes in the checkout at `path`: uncommitted ones (including untracked files), or with
+   * `baseBranch`, everything since the branch left it (committed or not).
+   */
+  git_diff: { args: GitDiffArgs; output: GitDiff };
   /**
    * Worktrees Bach created on the backend host.
    */
