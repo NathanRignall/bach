@@ -1,13 +1,17 @@
 import { useRef, useState } from "react";
-import { Archive, ArchiveRestore, ChevronDown, ChevronRight, GitFork, ListChecks, Plus, ShieldAlert, X } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, GitFork, ListChecks, Plus, Settings, ShieldAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { Session, TaskView, macTitleBar } from "@/api";
+import { Session, TaskView } from "@/api";
 import { awaitingApproval, groupByProject, projectKey, projectName } from "@/session";
+import { AgentBadge } from "./AgentBadge";
 import { ConnectionPicker } from "./ConnectionPicker";
+import { ResizeHandle } from "./ResizeHandle";
+
+export const SIDEBAR_WIDTH = { default: 256, min: 200, max: 480 };
 
 interface Props {
   sessions: Session[];
@@ -23,9 +27,12 @@ interface Props {
   onOpenCleanup: () => void;
   tasks: TaskView[];
   onToggleTasks: () => void;
+  onOpenSettings: () => void;
+  width: number;
+  onWidth: (w: number) => void;
 }
 
-export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onArchive, onDelete, onRename, onOpenCleanup, tasks, onToggleTasks }: Props) {
+export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onArchive, onDelete, onRename, onOpenCleanup, tasks, onToggleTasks, onOpenSettings, width, onWidth }: Props) {
   const runningTasks = tasks.filter((t) => t.status === "running").length;
   const [confirmDelete, setConfirmDelete] = useState<string>();
   const [showArchived, setShowArchived] = useState(false);
@@ -44,9 +51,9 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
     setEditing(undefined);
   }
   return (
-    <aside className="flex w-64 shrink-0 flex-col gap-3 border-r bg-sidebar p-3 text-sidebar-foreground">
-      {/* Room for the traffic lights, and something to drag the window by. */}
-      {macTitleBar && <div data-tauri-drag-region className="-mx-3 -mt-3 h-(--title-bar-height) shrink-0" />}
+    <aside style={{ width }} className="relative flex shrink-0 flex-col gap-3 border-r bg-sidebar p-3 text-sidebar-foreground">
+      {/* Room for the sidebar button (and the Mac traffic lights), and something to drag the window by. */}
+      <div data-tauri-drag-region className="-mx-3 -mt-3 h-(--title-bar-height) shrink-0" />
       <Button variant="outline" onClick={onNew}>
         <Plus data-icon="inline-start" />
         New session
@@ -113,7 +120,7 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
                           <button
                             onClick={() => onSelect(s.id)}
                             onDoubleClick={() => setEditing({ id: s.id, draft: s.title })}
-                            title="Double-click to rename"
+                            title={`${s.title}\nDouble-click to rename`}
                             className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm"
                           >
                             {awaitingApproval(s) ? (
@@ -124,7 +131,7 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
                               <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground/30" />
                             )}
                             <span className="min-w-0 flex-1 truncate">{s.title}</span>
-                            <span className="text-[11px] text-muted-foreground">{s.agent}</span>
+                            <AgentBadge kind={s.agent} />
                           </button>
                         )}
                         {!confirming && (
@@ -231,8 +238,13 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
           <GitFork data-icon="inline-start" />
           Clean up worktrees…
         </Button>
+        <Button variant="ghost" size="sm" className="justify-start text-muted-foreground" onClick={onOpenSettings}>
+          <Settings data-icon="inline-start" />
+          Settings
+        </Button>
         <ConnectionPicker tasks={tasks} />
       </div>
+      <ResizeHandle width={width} onWidth={onWidth} min={SIDEBAR_WIDTH.min} max={SIDEBAR_WIDTH.max} edge="right" reset={SIDEBAR_WIDTH.default} label="Resize sidebar" />
     </aside>
   );
 }

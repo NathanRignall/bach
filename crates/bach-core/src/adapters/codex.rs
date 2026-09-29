@@ -45,6 +45,7 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
                             id,
                             output: s(&item["aggregated_output"]),
                             is_error: item["exit_code"].as_i64().is_some_and(|c| c != 0),
+                            images: vec![],
                             parent: None,
                         },
                     ]

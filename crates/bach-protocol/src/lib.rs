@@ -112,6 +112,7 @@ mod tests {
                         id: "t".into(),
                         output: "ok".into(),
                         is_error: false,
+                        images: vec![],
                         parent: None,
                     },
                 },

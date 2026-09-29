@@ -76,6 +76,10 @@ pub enum AgentEvent {
         id: String,
         output: String,
         is_error: bool,
+        /// Images the tool returned (e.g. a browser screenshot), as `data:` URLs.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[ts(optional, as = "Option<Vec<String>>")]
+        images: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         parent: Option<String>,

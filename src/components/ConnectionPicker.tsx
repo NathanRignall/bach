@@ -154,7 +154,7 @@ function ConnectionDialog({ status, onClose }: { status: ConnectionStatus; onClo
             <>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="ssh-host">Host</Label>
-                <Input id="ssh-host" value={host} placeholder="orion" spellCheck={false} autoFocus onChange={(e) => setHost(e.target.value)} />
+                <Input id="ssh-host" value={host} placeholder="user@host" spellCheck={false} autoFocus onChange={(e) => setHost(e.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="ssh-command">bach-server on that machine</Label>

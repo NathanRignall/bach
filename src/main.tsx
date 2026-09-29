@@ -2,13 +2,11 @@ import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { macTitleBar } from "./api";
 import { App } from "./App";
+import { initTheme } from "./lib/theme";
 import "./index.css";
 
-// shadcn themes via a `.dark` class; follow the system setting.
-const media = window.matchMedia("(prefers-color-scheme: dark)");
-const applyTheme = () => document.documentElement.classList.toggle("dark", media.matches);
-applyTheme();
-media.addEventListener("change", applyTheme);
+// shadcn themes via a `.dark` class and an accent attribute; see Settings > Appearance.
+initTheme();
 
 // The Mac app's top bar matches the native title bar macOS lays out.
 if (macTitleBar) {

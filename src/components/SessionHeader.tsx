@@ -1,11 +1,13 @@
 import { Cpu, GitBranch, GitFork } from "lucide-react";
-import { Session } from "@/api";
+import { Session, macTitleBar } from "@/api";
 
 /** Read-only summary of where a started session runs. */
-export function SessionHeader({ session }: { session: Session }) {
+export function SessionHeader({ session, inset }: { session: Session; /** The sidebar is hidden, so its button sits over the header's left end. */ inset?: boolean }) {
   return (
     // Also the window's title bar in the Mac app: drag it by the empty space.
-    <header data-tauri-drag-region className="flex h-(--title-bar-height) shrink-0 items-center gap-4 border-b px-5 text-xs text-muted-foreground">
+    <header data-tauri-drag-region className="flex h-(--title-bar-height) shrink-0 items-center gap-4 border-b px-5 text-xs text-muted-foreground"
+      style={inset ? { paddingLeft: `calc(${macTitleBar ? "var(--traffic-lights-end)" : "12px"} + 2.75rem)` } : undefined}
+    >
       <span className="min-w-0 truncate font-mono select-text" title={session.workdir ?? session.cwd}>
         {session.cwd || "No project folder"}
       </span>

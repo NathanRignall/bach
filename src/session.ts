@@ -32,6 +32,8 @@ export interface ToolBlock {
   input: unknown;
   output?: string;
   isError?: boolean;
+  /** Images the tool returned (e.g. a screenshot), as `data:` URLs. */
+  images?: string[];
   /** When the call started, to show how long it has been running. */
   startedAt?: number;
   task?: TaskInfo;
@@ -133,7 +135,7 @@ function applyAgentEvent(blocks: Block[], e: AgentEvent, at: number): Block[] {
     case "tool_use":
       return place(blocks, e.parent, (l) => [...l, { kind: "tool", id: e.id, name: e.name, input: e.input, startedAt: at }]);
     case "tool_result": {
-      const done = (t: ToolBlock): ToolBlock => ({ ...t, output: e.output, isError: e.isError });
+      const done = (t: ToolBlock): ToolBlock => ({ ...t, output: e.output, isError: e.isError, images: e.images });
       return e.parent ? place(blocks, e.parent, (l) => mapTool(l, e.id, done)) : mapTool(blocks, e.id, done);
     }
     case "task": {
