@@ -82,7 +82,7 @@ up. Its status and any SSH error are shown in the sidebar.
 the host, for example:
 
 ```nix
-# flake inputs:   bach.url = "github:NathanRignall/bach/restructure-api";   (private: nix needs a GitHub token)
+# flake inputs:   bach.url = "github:NathanRignall/bach";   (private: nix needs a GitHub token)
 environment.systemPackages = [ inputs.bach.packages.${pkgs.system}.bach-server ];
 ```
 
