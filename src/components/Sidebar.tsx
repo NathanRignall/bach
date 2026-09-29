@@ -1,13 +1,13 @@
 import { useRef, useState } from "react";
-import { Archive, ArchiveRestore, ChevronDown, ChevronRight, GitFork, ListChecks, Plus, Settings, ShieldAlert, X } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, GitFork, ListChecks, MoreHorizontal, Pencil, Plus, Settings, ShieldAlert, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
-import { Spinner } from "@/components/ui/spinner";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { Session, TaskView } from "@/api";
 import { awaitingApproval, groupByProject, projectKey, projectName } from "@/session";
-import { AgentBadge } from "./AgentBadge";
+import { AgentDot } from "./AgentBadge";
 import { ConnectionPicker } from "./ConnectionPicker";
 import { ResizeHandle } from "./ResizeHandle";
 
@@ -34,7 +34,6 @@ interface Props {
 
 export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onArchive, onDelete, onRename, onOpenCleanup, tasks, onToggleTasks, onOpenSettings, width, onWidth }: Props) {
   const runningTasks = tasks.filter((t) => t.status === "running").length;
-  const [confirmDelete, setConfirmDelete] = useState<string>();
   const [showArchived, setShowArchived] = useState(false);
   const live = sessions.filter((s) => !s.archived);
   const archived = sessions.filter((s) => s.archived);
@@ -67,16 +66,16 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
               <div className="group/head flex items-center text-muted-foreground" title={key || "Sessions without a project folder"}>
                 <button
                   onClick={() => onToggleProject(key)}
-                  className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs font-semibold hover:text-foreground"
+                  className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 text-left text-xs font-semibold hover:text-foreground"
                 >
                   {open ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
                   <span className="min-w-0 flex-1 truncate">{projectName(key)}</span>
-                  <span className="font-normal">{group.length}</span>
+                  <span className={cn("font-normal tabular-nums", SHOWN_AT_REST("head"))}>{group.length}</span>
                 </button>
                 <Button
                   variant="ghost"
                   size="icon-xs"
-                  className="opacity-0 group-hover/head:opacity-100 focus-visible:opacity-100"
+                  className={cn("mr-1", SHOWN_ON_HOVER("head"))}
                   title="New session in this project"
                   aria-label={`New session in ${projectName(key)}`}
                   onClick={() => onNewInProject(key, group[0].agent)}
@@ -87,12 +86,11 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
               <CollapsibleContent>
                 <ul className="ml-2 flex flex-col gap-px">
                   {group.map((s) => {
-                    const confirming = confirmDelete === s.id;
                     return (
                       <li
                         key={s.id}
                         className={cn(
-                          "group/item flex items-center rounded-lg",
+                          "group/item flex items-center rounded-lg has-data-popup-open:bg-sidebar-accent/60",
                           s.id === activeId ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60",
                         )}
                       >
@@ -125,42 +123,18 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
                           >
                             {awaitingApproval(s) ? (
                               <ShieldAlert className="size-3.5 shrink-0 animate-pulse text-primary" aria-label="Needs your approval" />
-                            ) : s.runId ? (
-                              <Spinner className="size-3.5 shrink-0 text-primary" aria-label="Running" />
                             ) : (
-                              <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground/30" />
+                              <AgentDot kind={s.agent} running={!!s.runId} />
                             )}
                             <span className="min-w-0 flex-1 truncate">{s.title}</span>
-                            <AgentBadge kind={s.agent} />
                           </button>
                         )}
-                        {!confirming && (
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            className="invisible group-hover/item:visible focus-visible:visible"
-                            title="Archive session"
-                            aria-label="Archive session"
-                            onClick={() => onArchive(s.id, true)}
-                          >
-                            <Archive />
-                          </Button>
-                        )}
-                        <Button
-                          variant={confirming ? "destructive" : "ghost"}
-                          size="xs"
-                          className={cn("mr-1", !confirming && "invisible group-hover/item:visible focus-visible:visible")}
-                          title="Delete session"
-                          aria-label="Delete session"
-                          onClick={() => {
-                            if (!confirming) return setConfirmDelete(s.id);
-                            setConfirmDelete(undefined);
-                            onDelete(s.id);
-                          }}
-                          onBlur={() => setConfirmDelete(undefined)}
-                        >
-                          {confirming ? "Delete?" : <X />}
-                        </Button>
+                        <RowMenu
+                          archived={false}
+                          onRename={() => setEditing({ id: s.id, draft: s.title })}
+                          onArchive={() => onArchive(s.id, true)}
+                          onDelete={() => onDelete(s.id)}
+                        />
                       </li>
                     );
                   })}
@@ -173,52 +147,26 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
           <Collapsible open={showArchived} onOpenChange={setShowArchived}>
             <button
               onClick={() => setShowArchived((v) => !v)}
-              className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs font-semibold text-muted-foreground hover:text-foreground"
+              className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-xs font-semibold text-muted-foreground hover:text-foreground"
             >
               {showArchived ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
               <span className="min-w-0 flex-1">Archived</span>
-              <span className="font-normal">{archived.length}</span>
+              <span className="font-normal tabular-nums">{archived.length}</span>
             </button>
             <CollapsibleContent>
               <ul className="ml-2 flex flex-col gap-px">
                 {archived.map((s) => {
-                  const confirming = confirmDelete === s.id;
                   return (
                     <li
                       key={s.id}
-                      className={cn("group/item flex items-center rounded-lg", s.id === activeId ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60")}
+                      className={cn("group/item flex items-center rounded-lg has-data-popup-open:bg-sidebar-accent/60", s.id === activeId ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60")}
                     >
                       <button onClick={() => onSelect(s.id)} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm text-muted-foreground">
+                        <AgentDot kind={s.agent} className="opacity-40" />
                         <span className="min-w-0 flex-1 truncate">{s.title}</span>
-                        <span className="text-[11px]">{projectName(projectKey(s.cwd))}</span>
+                        <span className={cn("text-[11px]", SHOWN_AT_REST("item"))}>{projectName(projectKey(s.cwd))}</span>
                       </button>
-                      {!confirming && (
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          className="invisible group-hover/item:visible focus-visible:visible"
-                          title="Restore session"
-                          aria-label="Restore session"
-                          onClick={() => onArchive(s.id, false)}
-                        >
-                          <ArchiveRestore />
-                        </Button>
-                      )}
-                      <Button
-                        variant={confirming ? "destructive" : "ghost"}
-                        size="xs"
-                        className={cn("mr-1", !confirming && "invisible group-hover/item:visible focus-visible:visible")}
-                        title="Delete session"
-                        aria-label="Delete session"
-                        onClick={() => {
-                          if (!confirming) return setConfirmDelete(s.id);
-                          setConfirmDelete(undefined);
-                          onDelete(s.id);
-                        }}
-                        onBlur={() => setConfirmDelete(undefined)}
-                      >
-                        {confirming ? "Delete?" : <X />}
-                      </Button>
+                      <RowMenu archived onArchive={() => onArchive(s.id, false)} onDelete={() => onDelete(s.id)} />
                     </li>
                   );
                 })}
@@ -246,5 +194,66 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
       </div>
       <ResizeHandle width={width} onWidth={onWidth} min={SIDEBAR_WIDTH.min} max={SIDEBAR_WIDTH.max} edge="right" reset={SIDEBAR_WIDTH.default} label="Resize sidebar" />
     </aside>
+  );
+}
+
+/**
+ * Row controls take the place of the badge or count at the row's right edge on hover (or keyboard focus),
+ * rather than holding empty space open on every row.
+ */
+const SHOWN_AT_REST = (g: "item" | "head") =>
+  g === "item" ? "group-hover/item:hidden group-has-focus-visible/item:hidden" : "group-hover/head:hidden group-has-focus-visible/head:hidden";
+const SHOWN_ON_HOVER = (g: "item" | "head") =>
+  g === "item"
+    ? "hidden group-hover/item:flex group-has-focus-visible/item:flex"
+    : "hidden group-hover/head:inline-flex group-has-focus-visible/head:inline-flex";
+
+function RowMenu({ archived, onRename, onArchive, onDelete }: { archived: boolean; onRename?: () => void; onArchive: () => void; onDelete: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const renaming = useRef(false);
+  return (
+    <DropdownMenu
+      onOpenChange={(open) => {
+        if (open) renaming.current = false;
+        setConfirming(false);
+      }}
+    >
+      <DropdownMenuTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className={cn("mr-1 data-popup-open:inline-flex", SHOWN_ON_HOVER("item"))}
+            title="Session actions"
+            aria-label="Session actions"
+          />
+        }
+      >
+        <MoreHorizontal />
+      </DropdownMenuTrigger>
+      {/* Renaming focuses the name field, so the menu mustn't hand focus back to its button as it closes. */}
+      <DropdownMenuContent align="end" className="w-auto" finalFocus={() => !renaming.current}>
+        {onRename && (
+          <DropdownMenuItem
+            onClick={() => {
+              renaming.current = true;
+              onRename();
+            }}
+          >
+            <Pencil />
+            Rename
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem onClick={onArchive}>
+          {archived ? <ArchiveRestore /> : <Archive />}
+          {archived ? "Restore" : "Archive"}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" closeOnClick={confirming} onClick={confirming ? onDelete : () => setConfirming(true)}>
+          <Trash2 />
+          {confirming ? "Click again to delete" : "Delete"}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

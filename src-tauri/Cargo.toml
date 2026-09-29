@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "A desktop-style UI wrapping Claude Code, Codex and opencode"
 
+# macOS names the app in the Dock after the executable when it runs unbundled (`pnpm tauri dev`).
+[[bin]]
+name = "Bach"
+path = "src/main.rs"
+
 [lib]
 name = "bach_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
