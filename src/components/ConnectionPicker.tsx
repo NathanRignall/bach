@@ -46,8 +46,11 @@ export function ConnectionPicker({ tasks }: { tasks: TaskView[] }) {
   const host = status.connection.mode === "ssh" ? status.connection.host : "";
   return (
     <div className="flex flex-col gap-1.5 text-xs">
-      <div className="flex items-center gap-2">
-        <span className={cn("size-2 shrink-0 rounded-full", dot)} aria-hidden />
+      {/* Lined up with the buttons above: their icon sits in a 14px box after 6px of padding. */}
+      <div className="flex items-center gap-1 pl-1.5">
+        <span className="flex size-3.5 shrink-0 items-center justify-center" aria-hidden>
+          <span className={cn("size-2 rounded-full", dot)} />
+        </span>
         <span className="min-w-0 flex-1 truncate text-muted-foreground" title={status.version ? `bach-server ${status.version}` : undefined}>
           {status.state === "connecting" ? `Connecting to ${where(status)}…` : `Agents on ${where(status)}`}
         </span>
