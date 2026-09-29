@@ -1,12 +1,13 @@
 //! Satie's tests: real processes, real ports, a real MCP client over HTTP.
     use super::*;
+    use std::path::Path;
     use crate::process::{proc_stat, session_of, signal_session, task_alive};
     use serde_json::{json, Value};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    pub(super) static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-    fn tmp(label: &str) -> PathBuf {
+    pub(super) fn tmp(label: &str) -> PathBuf {
         let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let d = std::env::temp_dir().join(format!("bach-satie-{label}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -14,7 +15,7 @@
         d
     }
 
-    async fn satie_in(dir: &Path) -> Satie {
+    pub(super) async fn satie_in(dir: &Path) -> Satie {
         Satie::start_with(
             "127.0.0.1:0".parse().unwrap(),
             dir.join("tasks"),
@@ -32,7 +33,7 @@
         }
     }
 
-    async fn until(what: &str, mut cond: impl FnMut() -> bool) {
+    pub(super) async fn until(what: &str, mut cond: impl FnMut() -> bool) {
         for _ in 0..100 {
             if cond() {
                 return;
@@ -84,7 +85,7 @@
             .start_task(req("echo hello; echo oops >&2", &dir))
             .unwrap();
         until("exit 0", || status(&satie, &ok.id) == TaskStatus::Exited).await;
-        let out = satie.logs(&ok.id, 10).unwrap();
+        let out = satie.logs(&ok.id, 10, None).unwrap();
         assert!(
             out.contains("$ echo hello") && out.contains("hello") && out.contains("oops"),
             "{out}"
@@ -98,7 +99,7 @@
         // Only the last lines are returned.
         let many = satie.start_task(req("seq 1 100", &dir)).unwrap();
         until("seq", || status(&satie, &many.id) == TaskStatus::Exited).await;
-        assert_eq!(satie.logs(&many.id, 3).unwrap(), "98\n99\n100");
+        assert_eq!(satie.logs(&many.id, 3, None).unwrap(), "98\n99\n100");
 
         // It ran in its own session, not ours.
         let pid = satie.start_task(req("sleep 4701", &dir)).unwrap();
@@ -357,6 +358,8 @@
             names,
             [
                 "task_start",
+                "compose_start",
+                "task_process",
                 "task_list",
                 "task_logs",
                 "task_stop",
@@ -470,7 +473,7 @@
         }
     }
 
-    fn free_port() -> u16 {
+    pub(super) fn free_port() -> u16 {
         std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
@@ -478,7 +481,7 @@
             .port()
     }
 
-    fn run_in(dir: &Path) -> Scope {
+    pub(super) fn run_in(dir: &Path) -> Scope {
         Scope {
             owner: Some("r".into()),
             project: Some(dir.to_string_lossy().into()),
@@ -606,6 +609,33 @@
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
         let rest = &stat[stat.rfind(')').unwrap() + 2..];
         rest.split(' ').nth(2).unwrap().parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_port_taken_after_a_task_ended_is_not_why_it_failed() {
+        let dir = tmp("later");
+        let satie = satie_in(&dir).await;
+        let port = free_port();
+        let t = satie
+            .start_task(StartTask {
+                ports: vec![port],
+                ..req("exit 1", &dir)
+            })
+            .unwrap();
+        until("failed", || status(&satie, &t.id) == TaskStatus::Failed).await;
+        // Its successor (here: anything) takes the port a while later.
+        tokio::time::sleep(Duration::from_millis(2100)).await;
+        let _later = Foreign::listening_on(port, &dir).await;
+        let view = satie.view(&t.id).unwrap();
+        assert!(
+            !view.problems.iter().any(|p| p.contains("already in use")),
+            "{view:?}"
+        );
+        assert!(
+            view.problems.iter().any(|p| p.contains(&format!("Expected port {port} is not listening"))),
+            "{view:?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
@@ -838,24 +868,24 @@
         let has_line = |c: &LogChunk, l: &str| c.text.lines().any(|x| x == l);
         until("first line", || {
             satie
-                .log_chunk(&t.id, None, 4096)
+                .log_chunk(&t.id, None, None, 4096)
                 .is_ok_and(|c| has_line(&c, "first"))
         })
         .await;
-        let c1 = satie.log_chunk(&t.id, None, 4096).unwrap();
+        let c1 = satie.log_chunk(&t.id, None, None, 4096).unwrap();
         until("second line", || {
             satie
-                .log_chunk(&t.id, Some(c1.next), 4096)
+                .log_chunk(&t.id, None, Some(c1.next), 4096)
                 .is_ok_and(|c| has_line(&c, "second"))
         })
         .await;
-        let c2 = satie.log_chunk(&t.id, Some(c1.next), 4096).unwrap();
+        let c2 = satie.log_chunk(&t.id, None, Some(c1.next), 4096).unwrap();
         assert!(
             has_line(&c2, "second") && !has_line(&c2, "first"),
             "a continuation, not a re-read: {c2:?}"
         );
         assert_eq!(c2.offset, c1.next);
-        assert!(satie.log_chunk("nope", None, 100).is_err());
+        assert!(satie.log_chunk("nope", None, None, 100).is_err());
         satie.stop_task(&t.id).await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -920,7 +950,7 @@
         assert_eq!(satie.import(vec![task]), 0, "already known");
         // Its process is long gone, which the import notices straight away.
         assert_eq!(status(&satie, "old1"), TaskStatus::Lost);
-        assert!(satie.logs("old1", 5).unwrap().contains("serving"));
+        assert!(satie.logs("old1", 5, None).unwrap().contains("serving"));
 
         // And it's in Satie's own database from now on.
         drop(satie);
@@ -934,7 +964,7 @@
         let satie = satie_in(&dir).await;
         assert!(matches!(satie.stop_task("nope").await, Err(Error::NotFound(_))));
         assert!(matches!(satie.remove_task("nope"), Err(Error::NotFound(_))));
-        assert!(matches!(satie.logs("nope", 1), Err(Error::NotFound(_))));
+        assert!(matches!(satie.logs("nope", 1, None), Err(Error::NotFound(_))));
         assert!(matches!(
             satie.start_task(req("  ", &dir)),
             Err(Error::Invalid(_))

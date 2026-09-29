@@ -39,10 +39,18 @@ pub(crate) fn diagnose(
     tasks_by_session: &HashMap<u32, (String, String)>,
     settle_ms: i64,
 ) -> (Vec<String>, Vec<u16>) {
+    // Once the task has ended, only something that was already listening then can be why; a
+    // process that took the port afterwards (often the task's own successor) is no explanation.
+    let ended_secs_ago = task.ended_at.map(|t| ((now_ms() - t).max(0) / 1000) as u64);
     let foreign = |port: u16| {
-        listening
-            .iter()
-            .find(|l| l.port == port && l.sid != Some(task.pid))
+        listening.iter().find(|l| {
+            l.port == port
+                && l.sid != Some(task.pid)
+                && match (ended_secs_ago, l.up_secs) {
+                    (Some(ago), Some(up)) => up >= ago,
+                    _ => true,
+                }
+        })
     };
     let mut problems = vec![];
     let mut explained: Vec<u16> = vec![];

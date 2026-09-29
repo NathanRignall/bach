@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "df9863dc9e58d26a";
+export const PROTOCOL = "b8802bafc78c02b3";
 
 /**
  * Agent-independent events the UI renders.
@@ -55,6 +55,27 @@ export type ClientFrame = { id: number, cmd: string, args?: JsonValue, };
  * Ends the terminal's shell (and what runs in it) and forgets the terminal.
  */
 export type CloseTerminalArgs = { terminalId: string, };
+
+/**
+ * One process of a process-compose project.
+ */
+export type ComposeProcess = { name: string, 
+/**
+ * process-compose's own word for it: Running, Completed, Pending, Restarting, Disabled, …
+ */
+status: string, running: boolean, 
+/**
+ * Whether its readiness probe passes; None when it has no probe.
+ */
+ready: boolean | null, restarts: number, 
+/**
+ * Only meaningful once it has stopped running.
+ */
+exitCode: number, pid: number, 
+/**
+ * TCP ports it (or anything it started) listens on.
+ */
+ports: Array<number>, };
 
 /**
  * Where the desktop app's agents run.
@@ -301,6 +322,11 @@ local: number,
 auto: boolean, };
 
 /**
+ * What to do to one process of a process-compose task.
+ */
+export type ProcessAction = "start" | "stop" | "restart";
+
+/**
  * Forgets a finished task and deletes its log.
  */
 export type RemoveTaskArgs = { taskId: string, };
@@ -457,7 +483,11 @@ startTicks: number | null, startedAt: number, endedAt: number | null, status: Ta
 /**
  * Ports the task should come up on; a missing one is a sign a part of it failed.
  */
-expectedPorts: Array<number>, };
+expectedPorts: Array<number>, 
+/**
+ * For a process-compose project started by Satie: its compose file.
+ */
+composeFile: string | null, };
 
 /**
  * A change to the task list.
@@ -467,7 +497,11 @@ export type TaskEvent = { "type": "changed", task: TaskView, } | { "type": "remo
 /**
  * A piece of a task's log: from a byte offset, or (without one) its tail.
  */
-export type TaskLogChunkArgs = { taskId: string, from?: number, 
+export type TaskLogChunkArgs = { taskId: string, 
+/**
+ * One process of a process-compose task; by default the task's whole output.
+ */
+process?: string, from?: number, 
 /**
  * At most this much (default 512 KiB).
  */
@@ -478,9 +512,18 @@ maxBytes?: number, };
  */
 export type TaskLogsArgs = { taskId: string, 
 /**
+ * One process of a process-compose task; by default the task's whole output.
+ */
+process?: string, 
+/**
  * How many lines (default 200, at most 2000).
  */
 lines?: number, };
+
+/**
+ * Starts, stops or restarts one process of a process-compose task.
+ */
+export type TaskProcessArgs = { taskId: string, process: string, action: ProcessAction, };
 
 export type TaskStatus = "running" | "exited" | "failed" | "stopped" | "lost";
 
@@ -507,7 +550,12 @@ problems: Array<string>,
 /**
  * What is running in it, e.g. `workerd ×8`.
  */
-processes: Array<string>, id: string, name: string, command: string, 
+processes: Array<string>, 
+/**
+ * The processes of a process-compose project running in the task, as its API reports them
+ * (the last report, once the task has ended). None for any other task.
+ */
+compose: Array<ComposeProcess> | null, id: string, name: string, command: string, 
 /**
  * Where it runs.
  */
@@ -527,7 +575,11 @@ startTicks: number | null, startedAt: number, endedAt: number | null, status: Ta
 /**
  * Ports the task should come up on; a missing one is a sign a part of it failed.
  */
-expectedPorts: Array<number>, };
+expectedPorts: Array<number>, 
+/**
+ * For a process-compose project started by Satie: its compose file.
+ */
+composeFile: string | null, };
 
 export type TerminalEvent = { "type": "opened", terminal: TerminalInfo, } | { "type": "output", terminalId: string, seq: number, data: string, } | { "type": "exited", terminalId: string, status: ExitStatus, } | { "type": "closed", terminalId: string, };
 
@@ -673,6 +725,10 @@ export type Commands = {
    * Starts a command by hand, as a task of the project in `cwd`.
    */
   start_task: { args: StartTaskArgs; output: Task };
+  /**
+   * Starts, stops or restarts one process of a process-compose task.
+   */
+  task_process: { args: TaskProcessArgs; output: null };
   /**
    * Terminals the backend keeps, oldest first (including ones whose shell has ended).
    */

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { AnsiLine } from "@/lib/ansi";
+import { ComposeProcesses, ProcessTabs } from "./ComposeProcesses";
 import { LogViewer } from "./LogViewer";
 import { ForwardedPorts, PortLink, useForwarding } from "./Ports";
 import { projectName } from "@/session";
@@ -78,15 +79,17 @@ function StatusIcon({ task }: { task: TaskView }) {
   }
 }
 
-/** The tail of a task's output, refreshed while open. */
-function Logs({ id, running }: { id: string; running: boolean }) {
+/** The tail of a task's output (or one process's), refreshed while open. */
+function Logs({ id, running, process }: { id: string; running: boolean; process?: string }) {
   const [text, setText] = useState<string>();
   const ref = useRef<HTMLPreElement>(null);
   const pinned = useRef(true);
   useEffect(() => {
     let live = true;
+    setText(undefined);
+    pinned.current = true;
     const load = () =>
-      taskLogs(id, 200)
+      taskLogs(id, 200, process)
         .then((t) => live && setText(t))
         .catch((e) => live && setText(String(e.message ?? e)));
     void load();
@@ -95,7 +98,7 @@ function Logs({ id, running }: { id: string; running: boolean }) {
       live = false;
       clearInterval(t);
     };
-  }, [id, running]);
+  }, [id, running, process]);
   useEffect(() => {
     const el = ref.current;
     if (el && pinned.current) el.scrollTop = el.scrollHeight;
@@ -131,9 +134,11 @@ function TaskCard({
   task: TaskView;
   forwarding: Forwarding | null;
   onChanged: () => void;
-  onOpenViewer: () => void;
+  onOpenViewer: (process?: string) => void;
 }) {
   const [showLogs, setShowLogs] = useState(false);
+  /** Whose output the inline log shows, for a process-compose task; everything by default. */
+  const [logProcess, setLogProcess] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const running = task.status === "running";
@@ -194,10 +199,21 @@ function TaskCard({
           <span className="min-w-0 break-words">{p}</span>
         </p>
       ))}
-      {running && task.processes.length > 0 && (
-        <p className="truncate text-[11px] text-muted-foreground" title={task.processes.join(", ")}>
-          {task.processes.join(" · ")}
-        </p>
+      {task.compose ? (
+        <ComposeProcesses
+          taskId={task.id}
+          processes={task.compose}
+          running={running}
+          forwarding={forwarding}
+          onShowLogs={(p) => (setLogProcess(p), setShowLogs(true))}
+        />
+      ) : (
+        running &&
+        task.processes.length > 0 && (
+          <p className="truncate text-[11px] text-muted-foreground" title={task.processes.join(", ")}>
+            {task.processes.join(" · ")}
+          </p>
+        )
       )}
 
       <div className="flex items-center gap-1.5">
@@ -205,7 +221,7 @@ function TaskCard({
           <ScrollText data-icon="inline-start" />
           Logs
         </Button>
-        <Button variant="outline" size="xs" onClick={onOpenViewer} aria-label={`Open ${task.name} log full screen`} title="Full-screen log">
+        <Button variant="outline" size="xs" onClick={() => onOpenViewer(logProcess)} aria-label={`Open ${task.name} log full screen`} title="Full-screen log">
           <Maximize2 data-icon="inline-start" />
           Full screen
         </Button>
@@ -222,7 +238,10 @@ function TaskCard({
         )}
       </div>
       {error && <p className="text-xs text-destructive">{error}</p>}
-      {showLogs && <Logs id={task.id} running={running} />}
+      {showLogs && task.compose && task.compose.length > 0 && (
+        <ProcessTabs processes={task.compose} value={logProcess} onChange={setLogProcess} />
+      )}
+      {showLogs && <Logs id={task.id} running={running} process={logProcess} />}
     </li>
   );
 }
@@ -241,8 +260,8 @@ export function TasksPanel({ tasks, error, refresh, defaultCwd, onClose }: Props
   const [command, setCommand] = useState("");
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string>();
-  const [viewing, setViewing] = useState<string>();
-  const viewed = tasks.find((t) => t.id === viewing);
+  const [viewing, setViewing] = useState<{ id: string; process?: string }>();
+  const viewed = tasks.find((t) => t.id === viewing?.id);
   const forwarding = useForwarding();
 
   async function start() {
@@ -304,11 +323,11 @@ export function TasksPanel({ tasks, error, refresh, defaultCwd, onClose }: Props
         )}
         <ul className="flex flex-col gap-2">
           {tasks.map((t) => (
-            <TaskCard key={t.id} task={t} forwarding={forwarding} onChanged={refresh} onOpenViewer={() => setViewing(t.id)} />
+            <TaskCard key={t.id} task={t} forwarding={forwarding} onChanged={refresh} onOpenViewer={(process) => setViewing({ id: t.id, process })} />
           ))}
         </ul>
       </div>
-      {viewed && <LogViewer task={viewed} onClose={() => setViewing(undefined)} />}
+      {viewed && <LogViewer task={viewed} process={viewing?.process} onClose={() => setViewing(undefined)} />}
     </aside>
   );
 }

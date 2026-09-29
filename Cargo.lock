@@ -2835,12 +2835,15 @@ name = "satie"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "futures-util",
  "libc",
+ "percent-encoding",
  "rusqlite",
  "satie-protocol",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "uuid",
 ]
 

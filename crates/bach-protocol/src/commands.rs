@@ -13,7 +13,7 @@ use crate::{
 };
 use satie_protocol::{
     ListTasksArgs, LogChunk, RemoveTaskArgs, StartTaskArgs, StopTaskArgs, Task, TaskLogChunkArgs,
-    TaskLogsArgs, TaskView,
+    TaskLogsArgs, TaskProcessArgs, TaskView,
 };
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
@@ -111,6 +111,7 @@ commands! {
     stop_task(StopTaskArgs) -> Task;
     remove_task(RemoveTaskArgs) -> ();
     start_task(StartTaskArgs) -> Task;
+    task_process(TaskProcessArgs) -> ();
 
     list_terminals(ListTerminalsArgs) -> Vec<TerminalInfo>;
     open_terminal(OpenTerminalArgs) -> TerminalInfo;

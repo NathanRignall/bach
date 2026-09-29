@@ -39,6 +39,12 @@ pub(crate) fn proc_stat(pid: u32) -> Option<(char, u64)> {
     ))
 }
 
+pub(crate) fn parent_of(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = &stat[stat.rfind(')')? + 2..];
+    rest.split(' ').nth(1)?.parse().ok() // field 4, ppid
+}
+
 pub(crate) fn session_of(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let rest = &stat[stat.rfind(')')? + 2..];

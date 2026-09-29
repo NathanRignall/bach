@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ArrowDownToLine, Copy, Download, Search, WrapText, X } from "lucide-react";
 import { TaskView, macTitleBar, taskLogChunk } from "@/api";
+import { ProcessTabs } from "./ComposeProcesses";
 import { PortLink, useForwarding } from "./Ports";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -57,9 +58,10 @@ function Highlight({ text, q }: { text: string; q: string }) {
   return <>{parts}</>;
 }
 
-/** A task's whole log, full screen, kept up to date while the task runs. */
-export function LogViewer({ task, onClose }: { task: TaskView; onClose: () => void }) {
+/** A task's whole log (or one process's, for a process-compose task), full screen, kept up to date while the task runs. */
+export function LogViewer({ task, process: initialProcess, onClose }: { task: TaskView; process?: string; onClose: () => void }) {
   const running = task.status === "running";
+  const [process, setProcess] = useState(initialProcess);
   // `dropped` counts lines discarded from the front, so line numbers stay stable.
   const [buffer, setBuffer] = useState({ lines: [] as string[], dropped: 0 });
   const [loading, setLoading] = useState(true);
@@ -68,7 +70,6 @@ export function LogViewer({ task, onClose }: { task: TaskView; onClose: () => vo
   const [wrap, setWrap] = useState(false);
   const [follow, setFollow] = useState(true);
   const offset = useRef<number | undefined>(undefined);
-  const inFlight = useRef(false);
   const scroller = useRef<HTMLDivElement>(null);
   const filterInput = useRef<HTMLInputElement>(null);
   const lastTop = useRef(0);
@@ -76,12 +77,17 @@ export function LogViewer({ task, onClose }: { task: TaskView; onClose: () => vo
   // Pull new output: the tail first, then from where we stopped. While the task runs, keep going.
   useEffect(() => {
     let live = true;
+    // Another process's log starts from scratch.
+    offset.current = undefined;
+    setBuffer({ lines: [], dropped: 0 });
+    setLoading(true);
+    let inFlight = false;
     async function pull() {
-      if (inFlight.current) return;
-      inFlight.current = true;
+      if (inFlight) return;
+      inFlight = true;
       try {
         const first = offset.current === undefined;
-        const chunk = await taskLogChunk(task.id, offset.current, CHUNK_BYTES);
+        const chunk = await taskLogChunk(task.id, offset.current, CHUNK_BYTES, process);
         if (!live) return;
         offset.current = chunk.next;
         const added = chunk.text ? chunk.text.split("\n") : [];
@@ -99,7 +105,7 @@ export function LogViewer({ task, onClose }: { task: TaskView; onClose: () => vo
       } catch (e) {
         if (live) setError(String((e as Error).message ?? e));
       } finally {
-        inFlight.current = false;
+        inFlight = false;
         if (live) setLoading(false);
       }
     }
@@ -109,7 +115,7 @@ export function LogViewer({ task, onClose }: { task: TaskView; onClose: () => vo
       live = false;
       clearInterval(t);
     };
-  }, [task.id, running]);
+  }, [task.id, running, process]);
 
   const q = filter.trim().toLowerCase();
   const matching = useMemo(() => {
@@ -153,7 +159,8 @@ export function LogViewer({ task, onClose }: { task: TaskView; onClose: () => vo
     const url = URL.createObjectURL(new Blob([plainText() + "\n"], { type: "text/plain" }));
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${task.name.replace(/[^\w.-]+/g, "_").slice(0, 60) || "task"}-${task.id}.log`;
+    const base = [task.name, process].filter(Boolean).join("-");
+    a.download = `${base.replace(/[^\w.-]+/g, "_").slice(0, 60) || "task"}-${task.id}.log`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -185,6 +192,7 @@ export function LogViewer({ task, onClose }: { task: TaskView; onClose: () => vo
         <p className="truncate font-mono text-[11px] text-muted-foreground" title={task.command}>
           $ {task.command}
         </p>
+        {task.compose && task.compose.length > 0 && <ProcessTabs processes={task.compose} value={process} onChange={setProcess} />}
         {task.problems.map((p) => (
           <p key={p} className="flex items-start gap-1.5 text-xs text-destructive">
             <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />

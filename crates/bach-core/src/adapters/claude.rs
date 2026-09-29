@@ -11,7 +11,9 @@ const GUIDANCE: &str = "Anything that must keep running after your turn ends (de
 long jobs) has to be started with the `satie` MCP tool `task_start`, not with Bash `run_in_background`, `nohup`, a trailing \
 `&` or tmux: processes started those ways are stopped when the turn ends. `task_start` keeps the process running on its own, \
 shows it to the user in the Tasks panel, and `task_logs`, `task_list` and `task_stop` manage it. Pass `port` when the process \
-serves on one, so the call waits until it is up.";
+serves on one, so the call waits until it is up. For a process-compose project use `compose_start` with the compose file \
+instead of running process-compose yourself: each of its processes then gets its own state and log, and `task_process` \
+restarts one without the rest.";
 
 const HOOK_DENY: &str = "Background commands are stopped when this turn ends. Start it with the satie MCP tool `task_start` \
 instead: it keeps running independently and the user can see and stop it in the Tasks panel.";

@@ -1,7 +1,7 @@
 // The typed client for Bach's backend. Commands, their arguments and results, and every type they
 // use are generated from Rust (crates/bach-protocol) into ./generated/protocol.ts.
 import { remoteUrl } from "./backend";
-import type { Commands, PlanUsage, ServerEvent, SessionEvent, TaskEvent, TerminalEvent } from "./generated/protocol";
+import type { Commands, PlanUsage, ProcessAction, ServerEvent, SessionEvent, TaskEvent, TerminalEvent } from "./generated/protocol";
 import { SocketTransport, TauriTransport, type Transport } from "./transport";
 
 export * from "./generated/protocol";
@@ -85,9 +85,11 @@ export const listWorktrees = () => call("list_worktrees");
 export const removeWorktree = (args: Args<"remove_worktree">) => call("remove_worktree", args);
 
 export const listTasks = () => call("list_tasks");
-export const taskLogs = (taskId: string, lines = 200) => call("task_logs", { taskId, lines });
-export const taskLogChunk = (taskId: string, from?: number, maxBytes?: number) =>
-  call("task_log_chunk", { taskId, from, maxBytes });
+/** A task's output; with `process`, just that process's (for a process-compose task). */
+export const taskLogs = (taskId: string, lines = 200, process?: string) => call("task_logs", { taskId, lines, process });
+export const taskLogChunk = (taskId: string, from?: number, maxBytes?: number, process?: string) =>
+  call("task_log_chunk", { taskId, from, maxBytes, process });
+export const taskProcess = (taskId: string, process: string, action: ProcessAction) => call("task_process", { taskId, process, action });
 export const stopTask = (taskId: string) => call("stop_task", { taskId });
 export const removeTask = (taskId: string) => call("remove_task", { taskId });
 export const startTask = (args: Args<"start_task">) => call("start_task", args);

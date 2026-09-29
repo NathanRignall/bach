@@ -1,6 +1,9 @@
 //! Satie's MCP server: streamable HTTP on loopback, one bearer token per [`Grant`](crate::Grant).
 //! Tools see and manage only the tasks of their grant's project.
-use crate::{probe, Ready, Satie, Scope, StartTask, Task, TaskStatus, TaskView};
+use crate::{
+    compose, probe, ProcessAction, Ready, Satie, Scope, StartCompose, StartTask, Task, TaskStatus,
+    TaskView,
+};
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -42,13 +45,46 @@ impl Satie {
                     "required": ["command"]
                 }
             },
+            {
+                "name": "compose_start",
+                "description": "Run a process-compose project (a compose file such as process-compose.yaml) as a background task that keeps running after this turn ends. Prefer this to task_start for process-compose: Satie starts it in the project's environment (direnv, else the flake's devShell) with the right flags, so don't add any, and then shows, logs and controls each process separately. Waits until every process is running (and ready, where it has a readiness probe) or one fails, and reports each process's state, ports and, for failures, its last output.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file": { "type": "string", "description": "The compose file, relative to `cwd`" },
+                        "name": { "type": "string", "description": "Short label shown to the user; defaults to the file" },
+                        "cwd": { "type": "string", "description": "Working directory; defaults to the project folder" },
+                        "ports": { "type": "array", "items": { "type": "integer" }, "description": "TCP ports the project should be listening on; wait for them too" },
+                        "timeout_seconds": { "type": "integer", "description": "How long to wait for the processes (default 60, at most 300)" },
+                        "shell": { "type": "string", "description": "Command prefix that enters the project's environment, e.g. `nix develop .#sim --command`; empty for none. Default: `direnv exec .` with an .envrc, `nix develop --command` with only a flake.nix" }
+                    },
+                    "required": ["file"]
+                }
+            },
+            {
+                "name": "task_process",
+                "description": "Start, stop or restart one process of a process-compose task (started with compose_start), e.g. restart a server after changing its code. The rest of the project keeps running.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "process": { "type": "string", "description": "The process name from the compose file" },
+                        "action": { "type": "string", "enum": ["start", "stop", "restart"] }
+                    },
+                    "required": ["id", "process", "action"]
+                }
+            },
             { "name": "task_list", "description": "List this project's background tasks with their state, ports, running processes and any problems found (a port already taken, an expected port not listening).", "inputSchema": { "type": "object", "properties": {} } },
             {
                 "name": "task_logs",
-                "description": "Show the latest output of a background task.",
+                "description": "Show the latest output of a background task, or of one process of a process-compose task.",
                 "inputSchema": {
                     "type": "object",
-                    "properties": { "id": { "type": "string" }, "lines": { "type": "integer", "description": "How many lines (default 40)" } },
+                    "properties": {
+                        "id": { "type": "string" },
+                        "lines": { "type": "integer", "description": "How many lines (default 40)" },
+                        "process": { "type": "string", "description": "For a process-compose task: just this process's output" }
+                    },
                     "required": ["id"]
                 }
             },
@@ -102,8 +138,36 @@ impl Satie {
                 .collect();
             s += &format!("\n  Expected ports: {}", parts.join(", "));
         }
-        if !view.processes.is_empty() {
-            s += &format!("\n  Processes: {}", view.processes.join(", "));
+        match &view.compose {
+            Some(procs) if !procs.is_empty() => {
+                s += &format!("\n  Compose file: {}", t.compose_file.as_deref().unwrap_or_default());
+                for p in procs {
+                    s += &format!("\n  - {}: {}", p.name, p.status);
+                    if !p.running && p.status != "Pending" {
+                        s += &format!(" (exit code {})", p.exit_code);
+                    }
+                    match p.ready {
+                        Some(true) => s += ", ready",
+                        Some(false) if p.running => s += ", NOT ready",
+                        _ => {}
+                    }
+                    if !p.ports.is_empty() {
+                        let ports: Vec<String> = p.ports.iter().map(|p| p.to_string()).collect();
+                        s += &format!(", listening on {}", ports.join(", "));
+                    }
+                    match p.restarts {
+                        0 => {}
+                        1 => s += ", restarted once",
+                        n => s += &format!(", restarted {n} times"),
+                    }
+                }
+            }
+            Some(_) if t.status == TaskStatus::Running => s += "\n  Processes: (process-compose not answering yet)",
+            _ => {
+                if !view.processes.is_empty() {
+                    s += &format!("\n  Processes: {}", view.processes.join(", "));
+                }
+            }
         }
         for p in &view.problems {
             s += &format!("\n  Problem: {p}");
@@ -249,11 +313,90 @@ impl Satie {
                         }
                     }
                 }
-                let out = self.logs(&task.id, 15).unwrap_or_default();
+                let out = self.logs(&task.id, 15, None).unwrap_or_default();
                 if !out.is_empty() {
                     text += &format!("\nOutput so far:\n{out}");
                 }
                 Ok(text)
+            }
+            "compose_start" => {
+                let ports: Vec<u16> = args["ports"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|p| p.as_u64().and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0))
+                    .collect();
+                let wait = Duration::from_secs(args["timeout_seconds"].as_u64().unwrap_or(60).clamp(1, 300));
+                let task = self
+                    .start_compose(StartCompose {
+                        file: args["file"].as_str().unwrap_or_default().to_string(),
+                        shell: args["shell"].as_str().map(String::from),
+                        task: StartTask {
+                            cwd: args["cwd"].as_str().map(String::from),
+                            name: args["name"].as_str().map(String::from),
+                            project: scope.project.clone(),
+                            owner: scope.owner.clone(),
+                            ports: ports.clone(),
+                            ..Default::default()
+                        },
+                    })
+                    .map_err(|e| e.to_string())?;
+                let started = std::time::Instant::now();
+                self.wait_compose(&task.id, wait).await;
+                if !ports.is_empty() {
+                    let left = wait.saturating_sub(started.elapsed()).max(Duration::from_secs(1));
+                    self.wait_ready(&task.id, &ports, None, left).await;
+                }
+                let view = self
+                    .list_settled(None, 0)
+                    .into_iter()
+                    .find(|v| v.task.id == task.id)
+                    .ok_or("The task disappeared.")?;
+                let mut text = Self::describe(&view);
+                let failed: Vec<&str> = view
+                    .compose
+                    .iter()
+                    .flatten()
+                    .filter(|p| compose::failed(p))
+                    .map(|p| p.name.as_str())
+                    .collect();
+                for name in &failed {
+                    let out = self.logs(&task.id, 15, Some(name)).unwrap_or_default();
+                    if !out.is_empty() {
+                        text += &format!("\nLast output of {name}:\n{out}");
+                    }
+                }
+                if view.compose.as_ref().is_none_or(|p| p.is_empty()) || view.task.status != TaskStatus::Running {
+                    let out = self.logs(&task.id, 15, None).unwrap_or_default();
+                    if !out.is_empty() {
+                        text += &format!("\nOutput so far:\n{out}");
+                    }
+                }
+                Ok(text)
+            }
+            "task_process" => {
+                let id = args["id"].as_str().unwrap_or_default();
+                self.owned(scope, id)?;
+                let process = args["process"].as_str().unwrap_or_default();
+                let action = match args["action"].as_str().unwrap_or_default() {
+                    "start" => ProcessAction::Start,
+                    "stop" => ProcessAction::Stop,
+                    "restart" => ProcessAction::Restart,
+                    other => return Err(format!("Unknown action `{other}`: use start, stop or restart.")),
+                };
+                self.process_action(id, process, action)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if action != ProcessAction::Stop {
+                    // Give it the moment it needs to come up (or fail) before reporting; process-compose
+                    // takes a moment to even start on it.
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    self.wait_compose(id, Duration::from_secs(15)).await;
+                }
+                Ok(self
+                    .view(id)
+                    .map(|v| Self::describe(&v))
+                    .unwrap_or_else(|| "Done.".into()))
             }
             "port_info" => {
                 let wanted: Vec<u16> = args["ports"]
@@ -289,7 +432,8 @@ impl Satie {
                 let id = args["id"].as_str().unwrap_or_default();
                 self.owned(scope, id)?;
                 let lines = args["lines"].as_u64().unwrap_or(40).clamp(1, 500) as usize;
-                self.logs(id, lines).map_err(|e| e.to_string())
+                self.logs(id, lines, args["process"].as_str())
+                    .map_err(|e| e.to_string())
             }
             "task_stop" => {
                 let id = args["id"].as_str().unwrap_or_default();

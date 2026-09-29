@@ -42,6 +42,9 @@ pub struct Task {
     /// Ports the task should come up on; a missing one is a sign a part of it failed.
     #[serde(default)]
     pub expected_ports: Vec<u16>,
+    /// For a process-compose project started by Satie: its compose file.
+    #[serde(default)]
+    pub compose_file: Option<String>,
 }
 
 /// A task plus what is only known by looking at the machine right now.
@@ -60,6 +63,37 @@ pub struct TaskView {
     pub problems: Vec<String>,
     /// What is running in it, e.g. `workerd ×8`.
     pub processes: Vec<String>,
+    /// The processes of a process-compose project running in the task, as its API reports them
+    /// (the last report, once the task has ended). None for any other task.
+    pub compose: Option<Vec<ComposeProcess>>,
+}
+
+/// One process of a process-compose project.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeProcess {
+    pub name: String,
+    /// process-compose's own word for it: Running, Completed, Pending, Restarting, Disabled, …
+    pub status: String,
+    pub running: bool,
+    /// Whether its readiness probe passes; None when it has no probe.
+    pub ready: Option<bool>,
+    pub restarts: u32,
+    /// Only meaningful once it has stopped running.
+    pub exit_code: i32,
+    pub pid: u32,
+    /// TCP ports it (or anything it started) listens on.
+    #[serde(default)]
+    pub ports: Vec<u16>,
+}
+
+/// What to do to one process of a process-compose task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum ProcessAction {
+    Start,
+    Stop,
+    Restart,
 }
 
 /// A change to the task list.
@@ -100,6 +134,8 @@ pub struct ListTasksArgs {}
 #[ts(optional_fields)]
 pub struct TaskLogsArgs {
     pub task_id: String,
+    /// One process of a process-compose task; by default the task's whole output.
+    pub process: Option<String>,
     /// How many lines (default 200, at most 2000).
     pub lines: Option<usize>,
 }
@@ -110,6 +146,8 @@ pub struct TaskLogsArgs {
 #[ts(optional_fields)]
 pub struct TaskLogChunkArgs {
     pub task_id: String,
+    /// One process of a process-compose task; by default the task's whole output.
+    pub process: Option<String>,
     pub from: Option<u64>,
     /// At most this much (default 512 KiB).
     pub max_bytes: Option<u64>,
@@ -120,6 +158,15 @@ pub struct TaskLogChunkArgs {
 #[serde(rename_all = "camelCase")]
 pub struct StopTaskArgs {
     pub task_id: String,
+}
+
+/// Starts, stops or restarts one process of a process-compose task.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskProcessArgs {
+    pub task_id: String,
+    pub process: String,
+    pub action: ProcessAction,
 }
 
 /// Forgets a finished task and deletes its log.

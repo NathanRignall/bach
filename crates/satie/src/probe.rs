@@ -465,8 +465,11 @@ mod tests {
             .iter()
             .any(|x| x.port == port && x.pid != Some(std::process::id())));
         drop(l);
+        // Another test may take the freed port straight away; we just mustn't hold it any more.
         assert!(
-            !listeners().iter().any(|x| x.port == port),
+            !listeners()
+                .iter()
+                .any(|x| x.port == port && x.pid == Some(std::process::id())),
             "gone once closed"
         );
     }

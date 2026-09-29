@@ -391,13 +391,22 @@ impl Handler for Api {
 
     async fn task_logs(&self, a: TaskLogsArgs) -> Result<String, ApiError> {
         self.satie
-            .logs(&a.task_id, a.lines.unwrap_or(200).clamp(1, 2000))
+            .logs(
+                &a.task_id,
+                a.lines.unwrap_or(200).clamp(1, 2000),
+                a.process.as_deref(),
+            )
             .map_err(satie_error)
     }
 
     async fn task_log_chunk(&self, a: TaskLogChunkArgs) -> Result<LogChunk, ApiError> {
         self.satie
-            .log_chunk(&a.task_id, a.from, a.max_bytes.unwrap_or(512 * 1024))
+            .log_chunk(
+                &a.task_id,
+                a.process.as_deref(),
+                a.from,
+                a.max_bytes.unwrap_or(512 * 1024),
+            )
             .map_err(satie_error)
     }
 
@@ -419,6 +428,13 @@ impl Handler for Api {
                 owner: None,
                 ports: vec![],
             })
+            .map_err(satie_error)
+    }
+
+    async fn task_process(&self, a: TaskProcessArgs) -> Result<(), ApiError> {
+        self.satie
+            .process_action(&a.task_id, &a.process, a.action)
+            .await
             .map_err(satie_error)
     }
 

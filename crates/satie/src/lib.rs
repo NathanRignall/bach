@@ -12,6 +12,7 @@
 //! tasks it starts.
 //!
 //! Unix only (`setsid`, `/proc` for ports).
+mod compose;
 mod diagnose;
 mod mcp;
 pub mod probe;
@@ -19,21 +20,26 @@ mod process;
 pub(crate) mod store;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod compose_tests;
 
+pub use compose::{project_shell, StartCompose};
 pub use diagnose::presentable_ports;
 pub use store::parse_task;
-pub use satie_protocol::{LogChunk, Task, TaskEvent, TaskStatus, TaskView};
+pub use satie_protocol::{
+    ComposeProcess, LogChunk, ProcessAction, Task, TaskEvent, TaskStatus, TaskView,
+};
 
 use diagnose::{diagnose, SETTLE_MS};
 use process::{now_ms, pids_in_session, ports_of_session, proc_stat, signal_session, task_alive};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     fs::OpenOptions,
     io::{Read, Seek, SeekFrom, Write},
     net::SocketAddr,
     os::unix::process::CommandExt,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Stdio},
     sync::{atomic::AtomicI64, atomic::Ordering, Arc, Mutex},
     time::Duration,
@@ -66,7 +72,11 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-fn no_such_task() -> Error {
+pub(crate) fn new_task_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
+}
+
+pub(crate) fn no_such_task() -> Error {
     Error::NotFound("No such task.".into())
 }
 
@@ -128,6 +138,10 @@ struct Inner {
     events: broadcast::Sender<TaskEvent>,
     /// What subscribers were last told about each task, to send only what changed.
     published: Mutex<HashMap<String, serde_json::Value>>,
+    /// The processes of each task's process-compose project, as last reported (see [`compose`]).
+    compose: Mutex<HashMap<String, Vec<ComposeProcess>>>,
+    /// `(task, process)` whose output is being copied to a log file right now.
+    log_streams: Mutex<HashSet<(String, String)>>,
 }
 
 /// Handle to Satie. Cheap to clone.
@@ -166,6 +180,8 @@ impl Satie {
                 settle_ms: AtomicI64::new(SETTLE_MS),
                 events: broadcast::channel(256).0,
                 published: Mutex::default(),
+                compose: Mutex::default(),
+                log_streams: Mutex::default(),
             }),
         };
         satie.tick(); // reconcile: what ran while we were down?
@@ -178,6 +194,7 @@ impl Satie {
                 monitor.publish();
             }
         });
+        tokio::spawn(satie.clone().watch_compose(tick));
         let app = mcp::router(satie.clone());
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
@@ -376,6 +393,7 @@ impl Satie {
                     } else {
                         vec![]
                     },
+                    compose: self.compose_of(&task),
                     task,
                 }
             })
@@ -384,6 +402,10 @@ impl Satie {
 
     /// Starts a detached process. It keeps running if this process, or the agent, exits.
     pub fn start_task(&self, req: StartTask) -> Result<Task, Error> {
+        self.launch(new_task_id(), req, None)
+    }
+
+    fn launch(&self, id: String, req: StartTask, compose_file: Option<String>) -> Result<Task, Error> {
         let command = req.command.trim().to_string();
         if command.is_empty() {
             return Err(Error::Invalid("`command` is required".into()));
@@ -401,7 +423,6 @@ impl Satie {
         }
         let failed = |e: std::io::Error| Error::Failed(format!("failed to start: {e}"));
 
-        let id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
         let log_path = self.inner.dir.join(format!("{id}.log"));
         let exit_path = self.exit_path(&id);
         let mut log = OpenOptions::new()
@@ -458,6 +479,7 @@ impl Satie {
             exit_code: None,
             log_path: log_path.to_string_lossy().into_owned(),
             expected_ports: req.ports,
+            compose_file,
             id: id.clone(),
         };
         self.inner.tasks.lock().unwrap().insert(id, task.clone());
@@ -517,16 +539,35 @@ impl Satie {
         }
         let _ = std::fs::remove_file(&task.log_path);
         let _ = std::fs::remove_file(self.exit_path(id));
+        self.forget_compose(id);
         self.inner.published.lock().unwrap().remove(id);
         let _ = self.inner.events.send(TaskEvent::Removed { id: id.into() });
         Ok(())
     }
 
-    /// The last `lines` lines of a task's output.
-    pub fn logs(&self, id: &str, lines: usize) -> Result<String, Error> {
+    /// Where the output of a task (or of one process of its process-compose project) is.
+    fn log_file(&self, task: &Task, process: Option<&str>) -> Result<PathBuf, Error> {
+        let Some(process) = process else {
+            return Ok(PathBuf::from(&task.log_path));
+        };
+        let known = self
+            .compose_of(task)
+            .is_some_and(|procs| procs.iter().any(|p| p.name == process));
+        if !known {
+            return Err(Error::NotFound(format!("The task has no process named `{process}`.")));
+        }
+        Ok(compose::process_log(&self.inner.dir, &task.id, process))
+    }
+
+    /// The last `lines` lines of a task's output, or of one process of its process-compose project.
+    pub fn logs(&self, id: &str, lines: usize, process: Option<&str>) -> Result<String, Error> {
         let task = self.get(id).ok_or_else(no_such_task)?;
+        let path = self.log_file(&task, process)?;
+        if process.is_some() && !path.exists() {
+            return Ok(String::new()); // no output yet
+        }
         let failed = |e: std::io::Error| Error::Failed(format!("Couldn't read the log: {e}"));
-        let mut f = std::fs::File::open(&task.log_path).map_err(failed)?;
+        let mut f = std::fs::File::open(&path).map_err(failed)?;
         let len = f.metadata().map_err(failed)?.len();
         let take = len.min(256 * 1024);
         f.seek(SeekFrom::Start(len - take)).map_err(failed)?;
@@ -591,10 +632,22 @@ impl Satie {
     }
 
     /// A piece of a task's log, for viewers that follow it: see [`probe::read_chunk`].
-    pub fn log_chunk(&self, id: &str, from: Option<u64>, max_bytes: u64) -> Result<LogChunk, Error> {
+    pub fn log_chunk(
+        &self,
+        id: &str,
+        process: Option<&str>,
+        from: Option<u64>,
+        max_bytes: u64,
+    ) -> Result<LogChunk, Error> {
         let task = self.get(id).ok_or_else(no_such_task)?;
+        let path = self.log_file(&task, process)?;
+        if process.is_some() && !path.exists() {
+            // No output yet: an empty log, not an error.
+            let _ = std::fs::create_dir_all(compose::files_dir(&self.inner.dir, id));
+            let _ = OpenOptions::new().create(true).append(true).open(&path);
+        }
         probe::read_chunk(
-            Path::new(&task.log_path),
+            &path,
             from,
             max_bytes.clamp(1024, 8 * 1024 * 1024),
             task.status == TaskStatus::Running,
