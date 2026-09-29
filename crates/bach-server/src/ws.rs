@@ -72,5 +72,5 @@ async fn serve(socket: WebSocket, api: Arc<Api>) {
             }
         });
     crate::connection::serve(api, Box::pin(incoming), out).await;
-    writer.abort();
+    let _ = writer.await;
 }

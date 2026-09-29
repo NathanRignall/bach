@@ -80,7 +80,7 @@ pub async fn listen(paths: &Paths, api: Arc<Api>) -> std::io::Result<()> {
                 .take_while(|l| std::future::ready(l.is_ok()))
                 .filter_map(|l| async move { l.ok().filter(|l| !l.trim().is_empty()) });
             crate::connection::serve(api, Box::pin(lines), out).await;
-            writer.abort();
+            let _ = writer.await;
         });
     }
 }
@@ -144,14 +144,19 @@ pub async fn attach(paths: &Paths) -> Result<(), String> {
     };
     let (mut from_server, mut to_server) = stream.into_split();
     let (mut stdin, mut stdout) = (tokio::io::stdin(), tokio::io::stdout());
-    // Until either side hangs up.
+    let sending = async move {
+        tokio::io::copy(&mut stdin, &mut to_server).await?;
+        // Done sending: tell the server, which answers what's in flight and then closes.
+        to_server.shutdown().await?;
+        std::future::pending::<std::io::Result<()>>().await
+    };
+    let receiving = async {
+        tokio::io::copy(&mut from_server, &mut stdout).await?;
+        stdout.flush().await
+    };
+    // Until the server closes the connection (or sending fails).
     tokio::select! {
-        r = tokio::io::copy(&mut stdin, &mut to_server) => { r.map_err(|e| e.to_string())?; }
-        r = async {
-            let r = tokio::io::copy(&mut from_server, &mut stdout).await;
-            let _ = stdout.flush().await;
-            r
-        } => { r.map_err(|e| e.to_string())?; }
+        r = sending => r.map_err(|e| e.to_string()),
+        r = receiving => r.map_err(|e| e.to_string()),
     }
-    Ok(())
 }

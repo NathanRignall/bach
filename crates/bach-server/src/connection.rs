@@ -5,7 +5,10 @@ use bach_protocol::{fingerprint, ApiError, ClientFrame, ServerFrame};
 use futures_util::{Stream, StreamExt};
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
+use tokio::{
+    sync::{broadcast, mpsc},
+    task::JoinSet,
+};
 
 /// The first frame on every connection.
 pub fn hello() -> ServerFrame {
@@ -15,7 +18,9 @@ pub fn hello() -> ServerFrame {
     }
 }
 
-/// Serves a connection until `incoming` ends. Frames to send go to `out`, starting with the hello.
+/// Serves a connection until `incoming` ends and the commands it sent have been answered. Frames
+/// to send go to `out`, starting with the hello; `out` is dropped at the end, so a writer draining
+/// it finishes once everything has been sent.
 pub async fn serve(
     api: Arc<Api>,
     mut incoming: impl Stream<Item = String> + Unpin,
@@ -38,6 +43,7 @@ pub async fn serve(
         })
     };
 
+    let mut commands = JoinSet::new();
     while let Some(text) = incoming.next().await {
         let frame = match serde_json::from_str::<ClientFrame>(&text) {
             Ok(f) => f,
@@ -55,7 +61,7 @@ pub async fn serve(
         };
         // Each command runs on its own, so a slow one doesn't hold up the rest.
         let (api, out) = (api.clone(), out.clone());
-        tokio::spawn(async move {
+        commands.spawn(async move {
             let id = frame.id;
             let reply = match api.call(&frame.cmd, frame.args.unwrap_or_default()).await {
                 Ok(result) => ServerFrame::Reply { id, result },
@@ -64,5 +70,7 @@ pub async fn serve(
             let _ = out.send(reply);
         });
     }
+    // The client is done sending; it still gets the answers to what it sent.
     forward.abort();
+    while commands.join_next().await.is_some() {}
 }

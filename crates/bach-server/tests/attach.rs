@@ -99,6 +99,14 @@ fn attach_starts_one_server_and_carries_frames() {
     drop(again.stdin);
     again.child.wait().unwrap();
 
+    // A command followed straight away by the end of input still gets its answer.
+    let mut once = attach(&db, port);
+    writeln!(once.stdin, "{}", json!({ "id": 3, "cmd": "list_agents", "args": {} })).unwrap();
+    drop(once.stdin);
+    let frames: Vec<Value> = once.lines.map(|l| serde_json::from_str(&l.unwrap()).unwrap()).collect();
+    assert!(frames.iter().any(|f| f["kind"] == "reply" && f["id"] == 3), "{frames:?}");
+    assert!(once.child.wait().unwrap().success());
+
     // Another `serve` for the same database refuses to start.
     let out = Command::new(env!("CARGO_BIN_EXE_bach-server"))
         .arg("serve")
