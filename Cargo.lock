@@ -144,6 +144,8 @@ dependencies = [
  "bach-client",
  "bach-core",
  "bach-protocol",
+ "objc2",
+ "objc2-app-kit",
  "serde_json",
  "tauri",
  "tauri-build",

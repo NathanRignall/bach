@@ -5,7 +5,7 @@ import { Session } from "@/api";
 export function SessionHeader({ session }: { session: Session }) {
   return (
     // Also the window's title bar in the Mac app: drag it by the empty space.
-    <header data-tauri-drag-region className="flex h-11 shrink-0 items-center gap-4 border-b px-5 text-xs text-muted-foreground">
+    <header data-tauri-drag-region className="flex h-(--title-bar-height) shrink-0 items-center gap-4 border-b px-5 text-xs text-muted-foreground">
       <span className="min-w-0 truncate font-mono select-text" title={session.workdir ?? session.cwd}>
         {session.cwd || "No project folder"}
       </span>

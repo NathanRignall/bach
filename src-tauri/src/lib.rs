@@ -4,6 +4,7 @@
 //! another machine. `get_connection` / `set_connection` choose, and `bach-connection` events say
 //! how the connection is doing.
 mod ports;
+mod titlebar;
 
 use bach_client::{
     forward::{self, Forwards},
@@ -94,7 +95,11 @@ impl App {
     async fn local(&self) -> Result<Arc<Api>, String> {
         self.local
             .get_or_try_init(|| async {
-                let dir = self.handle.path().app_data_dir().map_err(|e| e.to_string())?;
+                let dir = self
+                    .handle
+                    .path()
+                    .app_data_dir()
+                    .map_err(|e| e.to_string())?;
                 let api = Arc::new(Api::open(&dir.join("bach.db")).await?);
                 let (mut events, handle) = (api.subscribe(), self.handle.clone());
                 let (generation, mine) = (self.generation.clone(), self.local_generation.clone());
@@ -104,7 +109,8 @@ impl App {
                     loop {
                         match events.recv().await {
                             Ok(ev) => {
-                                if generation.load(Ordering::SeqCst) == mine.load(Ordering::SeqCst) {
+                                if generation.load(Ordering::SeqCst) == mine.load(Ordering::SeqCst)
+                                {
                                     let _ = handle.emit(EVENT_CHANNEL, ev);
                                 }
                             }
@@ -144,23 +150,21 @@ impl App {
                 if let Err(e) = forward::prepare_control_dir(&control) {
                     eprintln!("ssh control socket folder: {e}");
                 }
-                let forwards = Arc::new(Forwards::new(
-                    "ssh",
-                    vec![],
-                    host.clone(),
-                    control,
-                    {
-                        let handle = self.handle.clone();
-                        move |_| {
-                            let handle = handle.clone();
-                            tauri::async_runtime::spawn(async move {
-                                let ports = handle.state::<ports::Ports>();
-                                let _ = handle.emit(bach_protocol::FORWARDS_CHANNEL, ports.snapshot().await);
-                            });
-                        }
-                    },
-                ));
-                self.handle.state::<ports::Ports>().use_forwards(Some(forwards)).await;
+                let forwards = Arc::new(Forwards::new("ssh", vec![], host.clone(), control, {
+                    let handle = self.handle.clone();
+                    move |_| {
+                        let handle = handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let ports = handle.state::<ports::Ports>();
+                            let _ = handle
+                                .emit(bach_protocol::FORWARDS_CHANNEL, ports.snapshot().await);
+                        });
+                    }
+                }));
+                self.handle
+                    .state::<ports::Ports>()
+                    .use_forwards(Some(forwards))
+                    .await;
                 let (events, statuses) = (self.handle.clone(), self.handle.clone());
                 let (g1, g2) = (self.generation.clone(), self.generation.clone());
                 let conn = connection.clone();
@@ -309,8 +313,11 @@ async fn set_connection(app: State<'_, App>, connection: Connection) -> Result<(
     if let Some(dir) = app.config.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    std::fs::write(&app.config, serde_json::to_string_pretty(&connection).unwrap())
-        .map_err(|e| e.to_string())?;
+    std::fs::write(
+        &app.config,
+        serde_json::to_string_pretty(&connection).unwrap(),
+    )
+    .map_err(|e| e.to_string())?;
     app.connect(connection).await;
     Ok(())
 }
@@ -346,8 +353,15 @@ pub fn run() {
 
     tauri::Builder::default()
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                titlebar::install(&window)?;
+            }
             let config_dir = app.path().app_config_dir()?;
-            app.manage(ports::Ports::new(app.handle().clone(), config_dir.join("forwarding.json")));
+            app.manage(ports::Ports::new(
+                app.handle().clone(),
+                config_dir.join("forwarding.json"),
+            ));
             let config = config_dir.join("connection.json");
             let connection = load_connection(&config);
             app.manage(App {
@@ -373,7 +387,8 @@ pub fn run() {
             forward_port,
             stop_forward,
             open_port,
-            set_auto_forward
+            set_auto_forward,
+            titlebar::title_bar
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bach");

@@ -173,7 +173,7 @@ export function LogViewer({ task, process: initialProcess, onClose }: { task: Ta
       {/* In the Mac app it covers the window's top bar, so it becomes it: the title row is the
           bar's height, clears the traffic lights, and drags the window. */}
       <header data-tauri-drag-region={macTitleBar || undefined} className={cn("flex flex-col gap-1.5 border-b px-4 pb-2.5", !macTitleBar && "pt-2.5")}>
-        <div data-tauri-drag-region={macTitleBar || undefined} className={cn("flex items-center gap-3", macTitleBar && "-mb-1.5 h-11 pl-[68px]")}>
+        <div data-tauri-drag-region={macTitleBar || undefined} className={cn("flex items-center gap-3", macTitleBar && "-mb-1.5 h-(--title-bar-height) pl-[calc(var(--traffic-lights-end)-4px)]")}>
           <h2 className="min-w-0 truncate text-sm font-semibold">{task.name}</h2>
           <Badge variant={task.status === "failed" ? "destructive" : "outline"}>
             {STATUS[task.status]}

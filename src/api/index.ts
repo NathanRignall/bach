@@ -92,7 +92,6 @@ export const taskLogChunk = (taskId: string, from?: number, maxBytes?: number, p
 export const taskProcess = (taskId: string, process: string, action: ProcessAction) => call("task_process", { taskId, process, action });
 export const stopTask = (taskId: string) => call("stop_task", { taskId });
 export const removeTask = (taskId: string) => call("remove_task", { taskId });
-export const startTask = (args: Args<"start_task">) => call("start_task", args);
 
 export const listTerminals = () => call("list_terminals");
 export const openTerminal = (args: Args<"open_terminal">) => call("open_terminal", args);

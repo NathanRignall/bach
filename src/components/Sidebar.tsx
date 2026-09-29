@@ -42,7 +42,7 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
   return (
     <aside className="flex w-64 shrink-0 flex-col gap-3 border-r bg-sidebar p-3 text-sidebar-foreground">
       {/* Room for the traffic lights, and something to drag the window by. */}
-      {macTitleBar && <div data-tauri-drag-region className="-mx-3 -mt-3 h-11 shrink-0" />}
+      {macTitleBar && <div data-tauri-drag-region className="-mx-3 -mt-3 h-(--title-bar-height) shrink-0" />}
       <Button variant="outline" onClick={onNew}>
         <Plus data-icon="inline-start" />
         New session

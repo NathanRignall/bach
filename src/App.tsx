@@ -354,7 +354,7 @@ export function App() {
 
       <main className="flex min-w-0 flex-1 flex-col">
         {!active && connectionError && <p className="p-6 text-sm text-destructive">{connectionError}</p>}
-        {!active && macTitleBar && <div data-tauri-drag-region className="h-11 shrink-0" />}
+        {!active && macTitleBar && <div data-tauri-drag-region className="h-(--title-bar-height) shrink-0" />}
         {!active && (
           <NewSessionPage
             session={newDraft}
@@ -449,7 +449,6 @@ export function App() {
           tasks={tasks.tasks}
           error={tasks.error}
           refresh={() => void tasks.refresh()}
-          defaultCwd={(active?.workdir ?? active?.cwd ?? newDraft.cwd).trim()}
           onClose={() => setTasksOpen(false)}
         />
       )}

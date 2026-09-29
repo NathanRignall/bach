@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Ban, CheckCircle2, Maximize2, ScrollText, Square, Trash2, X, XCircle } from "lucide-react";
-import { Forwarding, TaskStatus, TaskView, listTasks, onReconnect, onTaskEvent, removeTask, startTask, stopTask, taskLogs } from "@/api";
+import { Forwarding, TaskStatus, TaskView, listTasks, onReconnect, onTaskEvent, removeTask, stopTask, taskLogs } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { AnsiLine } from "@/lib/ansi";
 import { ComposeProcesses, ProcessTabs } from "./ComposeProcesses";
@@ -250,37 +249,18 @@ interface Props {
   tasks: TaskView[];
   error?: string;
   refresh: () => void;
-  /** Folder new tasks start in (the open session's project). */
-  defaultCwd: string;
   onClose: () => void;
 }
 
-/** Everything Satie is running (or has run) on the backend host, plus a way to start something. */
-export function TasksPanel({ tasks, error, refresh, defaultCwd, onClose }: Props) {
-  const [command, setCommand] = useState("");
-  const [starting, setStarting] = useState(false);
-  const [startError, setStartError] = useState<string>();
+/** Everything Satie is running (or has run) on the backend host. */
+export function TasksPanel({ tasks, error, refresh, onClose }: Props) {
   const [viewing, setViewing] = useState<{ id: string; process?: string }>();
   const viewed = tasks.find((t) => t.id === viewing?.id);
   const forwarding = useForwarding();
 
-  async function start() {
-    if (!command.trim() || !defaultCwd) return;
-    setStarting(true);
-    try {
-      await startTask({ command: command.trim(), cwd: defaultCwd });
-      setCommand("");
-      setStartError(undefined);
-    } catch (e) {
-      setStartError(String((e as Error).message ?? e));
-    }
-    setStarting(false);
-    refresh();
-  }
-
   return (
     <aside className="flex w-96 shrink-0 flex-col border-l bg-background" aria-label="Background tasks">
-      <header data-tauri-drag-region className="flex h-11 shrink-0 items-center gap-2 border-b px-4">
+      <header data-tauri-drag-region className="flex h-(--title-bar-height) shrink-0 items-center gap-2 border-b px-4">
         <h2 className="flex-1 text-sm font-semibold">Background tasks</h2>
         <Button variant="ghost" size="icon-sm" aria-label="Close tasks panel" onClick={onClose}>
           <X />
@@ -289,36 +269,11 @@ export function TasksPanel({ tasks, error, refresh, defaultCwd, onClose }: Props
 
       <ForwardedPorts forwarding={forwarding} />
 
-      <div className="flex flex-col gap-1.5 border-b p-3">
-        <div className="flex gap-2">
-          <Input
-            aria-label="Command to run in the background"
-            className="h-8 font-mono text-xs"
-            placeholder={defaultCwd ? "Run a command in the background…" : "Choose a project first"}
-            disabled={!defaultCwd}
-            value={command}
-            spellCheck={false}
-            onChange={(e) => setCommand(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && void start()}
-          />
-          <Button size="sm" disabled={!command.trim() || !defaultCwd || starting} onClick={() => void start()}>
-            {starting && <Spinner data-icon="inline-start" />}
-            Start
-          </Button>
-        </div>
-        {defaultCwd && (
-          <p className="truncate font-mono text-[11px] text-muted-foreground" title={defaultCwd}>
-            in {defaultCwd}
-          </p>
-        )}
-        {startError && <p className="text-xs text-destructive">{startError}</p>}
-      </div>
-
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {error && <p className="mb-2 text-xs text-destructive">{error}</p>}
         {tasks.length === 0 && !error && (
           <p className="p-6 text-center text-sm text-muted-foreground">
-            No background tasks. Agents start them with Satie's tools, and you can start one above.
+            No background tasks. Agents start them with Satie's tools.
           </p>
         )}
         <ul className="flex flex-col gap-2">

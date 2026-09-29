@@ -72,6 +72,19 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// Output goes to a log file (or process-compose's pipes), not a terminal, so most tools would drop
+/// their colours; the log viewers show them. Asks for them anyway, unless the environment already
+/// says what it wants (`NO_COLOR`, or its own values).
+fn colour_env() -> Vec<(&'static str, &'static str)> {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return vec![];
+    }
+    [("FORCE_COLOR", "1"), ("CLICOLOR_FORCE", "1")]
+        .into_iter()
+        .filter(|(k, _)| std::env::var_os(k).is_none())
+        .collect()
+}
+
 pub(crate) fn new_task_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
 }
@@ -442,6 +455,7 @@ impl Satie {
             .arg(&command)
             .arg(&exit_path)
             .current_dir(&cwd)
+            .envs(colour_env())
             .stdin(Stdio::null())
             .stdout(log)
             .stderr(err);

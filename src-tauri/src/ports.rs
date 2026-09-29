@@ -38,7 +38,11 @@ fn convert(f: Forward) -> PortForward {
 
 /// Opens a URL in the default browser.
 pub fn open_url(url: &str) -> Result<(), String> {
-    let program = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
     std::process::Command::new(program)
         .arg(url)
         .spawn()
@@ -96,7 +100,9 @@ impl Ports {
 
     /// The SSH connection is (back) up: reopen the forwards it had, and catch up on tasks.
     pub async fn connected(&self, running_tasks: Vec<Value>) {
-        let Some(forwards) = self.current() else { return };
+        let Some(forwards) = self.current() else {
+            return;
+        };
         let failed = forwards.reapply().await;
         self.note(failed);
         let mut tasks = HashMap::new();
@@ -130,9 +136,18 @@ impl Ports {
 
     /// Makes the automatic forwards match the running tasks' ports.
     async fn sync(&self) {
-        let Some(forwards) = self.current() else { return };
+        let Some(forwards) = self.current() else {
+            return;
+        };
         let wanted: BTreeSet<u16> = if *self.auto.lock().unwrap() {
-            let used: BTreeSet<u16> = self.tasks.lock().unwrap().values().flatten().copied().collect();
+            let used: BTreeSet<u16> = self
+                .tasks
+                .lock()
+                .unwrap()
+                .values()
+                .flatten()
+                .copied()
+                .collect();
             let mut dismissed = self.dismissed.lock().unwrap();
             // A port no task uses any more may be forwarded again when one does.
             dismissed.retain(|p| used.contains(p));
@@ -150,8 +165,11 @@ impl Ports {
         if let Some(dir) = self.settings.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        std::fs::write(&self.settings, serde_json::json!({ "auto": auto }).to_string())
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            &self.settings,
+            serde_json::json!({ "auto": auto }).to_string(),
+        )
+        .map_err(|e| e.to_string())?;
         self.sync().await;
         Ok(())
     }
@@ -172,8 +190,15 @@ impl Ports {
     }
 
     pub async fn stop(&self, port: u16) -> Result<(), String> {
-        let Some(forwards) = self.current() else { return Ok(()) };
-        if forwards.list().await.iter().any(|f| f.remote == port && f.auto) {
+        let Some(forwards) = self.current() else {
+            return Ok(());
+        };
+        if forwards
+            .list()
+            .await
+            .iter()
+            .any(|f| f.remote == port && f.auto)
+        {
             self.dismissed.lock().unwrap().insert(port);
         }
         forwards.remove(port).await?;
@@ -197,7 +222,9 @@ impl Ports {
 
 /// Records a task's listening ports while it runs.
 fn track(tasks: &mut HashMap<String, BTreeSet<u16>>, task: &Value) {
-    let Some(id) = task["id"].as_str() else { return };
+    let Some(id) = task["id"].as_str() else {
+        return;
+    };
     if task["status"] == "running" {
         let ports = task["ports"]
             .as_array()

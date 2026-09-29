@@ -50,6 +50,9 @@
 }
 
 :root {
+    /* The top bar, and where the Mac app's traffic lights end; main.tsx measures both there. */
+    --title-bar-height: 44px;
+    --traffic-lights-end: 68px;
     --background: oklch(0.985 0.004 90);
     --foreground: oklch(0.22 0.01 60);
     --card: oklch(0.97 0.006 90);

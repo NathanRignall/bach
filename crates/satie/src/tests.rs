@@ -96,6 +96,11 @@
         until("exit 3", || status(&satie, &bad.id) == TaskStatus::Failed).await;
         assert_eq!(satie.get(&bad.id).unwrap().exit_code, Some(3));
 
+        // Tools are asked for colour, since the log viewers show it.
+        let env = satie.start_task(req("echo \"$FORCE_COLOR $CLICOLOR_FORCE\"", &dir)).unwrap();
+        until("env", || status(&satie, &env.id) == TaskStatus::Exited).await;
+        assert!(satie.logs(&env.id, 1, None).unwrap().ends_with("1 1"));
+
         // Only the last lines are returned.
         let many = satie.start_task(req("seq 1 100", &dir)).unwrap();
         until("seq", || status(&satie, &many.id) == TaskStatus::Exited).await;
