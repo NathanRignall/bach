@@ -29,6 +29,7 @@ async fn start_run(
     session_id: Option<String>,
     model: Option<String>,
     allowed_tools: Option<Vec<String>>,
+    session_key: Option<String>,
 ) -> Result<String, String> {
     let emit: Emit = Arc::new(move |ev| {
         let _ = app.emit("agent-event", ev);
@@ -40,6 +41,7 @@ async fn start_run(
         session_id,
         model,
         allowed_tools: allowed_tools.unwrap_or_default(),
+        session_key,
     };
     runs.start(emit, req).await
 }
@@ -162,7 +164,13 @@ fn save_session(store: State<'_, Store>, session: Value) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn delete_session(store: State<'_, Store>, session_id: String) -> Result<(), String> {
+async fn delete_session(
+    store: State<'_, Store>,
+    runs: State<'_, Runs>,
+    session_id: String,
+) -> Result<(), String> {
+    // A deleted session's agent runs must not outlive it (its background tasks do).
+    runs.cancel_session(&session_id).await;
     store.delete(&session_id)
 }
 

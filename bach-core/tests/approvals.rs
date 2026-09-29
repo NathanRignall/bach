@@ -92,6 +92,7 @@ async fn begin(dir: &Path, request: &str, rules: &[&str]) -> Waiting {
                 session_id: None,
                 model: None,
                 allowed_tools: rules.iter().map(|r| r.to_string()).collect(),
+                session_key: None,
             },
         )
         .await

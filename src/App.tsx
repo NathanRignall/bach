@@ -230,6 +230,7 @@ export function App() {
         sessionId: active.agentSessionId,
         model: active.agent === "claude" && active.modelChoice !== "default" ? active.modelChoice : undefined,
         allowedTools: active.allowRules,
+        sessionKey: active.id,
       });
       const buffered = early.current.get(runId) ?? [];
       early.current.delete(runId);

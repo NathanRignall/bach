@@ -148,6 +148,8 @@ export const startRun = (args: {
   model?: string;
   /** Permission rules approved earlier in the session. */
   allowedTools?: string[];
+  /** This UI session, so deleting it stops the run even if the page has lost track of it. */
+  sessionKey?: string;
 }) => call<string>("start_run", args);
 
 export type ApprovalDecision = "allow" | "allow_session" | "allow_always" | "deny";

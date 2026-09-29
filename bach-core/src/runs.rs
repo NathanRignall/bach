@@ -31,6 +31,9 @@ pub struct RunRequest {
     pub model: Option<String>,
     /// Permission rules approved earlier in this session.
     pub allowed_tools: Vec<String>,
+    /// The UI session this run belongs to, so deleting that session can stop it even if the
+    /// page has forgotten the run (after a reload, say).
+    pub session_key: Option<String>,
 }
 
 /// How the user answered an approval request.
@@ -54,6 +57,7 @@ struct PendingApproval {
 
 /// A running agent process.
 struct Live {
+    session_key: Option<String>,
     cancel: Option<oneshot::Sender<()>>,
     /// Open for agents driven over stdin, so approvals can be answered; closed when the run ends.
     stdin: Arc<Mutex<Option<ChildStdin>>>,
@@ -153,6 +157,7 @@ impl Runs {
             session_id,
             model,
             allowed_tools,
+            session_key,
         } = req;
 
         // Passed straight to the CLI, so keep to plausible model names (aliases like `opus`,
@@ -245,6 +250,7 @@ impl Runs {
         self.live.lock().await.insert(
             run_id.clone(),
             Live {
+                session_key,
                 cancel: Some(cancel_tx),
                 stdin: stdin.clone(),
                 pending: pending.clone(),
@@ -381,6 +387,22 @@ impl Runs {
         }
     }
 
+    /// Stops every live run that belongs to a UI session. Returns how many there were.
+    pub async fn cancel_session(&self, session_key: &str) -> usize {
+        let ids: Vec<String> = self
+            .live
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, l)| l.session_key.as_deref() == Some(session_key))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &ids {
+            self.cancel(id).await;
+        }
+        ids.len()
+    }
+
     /// Answers an approval request the agent is waiting on.
     pub async fn respond_approval(
         &self,
@@ -436,6 +458,7 @@ mod tests {
             session_id: None,
             model: model.map(String::from),
             allowed_tools: rules.iter().map(|r| r.to_string()).collect(),
+            session_key: None,
         }
     }
 

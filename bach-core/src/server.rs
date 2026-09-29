@@ -149,6 +149,7 @@ async fn handle(st: &AppState, req: Request) -> Result<Value, String> {
             session_id,
             model,
             allowed_tools,
+            session_key,
         } => st
             .runs
             .start(
@@ -160,6 +161,7 @@ async fn handle(st: &AppState, req: Request) -> Result<Value, String> {
                     session_id,
                     model,
                     allowed_tools,
+                    session_key,
                 },
             )
             .await
@@ -245,7 +247,11 @@ async fn handle(st: &AppState, req: Request) -> Result<Value, String> {
             .map(|t| serde_json::to_value(t).unwrap()),
         Request::ListSessions => st.store.list().map(Value::Array),
         Request::SaveSession { session } => st.store.save(&session).map(|_| Value::Null),
-        Request::DeleteSession { session_id } => st.store.delete(&session_id).map(|_| Value::Null),
+        Request::DeleteSession { session_id } => {
+            // A deleted session's agent runs must not outlive it (its background tasks do).
+            st.runs.cancel_session(&session_id).await;
+            st.store.delete(&session_id).map(|_| Value::Null)
+        }
         Request::CancelRun { run_id } => {
             st.runs.cancel(&run_id).await;
             Ok(Value::Null)

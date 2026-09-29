@@ -25,6 +25,9 @@ pub enum Request {
         /// Permission rules approved earlier in the session.
         #[serde(rename = "allowedTools", default)]
         allowed_tools: Vec<String>,
+        /// The UI session this run belongs to (`sessionId` above is the agent's own session).
+        #[serde(rename = "sessionKey")]
+        session_key: Option<String>,
     },
     RespondApproval {
         #[serde(rename = "runId")]
