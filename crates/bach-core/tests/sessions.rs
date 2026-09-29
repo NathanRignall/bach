@@ -172,10 +172,14 @@ async fn a_session_from_first_message_to_deletion() {
     assert!(second.contains("Bash(tmux ls *)"), "{second}");
 
     // A message queued meanwhile goes as soon as the run finishes, without the session ever
-    // looking idle in between.
-    api.call("send_message", json!({ "sessionId": id, "prompt": "queued" }))
-        .await
-        .unwrap();
+    // looking idle in between, images and all.
+    let image = "data:image/png;base64,AAAA";
+    api.call(
+        "send_message",
+        json!({ "sessionId": id, "prompt": "queued", "images": [image] }),
+    )
+    .await
+    .unwrap();
     drain(&mut events);
     api.call(
         "answer_approval",
@@ -191,7 +195,9 @@ async fn a_session_from_first_message_to_deletion() {
         if session.run_id.is_none() && !session.queued.is_empty())));
     assert_eq!(args().lines().count(), 3);
     let (_, entries) = session(&api, &id).await;
-    assert!(entries.iter().any(|e| e["entry"]["text"] == "queued"));
+    assert!(entries
+        .iter()
+        .any(|e| e["entry"]["text"] == "queued" && e["entry"]["images"] == json!([image])));
 
     // Stopping a run leaves the queue waiting, to be sent by hand.
     let s: Session = serde_json::from_value(
