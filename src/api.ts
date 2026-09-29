@@ -114,6 +114,16 @@ export const startRun = (args: {
 
 export const cancelRun = (runId: string) => call<void>("cancel_run", { runId });
 
+export interface DirListing {
+  path: string;
+  parent: string | null;
+  home: string;
+  entries: { name: string; path: string; git: boolean }[];
+}
+
+/** Lists sub-directories on the backend host (where agents run), for the folder picker. */
+export const listDir = (path?: string, showHidden = false) => call<DirListing>("list_dir", { path, showHidden });
+
 /** Sessions are saved by whichever backend is in use (local app data, or the bach-server host). */
 export const listSessions = () => call<unknown[]>("list_sessions");
 export const saveSession = (session: object) => call<void>("save_session", { session });

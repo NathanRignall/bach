@@ -37,6 +37,14 @@ async fn cancel_run(runs: State<'_, Runs>, run_id: String) -> Result<(), String>
 }
 
 #[tauri::command]
+fn list_dir(
+    path: Option<String>,
+    show_hidden: Option<bool>,
+) -> Result<bach_core::fs::DirListing, String> {
+    bach_core::fs::list_dir(path.as_deref(), show_hidden.unwrap_or(false))
+}
+
+#[tauri::command]
 fn list_sessions(store: State<'_, Store>) -> Result<Vec<Value>, String> {
     store.list()
 }
@@ -64,6 +72,7 @@ pub fn run() {
             list_agents,
             start_run,
             cancel_run,
+            list_dir,
             list_sessions,
             save_session,
             delete_session

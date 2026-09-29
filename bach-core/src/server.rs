@@ -144,6 +144,8 @@ async fn handle(st: &AppState, req: Request) -> Result<Value, String> {
             .start(st.emit.clone(), agent, prompt, cwd, session_id)
             .await
             .map(Value::String),
+        Request::ListDir { path, show_hidden } => crate::fs::list_dir(path.as_deref(), show_hidden)
+            .map(|l| serde_json::to_value(l).unwrap()),
         Request::ListSessions => st.store.list().map(Value::Array),
         Request::SaveSession { session } => st.store.save(&session).map(|_| Value::Null),
         Request::DeleteSession { session_id } => st.store.delete(&session_id).map(|_| Value::Null),

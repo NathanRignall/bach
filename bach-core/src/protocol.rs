@@ -22,6 +22,11 @@ pub enum Request {
         #[serde(rename = "sessionId")]
         session_id: Option<String>,
     },
+    ListDir {
+        path: Option<String>,
+        #[serde(rename = "showHidden", default)]
+        show_hidden: bool,
+    },
     ListSessions,
     SaveSession {
         session: Value,

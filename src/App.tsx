@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { FolderPicker } from "./FolderPicker";
 import {
   AgentInfo,
   AgentKind,
@@ -330,18 +331,35 @@ export function App() {
 /** Edits apply on blur/Enter so the session doesn't hop between project groups while typing. */
 function CwdInput({ value, locked, onCommit }: { value: string; locked: boolean; onCommit: (v: string) => void }) {
   const [draft, setDraft] = useState(value);
+  const [picking, setPicking] = useState(false);
   return (
-    <input
-      className="cwd"
-      placeholder="Project directory (defaults to the backend's cwd)"
-      value={draft}
-      disabled={locked}
-      title={locked ? "The project can't change once the agent session has started" : undefined}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => onCommit(draft.trim())}
-      onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-      spellCheck={false}
-    />
+    <>
+      <input
+        className="cwd"
+        placeholder="Project directory (defaults to the backend's cwd)"
+        value={draft}
+        disabled={locked}
+        title={locked ? "The project can't change once the agent session has started" : undefined}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => onCommit(draft.trim())}
+        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+        spellCheck={false}
+      />
+      <button className="browse" disabled={locked} onClick={() => setPicking(true)}>
+        Browse…
+      </button>
+      {picking && (
+        <FolderPicker
+          start={draft}
+          onClose={() => setPicking(false)}
+          onPick={(path) => {
+            setDraft(path);
+            onCommit(path);
+            setPicking(false);
+          }}
+        />
+      )}
+    </>
   );
 }
 
