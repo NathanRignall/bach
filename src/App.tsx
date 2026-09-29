@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, ShieldAlert } from "lucide-react";
 import {
   AgentInfo,
   AgentKind,
+  ApprovalDecision,
   RunEvent,
   cancelRun,
   deleteSession,
@@ -10,10 +11,11 @@ import {
   listSessions,
   onAgentEvent,
   prepareWorkspace,
+  respondApproval,
   saveSession,
   startRun,
 } from "@/api";
-import { BlockView } from "@/components/Transcript";
+import { BlockView, TranscriptContext } from "@/components/Transcript";
 import { WorktreeCleanup } from "@/components/WorktreeCleanup";
 import { Composer } from "@/components/Composer";
 import { NewSessionPage } from "@/components/NewSessionPage";
@@ -21,7 +23,19 @@ import { SessionHeader } from "@/components/SessionHeader";
 import { Sidebar } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { Session, applyEvent, branchNameFor, canRun, groupByProject, isDraft, isStarted, newSession } from "@/session";
+import {
+  Session,
+  applyEvent,
+  awaitingApproval,
+  branchNameFor,
+  canRun,
+  decideApproval,
+  expireApprovals,
+  groupByProject,
+  isDraft,
+  isStarted,
+  newSession,
+} from "@/session";
 
 const COLLAPSED_KEY = "bach.collapsedProjects";
 const loadCollapsed = (): Set<string> => {
@@ -56,7 +70,7 @@ export function App() {
     Promise.all([listAgents(), listSessions()])
       .then(([a, stored]) => {
         setAgents(a);
-        const old = (stored as Session[]).map((s) => ({ ...s, runId: undefined }));
+        const old = (stored as Session[]).map((s) => ({ ...s, runId: undefined, blocks: expireApprovals(s.blocks) }));
         old.forEach((s) => saved.current.set(s.id, s));
         // Open on a fresh session; it is only saved once it has content.
         const fresh = newSession(old[0]?.agent ?? a.find((x) => x.installed)?.kind ?? "claude", old[0]?.cwd);
@@ -134,6 +148,12 @@ export function App() {
     return () => ro.disconnect();
   }, [activeId, chatShown]);
 
+  // Something is waiting on the user: say so in the tab, in case it's in the background.
+  const anyWaiting = sessions.some(awaitingApproval);
+  useEffect(() => {
+    document.title = anyWaiting ? "● Approval needed — Bach" : "Bach";
+  }, [anyWaiting]);
+
   const patch = (id: string, f: (s: Session) => Session) =>
     setSessions((all) => all.map((s) => (s.id === id ? f(s) : s)));
 
@@ -170,18 +190,20 @@ export function App() {
     await deleteSession(id).catch((e) => setConnectionError(String(e.message ?? e)));
   }
 
-  async function send() {
-    if (!active || !draft.trim() || active.runId || starting || !canRun(active)) return;
-    const prompt = draft.trim();
-    setDraft("");
+  /** Sends the draft, or `again` (a retry) as a new message in this session. */
+  async function send(again?: string) {
+    const prompt = (again ?? draft).trim();
+    if (!active || !prompt || active.runId || starting || !canRun(active)) return;
+    // A retry of what's sitting in the composer (a failed start puts it back) consumes it.
+    if (again === undefined || draft.trim() === prompt) setDraft("");
     setStarting(true);
     followLatest();
     // A retry from the create page shouldn't stack up errors from earlier attempts.
     if (!isStarted(active)) patch(active.id, (s) => ({ ...s, blocks: s.blocks.filter((b) => b.kind !== "error") }));
     const fail = (err: unknown) => {
-      setDraft(prompt);
+      if (again === undefined) setDraft(prompt);
       const message = String((err as Error).message ?? err);
-      patch(active.id, (s) => ({ ...s, blocks: [...s.blocks, { kind: "error", text: message }] }));
+      patch(active.id, (s) => ({ ...s, blocks: [...s.blocks, { kind: "error", text: message, retryText: prompt }] }));
     };
     try {
       // First message: settle where the agent runs (branch switch or a fresh worktree).
@@ -204,6 +226,7 @@ export function App() {
         cwd: (workdir ?? active.cwd).trim() || undefined,
         sessionId: active.agentSessionId,
         model: active.agent === "claude" && active.modelChoice !== "default" ? active.modelChoice : undefined,
+        allowedTools: active.allowRules,
       });
       const buffered = early.current.get(runId) ?? [];
       early.current.delete(runId);
@@ -220,6 +243,28 @@ export function App() {
     } finally {
       setStarting(false);
     }
+  }
+
+  async function decide(requestId: string, decision: ApprovalDecision) {
+    const s = active;
+    if (!s?.runId) return;
+    try {
+      await respondApproval({ runId: s.runId, requestId, decision });
+      patch(s.id, (x) => decideApproval(x, requestId, decision));
+    } catch {
+      // The run moved on without it (finished, stopped, or the agent withdrew the request).
+      patch(s.id, (x) => ({
+        ...x,
+        blocks: x.blocks.map((b) => (b.kind === "approval" && b.requestId === requestId && !b.decision ? { ...b, decision: "expired" } : b)),
+      }));
+    }
+  }
+
+  /** Sends a message again as a new turn (the agent still remembers the earlier one). */
+  function retry(text?: string) {
+    const last = [...(active?.blocks ?? [])].reverse().find((b) => b.kind === "user");
+    const prompt = text ?? (last?.kind === "user" ? last.text : undefined);
+    if (prompt) void send(prompt);
   }
 
   if (loading) {
@@ -282,6 +327,7 @@ export function App() {
           <>
             <SessionHeader session={active} />
 
+            <TranscriptContext.Provider value={{ decide, retry: running || starting ? undefined : retry }}>
             <div className="relative min-h-0 flex-1">
               <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
                 <div ref={contentRef} className="mx-auto flex max-w-3xl flex-col gap-4 px-5 py-6">
@@ -293,11 +339,16 @@ export function App() {
                   {active.blocks.map((b, i) => (
                     <BlockView key={i} block={b} live={running} />
                   ))}
-                  {(running || starting) && (
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
-                      <Spinner className="text-primary" /> Working…
-                    </div>
-                  )}
+                  {(running || starting) &&
+                    (awaitingApproval(active) ? (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+                        <ShieldAlert className="size-4 animate-pulse text-primary" /> Waiting for your approval
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+                        <Spinner className="text-primary" /> Working…
+                      </div>
+                    ))}
                 </div>
               </div>
               {showJump && (
@@ -312,6 +363,7 @@ export function App() {
                 </Button>
               )}
             </div>
+            </TranscriptContext.Provider>
 
             <div className="mx-auto w-full max-w-3xl px-5 pb-5">
               <Composer

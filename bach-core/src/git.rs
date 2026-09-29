@@ -288,7 +288,9 @@ fn prepare_sync(
     }
     // Only known branches are accepted, which also keeps option-like names away from git.
     if let Some(b) = &branch {
-        if !info.branches.contains(b) {
+        // A repo with no commits yet has a current branch that isn't a real ref (and so isn't
+        // listed), but running on it is fine.
+        if !info.branches.contains(b) && info.current.as_ref() != Some(b) {
             return Err(format!("Unknown branch `{b}`."));
         }
     }
@@ -536,6 +538,26 @@ mod tests {
             .contains(&"bach/dirty".to_string()));
         remove_worktree_sync(&wts, &ahead, true, true).unwrap();
         assert!(list_worktrees_sync(&wts).is_empty());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn works_in_a_repo_with_no_commits() {
+        let base = std::env::temp_dir().join(format!("bach-git-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        sh(&base, &["init", "-q", "-b", "main"]);
+        let path = base.to_str().unwrap();
+
+        let info = info_sync(path).unwrap();
+        assert!(info.is_repo && info.branches.is_empty());
+        assert_eq!(info.current.as_deref(), Some("main"));
+
+        // The default selection (the current, unborn branch) is accepted as is.
+        let ws = prepare_sync(&base.join("wt"), path, Some("main".into()), false, None).unwrap();
+        assert_eq!(ws.workdir, path);
+        // An unrelated unknown branch is still refused.
+        assert!(prepare_sync(&base.join("wt"), path, Some("nope".into()), false, None).is_err());
         let _ = std::fs::remove_dir_all(base);
     }
 }

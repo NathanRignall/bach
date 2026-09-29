@@ -1,11 +1,12 @@
-import type { AgentKind, RunEvent } from "./api";
+import type { AgentKind, ApprovalDecision, RunEvent } from "./api";
 
 export type Block =
   | { kind: "user"; text: string }
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
   | ToolBlock
-  | { kind: "error"; text: string }
+  | ApprovalBlock
+  | { kind: "error"; text: string; /** The message that failed to start, so Retry resends that one. */ retryText?: string }
   | { kind: "note"; text: string };
 
 /** Progress of a sub-agent or background task started by a tool call. */
@@ -35,6 +36,19 @@ export interface ToolBlock {
   children?: Block[];
 }
 
+/** A permission request from the agent; `decision` is unset while it waits for the user. */
+export interface ApprovalBlock {
+  kind: "approval";
+  requestId: string;
+  toolName: string;
+  input: unknown;
+  description?: string;
+  reason?: string;
+  rules: string[];
+  directories: string[];
+  decision?: ApprovalDecision | "expired";
+}
+
 export const isSubagent = (b: ToolBlock) => !!b.task || b.name === "Agent" || b.name === "Task";
 
 export interface Session {
@@ -56,6 +70,8 @@ export interface Session {
   /** The branch the session runs on once started. */
   gitBranch?: string;
   agentSessionId?: string;
+  /** Permission rules the user approved "for this session"; passed to every later run. */
+  allowRules?: string[];
   /** Model choice for Claude Code: "default" or an alias like "opus". */
   modelChoice?: string;
   /** The model the agent reported using on its latest run. */
@@ -113,6 +129,24 @@ export function groupByProject(sessions: Session[]): [string, Session[]][] {
   return [...groups];
 }
 
+export const awaitingApproval = (s: Session) => s.blocks.some((b) => b.kind === "approval" && !b.decision);
+
+/** Approvals still open when a run ends (or after a reload) can no longer be answered. */
+export const expireApprovals = (blocks: Block[]): Block[] =>
+  blocks.map((b) => (b.kind === "approval" && !b.decision ? { ...b, decision: "expired" } : b));
+
+export function decideApproval(s: Session, requestId: string, decision: ApprovalDecision): Session {
+  let rules: string[] = [];
+  const blocks = s.blocks.map((b) => {
+    if (b.kind !== "approval" || b.requestId !== requestId) return b;
+    rules = b.rules;
+    return { ...b, decision };
+  });
+  // "For this session" outlasts the run: later runs are started with these rules pre-approved.
+  const allowRules = decision === "allow_session" ? [...new Set([...(s.allowRules ?? []), ...rules])] : s.allowRules;
+  return { ...s, blocks, allowRules };
+}
+
 function mapTool(blocks: Block[], id: string, f: (t: ToolBlock) => ToolBlock): Block[] {
   return blocks.map((b) => (b.kind === "tool" && b.id === id ? f(b) : b));
 }
@@ -165,13 +199,35 @@ export function applyEvent(s: Session, e: RunEvent): Session {
       const changed = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
       return { ...s, blocks: mapTool(blocks, e.id, (t) => ({ ...t, task: { ...t.task, ...changed } })) };
     }
+    case "approval":
+      return {
+        ...s,
+        blocks: [
+          ...blocks,
+          {
+            kind: "approval",
+            requestId: e.request_id,
+            toolName: e.tool_name,
+            input: e.input,
+            description: e.description,
+            reason: e.reason,
+            rules: e.rules,
+            directories: e.directories ?? [],
+          },
+        ],
+      };
+    case "approval_cancelled":
+      return {
+        ...s,
+        blocks: blocks.map((b) => (b.kind === "approval" && b.requestId === e.request_id && !b.decision ? { ...b, decision: "expired" } : b)),
+      };
     case "error":
       return { ...s, blocks: [...blocks, { kind: "error", text: e.message }] };
     case "raw":
       return { ...s, blocks: [...blocks, { kind: "text", text: e.line }] };
     case "cancelled":
-      return { ...s, runId: undefined, blocks: [...blocks, { kind: "note", text: "Stopped" }] };
+      return { ...s, runId: undefined, blocks: [...expireApprovals(blocks), { kind: "note", text: "Stopped" }] };
     case "done":
-      return { ...s, runId: undefined };
+      return { ...s, runId: undefined, blocks: expireApprovals(blocks) };
   }
 }

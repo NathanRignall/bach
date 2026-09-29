@@ -44,7 +44,9 @@ export function BranchControls({ session, git, onChange }: { session: Session; g
   if (!info?.isRepo) return null;
 
   const selected = session.branch ?? info.current ?? undefined;
-  const items = info.branches.map((b) => ({ value: b, label: b + (b === info.current ? " (current)" : "") }));
+  // A repo with no commits has a current branch that isn't listed yet; keep it selectable.
+  const names = info.current && !info.branches.includes(info.current) ? [info.current, ...info.branches] : info.branches;
+  const items = names.map((b) => ({ value: b, label: b + (b === info.current ? " (current)" : "") }));
 
   return (
     <>

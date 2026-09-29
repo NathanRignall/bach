@@ -2,7 +2,7 @@ use bach_core::{
     adapters::AgentKind,
     git::{Git, GitInfo, Workspace, WorktreeEntry},
     list_agents as core_list_agents,
-    runs::{Emit, Runs},
+    runs::{Decision, Emit, RunRequest, Runs},
     store::Store,
     AgentInfo,
 };
@@ -16,6 +16,8 @@ fn list_agents() -> Vec<AgentInfo> {
 }
 
 /// Starts a run and returns its run id. Events arrive on the `agent-event` channel.
+// Tauri command arguments are flat by design.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn start_run(
     app: AppHandle,
@@ -25,11 +27,31 @@ async fn start_run(
     cwd: Option<String>,
     session_id: Option<String>,
     model: Option<String>,
+    allowed_tools: Option<Vec<String>>,
 ) -> Result<String, String> {
     let emit: Emit = Arc::new(move |ev| {
         let _ = app.emit("agent-event", ev);
     });
-    runs.start(emit, agent, prompt, cwd, session_id, model)
+    let req = RunRequest {
+        agent,
+        prompt,
+        cwd,
+        session_id,
+        model,
+        allowed_tools: allowed_tools.unwrap_or_default(),
+    };
+    runs.start(emit, req).await
+}
+
+#[tauri::command]
+async fn respond_approval(
+    runs: State<'_, Runs>,
+    run_id: String,
+    request_id: String,
+    decision: Decision,
+    message: Option<String>,
+) -> Result<(), String> {
+    runs.respond_approval(&run_id, &request_id, decision, message)
         .await
 }
 
@@ -113,6 +135,7 @@ pub fn run() {
             list_agents,
             start_run,
             cancel_run,
+            respond_approval,
             list_dir,
             git_info,
             prepare_workspace,

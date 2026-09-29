@@ -74,3 +74,21 @@ This happens when the first message is sent; the folder, branch and worktree are
   "Jump to latest" re-pins.
 - Claude Code sessions have a model picker (Default/Opus/Sonnet/Haiku, passed as `--model`);
   the model each run actually reports using is shown in the session header.
+
+## Approvals and retry
+
+Claude Code runs with `--permission-prompt-tool stdio`: when it wants to use a tool that isn't
+pre-approved (e.g. `nix develop`, `tmux`, file writes outside the safe list) it sends a request,
+Bach shows an approval card, and the run waits for your answer.
+
+- **Allow** - this call only. **Allow for this session** - also remembers the agent's suggested rule
+  (e.g. `Bash(touch inside-b.txt)`) and passes it with `--allowedTools` on every later message in the
+  session. **Always allow** - saves that rule to the project's `.claude/settings.local.json`.
+  **Deny** - the agent is told you said no.
+- Only the rule itself is ever granted. The agent also offers to widen directory access or switch to
+  accept-edits mode; those suggestions are dropped. A request that reaches outside the project
+  folder says so on the card.
+- Sessions waiting on you show a shield in the sidebar and the tab title changes. Stopping a run, or
+  a reload, closes any open request.
+- Hover one of your messages for a **Retry** button (resends it as a new message; the agent still
+  remembers the earlier one). Error messages have a Retry too.

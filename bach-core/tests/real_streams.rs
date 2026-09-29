@@ -105,3 +105,39 @@ fn claude_real_subagent_run() {
         "content blocks should be flattened to text: {output}"
     );
 }
+
+#[test]
+fn claude_real_approval_request() {
+    // The first line is the request the real CLI sent for `tmux ls`; the second is a cancel.
+    let ev = events(
+        AgentKind::Claude,
+        include_str!("fixtures/claude_approval.jsonl"),
+    );
+    match &ev[0] {
+        AgentEvent::Approval {
+            request_id,
+            tool_use_id,
+            tool_name,
+            input,
+            rules,
+            reason,
+            suggestions,
+            ..
+        } => {
+            assert_eq!(request_id, "1f0b4978-4c9d-47d8-a464-eb71a79ab709");
+            assert_eq!(
+                tool_use_id.as_deref(),
+                Some("toolu_01Pthzyn5HnJsw47ighS9BsP")
+            );
+            assert_eq!(tool_name, "Bash");
+            assert_eq!(input["command"], "tmux ls");
+            assert_eq!(rules, &["Bash(tmux ls *)"]);
+            assert_eq!(reason.as_deref(), Some("This command requires approval"));
+            assert_eq!(suggestions[0]["destination"], "localSettings");
+        }
+        other => panic!("expected an approval, got {other:?}"),
+    }
+    assert!(
+        matches!(&ev[1], AgentEvent::ApprovalCancelled { request_id } if request_id.starts_with("1f0b"))
+    );
+}

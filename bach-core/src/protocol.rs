@@ -22,6 +22,17 @@ pub enum Request {
         #[serde(rename = "sessionId")]
         session_id: Option<String>,
         model: Option<String>,
+        /// Permission rules approved earlier in the session.
+        #[serde(rename = "allowedTools", default)]
+        allowed_tools: Vec<String>,
+    },
+    RespondApproval {
+        #[serde(rename = "runId")]
+        run_id: String,
+        #[serde(rename = "requestId")]
+        request_id: String,
+        decision: crate::runs::Decision,
+        message: Option<String>,
     },
     ListDir {
         path: Option<String>,

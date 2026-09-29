@@ -1,11 +1,11 @@
 import { useRef, useState } from "react";
-import { ChevronDown, ChevronRight, GitFork, Plus, X } from "lucide-react";
+import { ChevronDown, ChevronRight, GitFork, Plus, ShieldAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { Session, groupByProject, projectName } from "@/session";
+import { Session, awaitingApproval, groupByProject, projectName } from "@/session";
 import { BackendPicker } from "./BackendPicker";
 
 interface Props {
@@ -106,7 +106,9 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
                             title="Double-click to rename"
                             className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm"
                           >
-                            {s.runId ? (
+                            {awaitingApproval(s) ? (
+                              <ShieldAlert className="size-3.5 shrink-0 animate-pulse text-primary" aria-label="Needs your approval" />
+                            ) : s.runId ? (
                               <Spinner className="size-3.5 shrink-0 text-primary" aria-label="Running" />
                             ) : (
                               <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground/30" />

@@ -1,9 +1,10 @@
 use crate::adapters::{AgentEvent, AgentKind};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::{collections::HashMap, process::Stdio, sync::Arc};
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    process::Command,
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::{ChildStdin, Command},
     sync::{oneshot, Mutex},
 };
 
@@ -17,20 +18,64 @@ pub struct RunEvent {
     event: AgentEvent,
 }
 
-/// Tracks live agent processes so they can be cancelled.
+/// Everything needed to start one turn of an agent.
+pub struct RunRequest {
+    pub agent: AgentKind,
+    pub prompt: String,
+    pub cwd: Option<String>,
+    /// The agent's own session id, to continue an earlier conversation.
+    pub session_id: Option<String>,
+    pub model: Option<String>,
+    /// Permission rules approved earlier in this session.
+    pub allowed_tools: Vec<String>,
+}
+
+/// How the user answered an approval request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Decision {
+    /// Just this once.
+    Allow,
+    /// Also for the rest of this run; the UI remembers the rule for later runs.
+    AllowSession,
+    /// Save the agent's suggested rule to the project's settings.
+    AllowAlways,
+    Deny,
+}
+
+struct PendingApproval {
+    input: Value,
+    suggestions: Value,
+}
+
+/// A running agent process.
+struct Live {
+    cancel: Option<oneshot::Sender<()>>,
+    /// Open for agents driven over stdin, so approvals can be answered; closed when the run ends.
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    /// Requests the agent is waiting on. What was asked is kept here, not taken from the client.
+    pending: Arc<std::sync::Mutex<HashMap<String, PendingApproval>>>,
+}
+
+/// Tracks live agent processes so they can be cancelled and their approvals answered.
 #[derive(Default)]
-pub struct Runs(Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>);
+pub struct Runs(Arc<Mutex<HashMap<String, Live>>>);
+
+fn valid_rule(r: &str) -> bool {
+    !r.is_empty() && !r.starts_with('-') && r.len() < 500
+}
 
 impl Runs {
-    pub async fn start(
-        &self,
-        emit: Emit,
-        agent: AgentKind,
-        prompt: String,
-        cwd: Option<String>,
-        session_id: Option<String>,
-        model: Option<String>,
-    ) -> Result<String, String> {
+    pub async fn start(&self, emit: Emit, req: RunRequest) -> Result<String, String> {
+        let RunRequest {
+            agent,
+            prompt,
+            cwd,
+            session_id,
+            model,
+            allowed_tools,
+        } = req;
+
         // Passed straight to the CLI, so keep to plausible model names (aliases like `opus`,
         // ids like `claude-opus-5-5`, `sonnet[1m]`) and never anything that looks like a flag.
         let model = model
@@ -43,6 +88,9 @@ impl Runs {
             if !ok {
                 return Err(format!("`{m}` isn't a valid model name."));
             }
+        }
+        if let Some(bad) = allowed_tools.iter().find(|r| !valid_rule(r)) {
+            return Err(format!("`{bad}` isn't a valid permission rule."));
         }
 
         // No implicit "wherever the backend happens to be": a new session must name its folder.
@@ -61,12 +109,27 @@ impl Runs {
             }
         }
 
+        // Where the agent runs, for telling "inside the project" from "reaches outside it".
+        let project = cwd
+            .as_ref()
+            .map(|d| d.canonicalize().unwrap_or_else(|_| d.clone()));
+
+        let stdin_prompt = agent.stdin_prompt(&prompt);
         let mut cmd = Command::new(agent.binary());
-        cmd.args(agent.args(&prompt, session_id.as_deref(), model.as_deref()))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        cmd.args(agent.args(
+            &prompt,
+            session_id.as_deref(),
+            model.as_deref(),
+            &allowed_tools,
+        ))
+        .stdin(if stdin_prompt.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
@@ -74,9 +137,25 @@ impl Runs {
             .spawn()
             .map_err(|e| format!("failed to launch `{}`: {e}", agent.binary()))?;
 
+        // Deliver the prompt, leaving stdin open for the agent's requests until the run ends.
+        let mut stdin = child.stdin.take();
+        if let (Some(line), Some(w)) = (&stdin_prompt, stdin.as_mut()) {
+            let _ = w.write_all(format!("{line}\n").as_bytes()).await;
+            let _ = w.flush().await;
+        }
+        let stdin = Arc::new(Mutex::new(stdin));
+        let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
+
         let run_id = uuid::Uuid::new_v4().to_string();
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
-        self.0.lock().await.insert(run_id.clone(), cancel_tx);
+        self.0.lock().await.insert(
+            run_id.clone(),
+            Live {
+                cancel: Some(cancel_tx),
+                stdin: stdin.clone(),
+                pending: pending.clone(),
+            },
+        );
 
         let stdout = child.stdout.take().expect("piped");
         let stderr = child.stderr.take().expect("piped");
@@ -117,8 +196,32 @@ impl Runs {
                     }
                     line = lines.next_line() => match line {
                         Ok(Some(line)) if !line.trim().is_empty() => {
-                            for ev in agent.parse_line(&line) {
-                                done |= matches!(ev, AgentEvent::Done { .. });
+                            for mut ev in agent.parse_line(&line) {
+                                // The agent offers to "add" the file's folder even when it is the
+                                // project itself; only folders truly outside are worth showing.
+                                if let (AgentEvent::Approval { directories, .. }, Some(project)) = (&mut ev, &project) {
+                                    directories.retain(|d| {
+                                        let d = std::path::PathBuf::from(d);
+                                        !d.canonicalize().unwrap_or(d).starts_with(project)
+                                    });
+                                }
+                                match &ev {
+                                    AgentEvent::Approval { request_id, input, suggestions, .. } => {
+                                        pending.lock().unwrap().insert(
+                                            request_id.clone(),
+                                            PendingApproval { input: input.clone(), suggestions: suggestions.clone() },
+                                        );
+                                    }
+                                    AgentEvent::ApprovalCancelled { request_id } => {
+                                        pending.lock().unwrap().remove(request_id);
+                                    }
+                                    AgentEvent::Done { .. } => {
+                                        done = true;
+                                        // The turn is over; closing stdin lets the process exit.
+                                        stdin.lock().await.take();
+                                    }
+                                    _ => {}
+                                }
                                 emit(ev);
                             }
                         }
@@ -148,9 +251,78 @@ impl Runs {
     }
 
     pub async fn cancel(&self, run_id: &str) {
-        if let Some(tx) = self.0.lock().await.remove(run_id) {
+        let live = self.0.lock().await.remove(run_id);
+        if let Some(tx) = live.and_then(|l| l.cancel) {
             let _ = tx.send(());
         }
+    }
+
+    /// Answers an approval request the agent is waiting on.
+    pub async fn respond_approval(
+        &self,
+        run_id: &str,
+        request_id: &str,
+        decision: Decision,
+        message: Option<String>,
+    ) -> Result<(), String> {
+        let (stdin, pending) = {
+            let runs = self.0.lock().await;
+            let live = runs.get(run_id).ok_or("That run has already finished.")?;
+            (live.stdin.clone(), live.pending.clone())
+        };
+        let approval = pending
+            .lock()
+            .unwrap()
+            .remove(request_id)
+            .ok_or("That approval is no longer pending.")?;
+
+        let response = match decision {
+            Decision::Deny => json!({
+                "behavior": "deny",
+                "message": message.unwrap_or_else(|| "The user denied this request.".into()),
+            }),
+            allow => {
+                let mut r = json!({ "behavior": "allow", "updatedInput": approval.input });
+                // Only ever the rule itself. The agent also offers to widen directory access or
+                // switch permission mode; "allow this command" must not quietly grant those.
+                let rules: Vec<Value> = approval
+                    .suggestions
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|s| s["type"] == "addRules" && s["behavior"] == "allow")
+                    .cloned()
+                    .collect();
+                let updates = match allow {
+                    Decision::AllowSession => Some(
+                        rules
+                            .into_iter()
+                            .map(|mut s| {
+                                s["destination"] = json!("session");
+                                s
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                    Decision::AllowAlways => Some(rules),
+                    _ => None,
+                };
+                if let Some(u) = updates.filter(|u| !u.is_empty()) {
+                    r["updatedPermissions"] = json!(u);
+                }
+                r
+            }
+        };
+        let line = json!({
+            "type": "control_response",
+            "response": { "subtype": "success", "request_id": request_id, "response": response },
+        });
+
+        let mut guard = stdin.lock().await;
+        let w = guard.as_mut().ok_or("That run has already finished.")?;
+        w.write_all(format!("{line}\n").as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        w.flush().await.map_err(|e| e.to_string())
     }
 }
 
@@ -162,46 +334,47 @@ mod tests {
         Arc::new(|_| {})
     }
 
+    fn req(cwd: Option<&str>, model: Option<&str>, rules: &[&str]) -> RunRequest {
+        RunRequest {
+            agent: AgentKind::Claude,
+            prompt: "hi".into(),
+            cwd: cwd.map(String::from),
+            session_id: None,
+            model: model.map(String::from),
+            allowed_tools: rules.iter().map(|r| r.to_string()).collect(),
+        }
+    }
+
     #[tokio::test]
     async fn new_runs_require_an_existing_folder() {
         let runs = Runs::default();
-        for cwd in [None, Some("  ".to_string())] {
-            let err = runs
-                .start(noop(), AgentKind::Claude, "hi".into(), cwd, None, None)
-                .await
-                .unwrap_err();
+        for cwd in [None, Some("  ")] {
+            let err = runs.start(noop(), req(cwd, None, &[])).await.unwrap_err();
             assert!(err.contains("Choose a project folder"), "{err}");
         }
         let err = runs
-            .start(
-                noop(),
-                AgentKind::Claude,
-                "hi".into(),
-                Some("/definitely/not/here".into()),
-                None,
-                None,
-            )
+            .start(noop(), req(Some("/definitely/not/here"), None, &[]))
             .await
             .unwrap_err();
         assert!(err.contains("not a folder"), "{err}");
     }
 
     #[tokio::test]
-    async fn rejects_flag_like_model_names() {
+    async fn rejects_flag_like_model_names_and_rules() {
         let runs = Runs::default();
         for m in ["--dangerously-skip-permissions", "-x", "opus; rm", "a b"] {
             let err = runs
-                .start(
-                    noop(),
-                    AgentKind::Claude,
-                    "hi".into(),
-                    Some("/tmp".into()),
-                    None,
-                    Some(m.into()),
-                )
+                .start(noop(), req(Some("/tmp"), Some(m), &[]))
                 .await
                 .unwrap_err();
             assert!(err.contains("valid model"), "{m}: {err}");
+        }
+        for r in ["--dangerously-skip-permissions", "", "-x"] {
+            let err = runs
+                .start(noop(), req(Some("/tmp"), None, &[r]))
+                .await
+                .unwrap_err();
+            assert!(err.contains("valid permission rule"), "{r:?}: {err}");
         }
     }
 }

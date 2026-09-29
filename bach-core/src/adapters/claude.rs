@@ -1,14 +1,25 @@
 use super::AgentEvent;
 use serde_json::Value;
 
-pub fn args(prompt: &str, session_id: Option<&str>, model: Option<&str>) -> Vec<String> {
-    let mut a = vec![
-        "-p".into(),
-        prompt.into(),
-        "--output-format".into(),
-        "stream-json".into(),
-        "--verbose".into(),
-    ];
+/// The prompt goes over stdin (see [`user_message`]) so the process can also receive answers
+/// to its permission requests (`--permission-prompt-tool stdio`).
+pub fn args(
+    session_id: Option<&str>,
+    model: Option<&str>,
+    allowed_tools: &[String],
+) -> Vec<String> {
+    let mut a: Vec<String> = [
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--permission-prompt-tool",
+        "stdio",
+    ]
+    .map(String::from)
+    .into();
     if let Some(id) = session_id {
         a.push("--resume".into());
         a.push(id.into());
@@ -17,7 +28,47 @@ pub fn args(prompt: &str, session_id: Option<&str>, model: Option<&str>) -> Vec<
         a.push("--model".into());
         a.push(m.into());
     }
+    if !allowed_tools.is_empty() {
+        a.push("--allowedTools".into());
+        a.extend(allowed_tools.iter().cloned());
+    }
     a
+}
+
+/// One line of stream-json input: a user turn.
+pub fn user_message(prompt: &str) -> String {
+    serde_json::json!({ "type": "user", "message": { "role": "user", "content": prompt } })
+        .to_string()
+}
+
+/// Folders the agent offers to add access to (a command reaching outside the project).
+fn directories_from(suggestions: &Value) -> Vec<String> {
+    suggestions
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| s["type"] == "addDirectories")
+        .flat_map(|s| s["directories"].as_array().into_iter().flatten())
+        .filter_map(|d| d.as_str().map(str::to_string))
+        .collect()
+}
+
+/// `Bash(tmux ls *)`-style rule strings from the agent's suggested permission updates.
+fn rules_from(suggestions: &Value) -> Vec<String> {
+    suggestions
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| s["type"] == "addRules" && s["behavior"] == "allow")
+        .flat_map(|s| s["rules"].as_array().into_iter().flatten())
+        .filter_map(|r| {
+            let tool = r["toolName"].as_str()?;
+            Some(match r["ruleContent"].as_str() {
+                Some(c) => format!("{tool}({c})"),
+                None => tool.to_string(),
+            })
+        })
+        .collect()
 }
 
 /// Tool results are either a string or a list of content blocks; keep the readable text.
@@ -108,6 +159,23 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
                 })
                 .collect()
         }
+        Some("control_request") if v["request"]["subtype"] == "can_use_tool" => {
+            let r = &v["request"];
+            vec![AgentEvent::Approval {
+                request_id: s(&v["request_id"]),
+                tool_use_id: opt(&r["tool_use_id"]),
+                tool_name: s(&r["tool_name"]),
+                input: r["input"].clone(),
+                description: opt(&r["description"]),
+                reason: opt(&r["decision_reason"]),
+                rules: rules_from(&r["permission_suggestions"]),
+                directories: directories_from(&r["permission_suggestions"]),
+                suggestions: r["permission_suggestions"].clone(),
+            }]
+        }
+        Some("control_cancel_request") => vec![AgentEvent::ApprovalCancelled {
+            request_id: s(&v["request_id"]),
+        }],
         Some("result") => vec![AgentEvent::Done {
             cost_usd: v["total_cost_usd"].as_f64(),
             is_error: v["is_error"].as_bool().unwrap_or(false),

@@ -38,11 +38,29 @@ impl AgentKind {
     /// Arguments for a headless, JSON-streaming invocation.
     ///
     /// `model` is only honoured by Claude Code so far (`--model`, e.g. `opus` or a full id).
-    pub fn args(self, prompt: &str, session_id: Option<&str>, model: Option<&str>) -> Vec<String> {
+    ///
+    /// `allowed_tools` are permission rules (e.g. `Bash(tmux ls *)`) approved earlier in the
+    /// session; only Claude Code takes them.
+    pub fn args(
+        self,
+        prompt: &str,
+        session_id: Option<&str>,
+        model: Option<&str>,
+        allowed_tools: &[String],
+    ) -> Vec<String> {
         match self {
-            AgentKind::Claude => claude::args(prompt, session_id, model),
+            AgentKind::Claude => claude::args(session_id, model, allowed_tools),
             AgentKind::Codex => codex::args(prompt, session_id, model),
             AgentKind::Opencode => opencode::args(prompt, session_id, model),
+        }
+    }
+
+    /// For agents driven over stdin (Claude Code, so it can ask for approvals): the first
+    /// line to send. Those agents stay open for control messages until the run ends.
+    pub fn stdin_prompt(self, prompt: &str) -> Option<String> {
+        match self {
+            AgentKind::Claude => Some(claude::user_message(prompt)),
+            _ => None,
         }
     }
 
@@ -93,6 +111,26 @@ pub enum AgentEvent {
         is_error: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         parent: Option<String>,
+    },
+    /// The agent wants to use a tool that needs the user's approval and waits for an answer.
+    Approval {
+        request_id: String,
+        tool_use_id: Option<String>,
+        tool_name: String,
+        input: Value,
+        description: Option<String>,
+        reason: Option<String>,
+        /// Permission rules an "allow for this session / always" answer would add.
+        rules: Vec<String>,
+        /// Folders outside the project this would also reach into.
+        directories: Vec<String>,
+        /// The agent's own suggested permission updates; echoed back when the user opts in.
+        #[serde(skip)]
+        suggestions: Value,
+    },
+    /// The agent no longer needs an answer to this approval.
+    ApprovalCancelled {
+        request_id: String,
     },
     /// Progress of a sub-agent / background task started by the tool call `id`.
     /// Only the fields that changed are set.

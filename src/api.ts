@@ -13,6 +13,21 @@ export type AgentEvent =
   | { type: "session"; id: string; model?: string }
   | { type: "text"; text: string; parent?: string }
   | { type: "thinking"; text: string }
+  | {
+      // The agent wants to use a tool and waits for the user's answer.
+      type: "approval";
+      request_id: string;
+      tool_use_id?: string;
+      tool_name: string;
+      input: unknown;
+      description?: string;
+      reason?: string;
+      /** Permission rules an "allow for this session / always" answer would add. */
+      rules: string[];
+      /** Folders outside the project this would also reach into. */
+      directories: string[];
+    }
+  | { type: "approval_cancelled"; request_id: string }
   | { type: "tool_use"; id: string; name: string; input: unknown; parent?: string }
   | { type: "tool_result"; id: string; output: string; is_error: boolean; parent?: string }
   | {
@@ -126,7 +141,14 @@ export const startRun = (args: {
   cwd?: string;
   sessionId?: string;
   model?: string;
+  /** Permission rules approved earlier in the session. */
+  allowedTools?: string[];
 }) => call<string>("start_run", args);
+
+export type ApprovalDecision = "allow" | "allow_session" | "allow_always" | "deny";
+
+export const respondApproval = (args: { runId: string; requestId: string; decision: ApprovalDecision; message?: string }) =>
+  call<void>("respond_approval", args);
 
 export const cancelRun = (runId: string) => call<void>("cancel_run", { runId });
 

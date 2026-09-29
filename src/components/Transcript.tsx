@@ -1,11 +1,22 @@
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, Ban, Bot, Brain, CheckCircle2, ChevronRight, Wrench, XCircle } from "lucide-react";
+import { AlertCircle, Ban, Bot, Brain, CheckCircle2, ChevronRight, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
+import { ApprovalDecision } from "@/api";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
-import { Block, ToolBlock, isSubagent } from "@/session";
+import { ApprovalBlock, Block, ToolBlock, isSubagent } from "@/session";
+
+/** What the transcript can ask the app to do on the user's behalf. */
+export interface TranscriptActions {
+  decide: (requestId: string, decision: ApprovalDecision) => Promise<void>;
+  /** Sends a message again; with no text, the last one. Not offered while a run is going. */
+  retry?: (text?: string) => void;
+}
+export const TranscriptContext = createContext<TranscriptActions>({ decide: async () => {} });
+
 
 const summaryClass =
   "group/trigger flex w-full items-center gap-2 rounded-lg border bg-card px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent";
@@ -38,9 +49,7 @@ function Elapsed({ since }: { since?: number }) {
 export function BlockView({ block, live }: { block: Block; live: boolean }) {
   switch (block.kind) {
     case "user":
-      return (
-        <div className="ml-auto w-fit max-w-[85%] rounded-2xl bg-secondary px-4 py-2 text-sm whitespace-pre-wrap">{block.text}</div>
-      );
+      return <UserMessage text={block.text} />;
 
     case "text":
       return (
@@ -72,12 +81,10 @@ export function BlockView({ block, live }: { block: Block; live: boolean }) {
       return <p className="text-center text-xs text-muted-foreground">{block.text}</p>;
 
     case "error":
-      return (
-        <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          <AlertCircle className="mt-0.5 size-4 shrink-0" />
-          <span className="whitespace-pre-wrap">{block.text}</span>
-        </div>
-      );
+      return <ErrorMessage text={block.text} retryText={block.retryText} />;
+
+    case "approval":
+      return <ApprovalCard block={block} live={live} />;
 
     case "tool":
       return isSubagent(block) ? <SubagentCard block={block} live={live} /> : <ToolCard block={block} live={live} />;
@@ -176,5 +183,133 @@ function SubagentCard({ block, live }: { block: ToolBlock; live: boolean }) {
         )}
       </CollapsibleContent>
     </Collapsible>
+  );
+}
+
+function UserMessage({ text }: { text: string }) {
+  const { retry } = useContext(TranscriptContext);
+  return (
+    <div className="group/msg ml-auto flex max-w-[85%] items-center gap-1.5">
+      {retry && (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          className="opacity-0 group-hover/msg:opacity-100 focus-visible:opacity-100"
+          title="Send this message again"
+          aria-label="Retry message"
+          onClick={() => retry(text)}
+        >
+          <RotateCcw />
+        </Button>
+      )}
+      <div className="w-fit rounded-2xl bg-secondary px-4 py-2 text-sm whitespace-pre-wrap">{text}</div>
+    </div>
+  );
+}
+
+function ErrorMessage({ text, retryText }: { text: string; retryText?: string }) {
+  const { retry } = useContext(TranscriptContext);
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+      <AlertCircle className="mt-0.5 size-4 shrink-0" />
+      <span className="min-w-0 flex-1 whitespace-pre-wrap">{text}</span>
+      {retry && (
+        <Button variant="outline" size="xs" onClick={() => retry(retryText)}>
+          <RotateCcw data-icon="inline-start" />
+          Retry
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/** What the tool would do, in a form worth reading before saying yes. */
+function describeInput(input: unknown): { main?: string; rest?: string } {
+  if (!input || typeof input !== "object") return { main: String(input ?? "") };
+  // `description` is shown on its own above the preview.
+  const { command, file_path, path, description: _d, ...others } = input as Record<string, unknown>;
+  const main = [command, file_path, path].find((v): v is string => typeof v === "string");
+  const rest = Object.keys(others).length ? JSON.stringify(others, null, 2) : undefined;
+  return { main: main ?? (rest ? undefined : ""), rest: main ? rest : (rest ?? JSON.stringify(input, null, 2)) };
+}
+
+const DECIDED: Record<string, string> = {
+  allow: "Allowed once",
+  allow_session: "Allowed for this session",
+  allow_always: "Always allowed",
+  deny: "Denied",
+  expired: "No longer needed",
+};
+
+/** A tool the agent wants to use. It waits here until the user answers. */
+function ApprovalCard({ block, live }: { block: ApprovalBlock; live: boolean }) {
+  const { decide } = useContext(TranscriptContext);
+  const [busy, setBusy] = useState(false);
+  const { main, rest } = describeInput(block.input);
+
+  if (block.decision || !live) {
+    const decision = block.decision ?? "expired";
+    const Icon = decision === "deny" ? ShieldX : decision === "expired" ? Ban : ShieldCheck;
+    return (
+      <p className="flex items-center gap-2 px-1 text-xs text-muted-foreground" title={block.rules.join("\n")}>
+        <Icon className="size-3.5 shrink-0" />
+        <span>{DECIDED[decision]}</span>
+        <span className="font-semibold text-foreground">{block.toolName}</span>
+        <code className="min-w-0 flex-1 truncate font-mono">{main ?? rest?.replace(/\s+/g, " ")}</code>
+      </p>
+    );
+  }
+
+  const answer = async (d: ApprovalDecision) => {
+    setBusy(true);
+    await decide(block.requestId, d).finally(() => setBusy(false));
+  };
+
+  return (
+    <div role="group" aria-label="Approval needed" className="flex flex-col gap-3 rounded-xl border border-primary/40 bg-primary/5 p-4">
+      <div className="flex items-center gap-2 text-sm">
+        <ShieldAlert className="size-4 shrink-0 text-primary" />
+        <span>
+          Claude wants to use <span className="font-semibold">{block.toolName}</span>
+        </span>
+        {block.reason && <span className="text-xs text-muted-foreground">· {block.reason}</span>}
+      </div>
+      {block.description && <p className="text-sm text-muted-foreground">{block.description}</p>}
+      {block.directories.length > 0 && (
+        <p className="flex items-start gap-2 text-xs text-muted-foreground">
+          <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-primary" />
+          <span>
+            This also reaches outside the project folder: <span className="font-mono">{block.directories.join(", ")}</span>. Allowing it
+            never grants access to that folder beyond this command.
+          </span>
+        </p>
+      )}
+      {main && <pre className={preClass + " bg-background"}>{main}</pre>}
+      {rest && <pre className={preClass + " bg-background"}>{rest}</pre>}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" disabled={busy} onClick={() => void answer("allow")}>
+          Allow
+        </Button>
+        {block.rules.length > 0 && (
+          <>
+            <Button variant="outline" size="sm" disabled={busy} title={block.rules.join("\n")} onClick={() => void answer("allow_session")}>
+              Allow for this session
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              title={"Saves to this project's settings:\n" + block.rules.join("\n")}
+              onClick={() => void answer("allow_always")}
+            >
+              Always allow
+            </Button>
+          </>
+        )}
+        <Button variant="ghost" size="sm" className="ml-auto text-destructive" disabled={busy} onClick={() => void answer("deny")}>
+          Deny
+        </Button>
+      </div>
+    </div>
   );
 }

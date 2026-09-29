@@ -5,7 +5,7 @@ use crate::{
     git::Git,
     list_agents,
     protocol::{Envelope, Request},
-    runs::{Emit, Runs},
+    runs::{Emit, RunRequest, Runs},
     store::Store,
 };
 use axum::{
@@ -145,11 +145,32 @@ async fn handle(st: &AppState, req: Request) -> Result<Value, String> {
             cwd,
             session_id,
             model,
+            allowed_tools,
         } => st
             .runs
-            .start(st.emit.clone(), agent, prompt, cwd, session_id, model)
+            .start(
+                st.emit.clone(),
+                RunRequest {
+                    agent,
+                    prompt,
+                    cwd,
+                    session_id,
+                    model,
+                    allowed_tools,
+                },
+            )
             .await
             .map(Value::String),
+        Request::RespondApproval {
+            run_id,
+            request_id,
+            decision,
+            message,
+        } => st
+            .runs
+            .respond_approval(&run_id, &request_id, decision, message)
+            .await
+            .map(|_| Value::Null),
         Request::ListDir { path, show_hidden } => crate::fs::list_dir(path.as_deref(), show_hidden)
             .map(|l| serde_json::to_value(l).unwrap()),
         Request::GitInfo { path } => st

@@ -1,5 +1,8 @@
 //! Stopping a run must kill the process and tell the UI the run is over.
-use bach_core::{adapters::AgentKind, runs::Runs};
+use bach_core::{
+    adapters::AgentKind,
+    runs::{RunRequest, Runs},
+};
 use std::{os::unix::fs::PermissionsExt, sync::mpsc, time::Duration};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -29,11 +32,14 @@ async fn cancel_kills_the_agent_and_ends_the_run() {
             std::sync::Arc::new(move |ev| {
                 let _ = tx.send(serde_json::to_value(&ev).unwrap());
             }),
-            AgentKind::Claude,
-            "hi".into(),
-            Some(dir.to_string_lossy().into()),
-            None,
-            None,
+            RunRequest {
+                agent: AgentKind::Claude,
+                prompt: "hi".into(),
+                cwd: Some(dir.to_string_lossy().into()),
+                session_id: None,
+                model: None,
+                allowed_tools: vec![],
+            },
         )
         .await
         .unwrap();
