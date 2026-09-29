@@ -1,6 +1,56 @@
 use super::AgentEvent;
-use crate::satie::SatieArgs;
-use serde_json::Value;
+use satie::Grant;
+use serde_json::{json, Value};
+
+// ---------------------------------------------------------------------------------------------
+// Steering Claude Code to Satie
+// ---------------------------------------------------------------------------------------------
+
+const GUIDANCE: &str = "Anything that must keep running after your turn ends (dev servers, simulations, watchers, \
+long jobs) has to be started with the `satie` MCP tool `task_start`, not with Bash `run_in_background`, `nohup`, a trailing \
+`&` or tmux: processes started those ways are stopped when the turn ends. `task_start` keeps the process running on its own, \
+shows it to the user in the Tasks panel, and `task_logs`, `task_list` and `task_stop` manage it. Pass `port` when the process \
+serves on one, so the call waits until it is up.";
+
+const HOOK_DENY: &str = "Background commands are stopped when this turn ends. Start it with the satie MCP tool `task_start` \
+instead: it keeps running independently and the user can see and stop it in the Tasks panel.";
+
+/// A hook that denies Bash calls with `run_in_background: true` (reads the hook input on stdin).
+fn hook_command() -> String {
+    let deny = json!({ "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": HOOK_DENY,
+    }});
+    format!(
+        "if grep -Eq '\"run_in_background\"[[:space:]]*:[[:space:]]*true'; then printf '%s' '{deny}'; fi"
+    )
+}
+
+/// `--mcp-config`: Satie as the `satie` MCP server, with this run's token.
+fn mcp_config(grant: &Grant) -> String {
+    json!({
+        "mcpServers": { "satie": {
+            "type": "http",
+            "url": grant.url,
+            "headers": { "Authorization": format!("Bearer {}", grant.token) },
+        }}
+    })
+    .to_string()
+}
+
+/// `--settings`: the hook that stops `run_in_background` and points at Satie instead.
+fn settings() -> String {
+    json!({ "hooks": { "PreToolUse": [{
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": hook_command() }],
+    }]}})
+    .to_string()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Invocation
+// ---------------------------------------------------------------------------------------------
 
 /// The prompt goes over stdin (see [`user_message`]) so the process can also receive answers
 /// to its permission requests (`--permission-prompt-tool stdio`).
@@ -8,7 +58,7 @@ pub fn args(
     session_id: Option<&str>,
     model: Option<&str>,
     allowed_tools: &[String],
-    satie: Option<&SatieArgs>,
+    satie: Option<&Grant>,
 ) -> Vec<String> {
     let mut a: Vec<String> = [
         "-p",
@@ -30,10 +80,10 @@ pub fn args(
         a.push("--model".into());
         a.push(m.into());
     }
-    if let Some(satie) = satie {
-        a.extend(["--mcp-config".into(), satie.mcp_config.clone()]);
-        a.extend(["--append-system-prompt".into(), satie.system_prompt.clone()]);
-        a.extend(["--settings".into(), satie.settings.clone()]);
+    if let Some(grant) = satie {
+        a.extend(["--mcp-config".into(), mcp_config(grant)]);
+        a.extend(["--append-system-prompt".into(), GUIDANCE.into()]);
+        a.extend(["--settings".into(), settings()]);
     }
     // Reading a task's state or output changes nothing, so those never need a card; starting
     // and stopping still do.
@@ -203,5 +253,79 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
             is_error: v["is_error"].as_bool().unwrap_or(false),
         }],
         _ => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+    };
+
+    #[tokio::test]
+    async fn hands_the_run_satie_with_guidance_and_a_hook() {
+        let dir = std::env::temp_dir().join(format!("bach-claude-args-{}", std::process::id()));
+        let satie = satie::Satie::start("127.0.0.1:0".parse().unwrap(), dir.clone())
+            .await
+            .unwrap();
+        let grant = satie.grant(satie::Scope::default());
+        let a = args(None, None, &[], Some(&grant));
+        let after = |flag: &str| a[a.iter().position(|x| x == flag).unwrap() + 1].clone();
+
+        let cfg: Value = serde_json::from_str(&after("--mcp-config")).unwrap();
+        let server = &cfg["mcpServers"]["satie"];
+        assert_eq!((server["type"].as_str(), server["url"].as_str()), (Some("http"), Some(satie.url())));
+        assert_eq!(server["headers"]["Authorization"], format!("Bearer {}", grant.token));
+        let prompt = after("--append-system-prompt");
+        assert!(prompt.contains("task_start") && prompt.contains("run_in_background"));
+        assert!(a.contains(&"mcp__satie__task_list".to_string()), "read-only tools pre-approved");
+        assert!(!a.contains(&"mcp__satie__task_start".to_string()), "starting still asks");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hook_denies_only_background_bash_calls() {
+        let settings: Value = serde_json::from_str(&settings()).unwrap();
+        let hook = &settings["hooks"]["PreToolUse"][0];
+        assert_eq!(hook["matcher"], "Bash");
+        let cmd = hook["hooks"][0]["command"].as_str().unwrap();
+
+        let run = |input: &str| {
+            let mut child = Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap()
+        };
+        let bg = run(
+            r#"{"tool_name":"Bash","tool_input":{"command":"sleep 9","run_in_background":true}}"#,
+        );
+        let v: Value = serde_json::from_str(&bg).unwrap();
+        assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert!(v["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .contains("task_start"));
+        let spaced = run(r#"{"tool_input": {"run_in_background" : true}}"#);
+        assert!(spaced.contains("deny"), "whitespace variants too");
+        assert_eq!(
+            run(r#"{"tool_name":"Bash","tool_input":{"command":"ls","run_in_background":false}}"#),
+            ""
+        );
+        assert_eq!(
+            run(r#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#),
+            ""
+        );
     }
 }

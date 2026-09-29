@@ -5,14 +5,18 @@ use crate::{
     adapters::list_agents,
     git::Git,
     runs::{Emit, RunRequest, Runs},
-    satie::{Satie, StartTask},
     store::Store,
 };
 use bach_protocol::{commands::*, *};
+use satie::{Satie, StartTask};
 use satie_protocol::*;
 use serde_json::Value;
-use std::{path::Path, sync::Arc};
-use tokio::sync::broadcast;
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::{sync::broadcast, task::JoinHandle};
 
 pub struct Api {
     runs: Runs,
@@ -20,21 +24,26 @@ pub struct Api {
     store: Store,
     satie: Satie,
     events: broadcast::Sender<ServerEvent>,
+    /// Passes Satie's task events on while anyone is subscribed.
+    task_events: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Api {
-    /// Opens (creating if needed) the session database at `db`. Worktrees and task logs go in
-    /// folders next to it. Starts Satie's MCP server on a free loopback port.
+    /// Opens (creating if needed) the session database at `db`. Worktrees and Satie's files go
+    /// in folders next to it. Starts Satie's MCP server on a free loopback port.
     pub async fn open(db: &Path) -> Result<Api, String> {
         let dir = db.parent().unwrap_or(Path::new("."));
         let store = Store::open(db)?;
-        let satie = Satie::start(
-            "127.0.0.1:0".parse().unwrap(),
-            store.clone(),
-            dir.join("tasks"),
-        )
-        .await
-        .map_err(|e| format!("couldn't start Satie: {e}"))?;
+        let satie = Satie::start("127.0.0.1:0".parse().unwrap(), dir.join("tasks"))
+            .await
+            .map_err(|e| format!("couldn't start Satie: {e}"))?;
+        // Tasks used to live in the session database; Satie keeps its own now.
+        let legacy = store.legacy_tasks()?;
+        if !legacy.is_empty() {
+            let n = satie.import(legacy.into_iter().filter_map(satie::parse_task).collect());
+            eprintln!("moved {n} background task(s) to Satie's database");
+        }
+        store.drop_legacy_tasks()?;
         Ok(Self::new(store, Git::new(dir.join("worktrees")), satie))
     }
 
@@ -46,6 +55,7 @@ impl Api {
             store,
             satie,
             events,
+            task_events: Mutex::default(),
         }
     }
 
@@ -60,7 +70,34 @@ impl Api {
 
     /// Every event from now on. A receiver that falls too far behind skips ahead.
     pub fn subscribe(&self) -> broadcast::Receiver<ServerEvent> {
-        self.events.subscribe()
+        let rx = self.events.subscribe();
+        self.forward_task_events();
+        rx
+    }
+
+    /// Watching tasks means looking at the machine every second, so only do it while someone is
+    /// listening: the forwarder stops (and unsubscribes from Satie) once nobody is.
+    fn forward_task_events(&self) {
+        let mut running = self.task_events.lock().unwrap();
+        if running.as_ref().is_some_and(|h| !h.is_finished()) {
+            return;
+        }
+        let (mut tasks, events) = (self.satie.subscribe(), self.events.clone());
+        *running = Some(tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    ev = tasks.recv() => match ev {
+                        Ok(ev) => { let _ = events.send(ServerEvent::Task(ev)); }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(broadcast::error::RecvError::Closed) => return,
+                    },
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                }
+                if events.receiver_count() == 0 {
+                    return;
+                }
+            }
+        }));
     }
 
     fn emit(&self) -> Emit {
@@ -72,12 +109,11 @@ impl Api {
     }
 }
 
-fn task_not_found(e: String) -> ApiError {
-    // Until Satie has its own error type (it gets one as its own crate).
-    if e.starts_with("No such task") {
-        ApiError::not_found(e)
-    } else {
-        ApiError::failed(e)
+fn satie_error(e: satie::Error) -> ApiError {
+    match e {
+        satie::Error::NotFound(m) => ApiError::not_found(m),
+        satie::Error::Invalid(m) => ApiError::invalid(m),
+        satie::Error::Failed(m) => ApiError::failed(m),
     }
 }
 
@@ -150,32 +186,34 @@ impl Handler for Api {
     async fn task_logs(&self, a: TaskLogsArgs) -> Result<String, ApiError> {
         self.satie
             .logs(&a.task_id, a.lines.unwrap_or(200).clamp(1, 2000))
-            .map_err(task_not_found)
+            .map_err(satie_error)
     }
 
     async fn task_log_chunk(&self, a: TaskLogChunkArgs) -> Result<LogChunk, ApiError> {
         self.satie
             .log_chunk(&a.task_id, a.from, a.max_bytes.unwrap_or(512 * 1024))
-            .map_err(task_not_found)
+            .map_err(satie_error)
     }
 
     async fn stop_task(&self, a: StopTaskArgs) -> Result<Task, ApiError> {
-        self.satie.stop_task(&a.task_id).await.map_err(task_not_found)
+        self.satie.stop_task(&a.task_id).await.map_err(satie_error)
     }
 
     async fn remove_task(&self, a: RemoveTaskArgs) -> Result<(), ApiError> {
-        self.satie.remove_task(&a.task_id).map_err(task_not_found)
+        self.satie.remove_task(&a.task_id).map_err(satie_error)
     }
 
     async fn start_task(&self, a: StartTaskArgs) -> Result<Task, ApiError> {
-        Ok(self.satie.start_task(StartTask {
-            command: a.command,
-            cwd: Some(a.cwd.clone()),
-            name: a.name,
-            project: Some(a.cwd),
-            run_id: None,
-            ports: vec![],
-        })?)
+        self.satie
+            .start_task(StartTask {
+                command: a.command,
+                cwd: Some(a.cwd.clone()),
+                name: a.name,
+                project: Some(a.cwd),
+                owner: None,
+                ports: vec![],
+            })
+            .map_err(satie_error)
     }
 
     async fn list_sessions(&self, _: ListSessionsArgs) -> Result<Vec<Value>, ApiError> {

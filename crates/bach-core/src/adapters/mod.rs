@@ -5,7 +5,7 @@ mod claude;
 mod codex;
 mod opencode;
 
-use crate::satie::SatieArgs;
+use satie::Grant;
 pub use bach_protocol::{AgentEvent, AgentKind};
 use serde_json::Value;
 
@@ -28,7 +28,7 @@ pub trait AgentCli: Copy {
         session_id: Option<&str>,
         model: Option<&str>,
         allowed_tools: &[String],
-        satie: Option<&SatieArgs>,
+        satie: Option<&Grant>,
     ) -> Vec<String>;
 
     /// For agents driven over stdin (Claude Code, so it can ask for approvals): the first
@@ -53,7 +53,7 @@ impl AgentCli for AgentKind {
         session_id: Option<&str>,
         model: Option<&str>,
         allowed_tools: &[String],
-        satie: Option<&SatieArgs>,
+        satie: Option<&Grant>,
     ) -> Vec<String> {
         match self {
             AgentKind::Claude => claude::args(session_id, model, allowed_tools, satie),

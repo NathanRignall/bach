@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Ban, CheckCircle2, Maximize2, ScrollText, Square, Trash2, X, XCircle } from "lucide-react";
-import { TaskStatus, TaskView, listTasks, removeTask, startTask, stopTask, taskHost, taskLogs } from "@/api";
+import { TaskStatus, TaskView, listTasks, onReconnect, onTaskEvent, removeTask, startTask, stopTask, taskHost, taskLogs } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,30 +9,39 @@ import { AnsiLine } from "@/lib/ansi";
 import { LogViewer } from "./LogViewer";
 import { projectName } from "@/session";
 
-/** Background tasks on the backend host, refreshed every few seconds. */
-export function useTasks(intervalMs = 3000) {
+/** Background tasks on the backend host: listed once, then kept current by the backend's task events. */
+export function useTasks() {
   const [tasks, setTasks] = useState<TaskView[]>([]);
   const [error, setError] = useState<string>();
-  const outdated = useRef(false);
   const refresh = () =>
     listTasks()
       .then((t) => (setTasks(t), setError(undefined)))
-      .catch((e) => {
-        const message = String(e.message ?? e);
-        // A backend built before background tasks existed rejects the command as unknown.
-        if (/unknown variant/.test(message)) {
-          outdated.current = true;
-          return setError("This bach-server is older than the app and doesn't support background tasks. Restart it to update.");
-        }
-        setError(message);
-      });
+      .catch((e) => setError(String(e.message ?? e)));
   useEffect(() => {
+    const unTasks = onTaskEvent((e) =>
+      setTasks((all) => {
+        if (e.type === "removed") return all.filter((t) => t.id !== e.id);
+        const i = all.findIndex((t) => t.id === e.task.id);
+        // New tasks go first, like the list (newest first).
+        return i < 0 ? [e.task, ...all] : all.map((t, j) => (j === i ? e.task : t));
+      }),
+    );
+    const unReconnect = onReconnect(() => void refresh());
     void refresh();
-    // No point asking an out-of-date backend again every few seconds.
-    const t = setInterval(() => !outdated.current && void refresh(), intervalMs);
-    return () => clearInterval(t);
-  }, [intervalMs]);
+    return () => (unTasks(), unReconnect());
+  }, []);
   return { tasks, error, refresh };
+}
+
+/** The current time, ticking every `ms` while `on`. */
+function useNow(on: boolean, ms = 1000) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!on) return;
+    const t = setInterval(() => setNow(Date.now()), ms);
+    return () => clearInterval(t);
+  }, [on, ms]);
+  return now;
 }
 
 /** A dev stack can listen on many ports; show the first few and say how many more. */
@@ -118,6 +127,7 @@ function TaskCard({ task, onChanged, onOpenViewer }: { task: TaskView; onChanged
   const [error, setError] = useState<string>();
   const host = taskHost();
   const running = task.status === "running";
+  const now = useNow(running);
   const act = async (f: () => Promise<unknown>) => {
     setBusy(true);
     try {
@@ -153,7 +163,7 @@ function TaskCard({ task, onChanged, onOpenViewer }: { task: TaskView; onChanged
       <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
         {task.project && <Badge variant="outline">{projectName(task.project)}</Badge>}
         <span className="tabular-nums" title={new Date(task.startedAt).toLocaleString()}>
-          {running ? `up ${duration(Date.now() - task.startedAt)}` : `ran ${duration((task.endedAt ?? Date.now()) - task.startedAt)}`}
+          {running ? `up ${duration(now - task.startedAt)}` : `ran ${duration((task.endedAt ?? now) - task.startedAt)}`}
         </span>
         {task.ports.slice(0, MAX_PORTS).map((p) =>
           host ? (

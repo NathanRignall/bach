@@ -29,6 +29,8 @@ export interface Transport {
   call(cmd: string, args: unknown): Promise<unknown>;
   /** Every event from now on (while connected). Returns an unsubscribe function. */
   subscribe(cb: (e: ServerEvent) => void): () => void;
+  /** Called after the connection dropped and came back: events in between were missed. */
+  onReconnect(cb: () => void): () => void;
 }
 
 /** The Tauri app's own backend: one `rpc` command, events on the `bach` channel. */
@@ -45,6 +47,10 @@ export class TauriTransport implements Transport {
     const un = listen<ServerEvent>("bach", (e) => cb(e.payload));
     return () => void un.then((f) => f());
   }
+
+  onReconnect() {
+    return () => {}; // in-process: never disconnects
+  }
 }
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: ApiError) => void };
@@ -55,6 +61,8 @@ export class SocketTransport implements Transport {
   private nextId = 0;
   private pending = new Map<number, Pending>();
   private listeners = new Set<(e: ServerEvent) => void>();
+  private reconnectListeners = new Set<() => void>();
+  private connectedBefore = false;
   private retryMs = 500;
 
   constructor(private url: string) {}
@@ -65,6 +73,8 @@ export class SocketTransport implements Transport {
       ws.onopen = () => {
         this.retryMs = 500;
         resolve(ws);
+        if (this.connectedBefore) this.reconnectListeners.forEach((l) => l());
+        this.connectedBefore = true;
       };
       ws.onerror = () =>
         reject(new ApiError("unavailable", `Can't reach bach-server at ${this.url}. Is it running, and is the SSH tunnel up?`));
@@ -106,5 +116,10 @@ export class SocketTransport implements Transport {
     this.listeners.add(cb);
     void this.connect().catch(() => {}); // events only flow while connected
     return () => void this.listeners.delete(cb);
+  }
+
+  onReconnect(cb: () => void) {
+    this.reconnectListeners.add(cb);
+    return () => void this.reconnectListeners.delete(cb);
   }
 }

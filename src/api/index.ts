@@ -1,7 +1,7 @@
 // The typed client for Bach's backend. Commands, their arguments and results, and every type they
 // use are generated from Rust (crates/bach-protocol) into ./generated/protocol.ts.
 import { remoteUrl } from "./backend";
-import type { Commands, RunEvent, ServerEvent } from "./generated/protocol";
+import type { Commands, RunEvent, ServerEvent, TaskEvent } from "./generated/protocol";
 import { SocketTransport, TauriTransport, type Transport } from "./transport";
 
 export * from "./generated/protocol";
@@ -24,6 +24,15 @@ export function call<K extends CommandName>(
 
 /** Every event the backend pushes. Returns an unsubscribe function. */
 export const onEvent = (cb: (e: ServerEvent) => void) => transport.subscribe(cb);
+
+/** Called when the connection to a remote backend came back; refetch anything followed by events. */
+export const onReconnect = (cb: () => void) => transport.onReconnect(cb);
+
+/** Changes to background tasks. */
+export const onTaskEvent = (cb: (e: TaskEvent) => void) =>
+  onEvent((e) => {
+    if (e.topic === "task") cb(e.data);
+  });
 
 /** Events from agent runs. */
 export const onRunEvent = (cb: (e: RunEvent) => void) =>

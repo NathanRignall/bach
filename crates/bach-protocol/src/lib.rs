@@ -38,7 +38,7 @@ pub struct ClientFrame {
 }
 
 /// What the WebSocket bridge sends: replies to commands, and events.
-#[derive(Debug, Serialize, Deserialize, TS)]
+#[derive(Debug, Serialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ServerFrame {
     Reply { id: u64, result: Value },

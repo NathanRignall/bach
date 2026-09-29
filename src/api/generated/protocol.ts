@@ -179,7 +179,7 @@ export type SaveSessionArgs = { session: JsonValue, };
 /**
  * Everything the backend pushes to clients, whichever transport carries it.
  */
-export type ServerEvent = { "topic": "run", "data": RunEvent };
+export type ServerEvent = { "topic": "run", "data": RunEvent } | { "topic": "task", "data": TaskEvent };
 
 /**
  * What the WebSocket bridge sends: replies to commands, and events.
@@ -224,7 +224,11 @@ cwd: string,
 /**
  * The project (agent run folder) that started it; agents only see their own project's tasks.
  */
-project: string | null, runId: string | null, pid: number, 
+project: string | null, 
+/**
+ * Who started it, in the embedding app's terms (Bach: the agent run).
+ */
+owner: string | null, pid: number, 
 /**
  * Process start time from `/proc`, so a reused pid isn't mistaken for this task.
  */
@@ -233,6 +237,11 @@ startTicks: number | null, startedAt: number, endedAt: number | null, status: Ta
  * Ports the task should come up on; a missing one is a sign a part of it failed.
  */
 expectedPorts: Array<number>, };
+
+/**
+ * A change to the task list.
+ */
+export type TaskEvent = { "type": "changed", task: TaskView, } | { "type": "removed", id: string, };
 
 /**
  * A piece of a task's log: from a byte offset, or (without one) its tail.
@@ -285,7 +294,11 @@ cwd: string,
 /**
  * The project (agent run folder) that started it; agents only see their own project's tasks.
  */
-project: string | null, runId: string | null, pid: number, 
+project: string | null, 
+/**
+ * Who started it, in the embedding app's terms (Bach: the agent run).
+ */
+owner: string | null, pid: number, 
 /**
  * Process start time from `/proc`, so a reused pid isn't mistaken for this task.
  */

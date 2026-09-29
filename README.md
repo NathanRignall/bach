@@ -9,7 +9,11 @@ CLI in headless JSON-streaming mode and normalizing their output into one event 
   name, arguments and result), `ServerEvent`s, `ApiError { code, message }`, and the frames the
   WebSocket carries. `cargo test -p bach-protocol` regenerates `src/api/generated/protocol.ts`
   from it (the test fails once when the file changes; commit the result).
-- `crates/satie-protocol/` — Satie's wire types (tasks, log chunks, task command arguments).
+- `crates/satie/` — Satie, the background-task launcher (see below). Knows nothing about Bach:
+  callers get an MCP token by granting a `Scope` (a project, and an owner recorded on its tasks).
+  `lib.rs` is the launcher, `mcp.rs` the agents' MCP server, `diagnose.rs` / `probe.rs` / `process.rs`
+  look at the machine, `store.rs` is its own database.
+- `crates/satie-protocol/` — Satie's wire types (tasks, `TaskEvent`s, log chunks, command arguments).
 - `crates/bach-core/` — the engine, with no UI or transport.
   - `api.rs` — `Api`: implements every command (`bach_protocol::Handler`) and broadcasts events.
   - `adapters/` — one adapter per agent: builds the CLI args, parses its JSON lines into
@@ -18,7 +22,8 @@ CLI in headless JSON-streaming mode and normalizing their output into one event 
   - `runs.rs` — spawns/cancels agent processes and emits events.
   - `store.rs` — SQLite session storage (`~/.local/share/bach/bach.db`, or `$BACH_DB`). Sessions
     are saved by whichever backend is in use: the Tauri app's data dir, or the bach-server host.
-  - `satie.rs`, `probe.rs` — background tasks (see below).
+  - `adapters/claude.rs` also steers Claude Code to Satie (system prompt, a hook refusing Bash
+    `run_in_background`, the MCP config with the run's token).
 - `crates/bach-server/` — the WebSocket bridge for browser use (see below).
 - `src-tauri/` — Tauri shell: one `rpc` command into `Api`, events on the `bach` channel.
 - `src/api/` — the typed client: `call("start_run", {...})` is checked against the generated
@@ -122,7 +127,10 @@ runs one agent process per message. **Satie** is Bach's own launcher for things 
   project's tasks. Claude Code runs also get a system-prompt note and a hook that refuses Bash
   `run_in_background` and points at `task_start`.
 - The **Background tasks** panel (sidebar) lists them with status, uptime, listening ports (clickable),
-  live logs, Stop and Remove, and can start a command by hand.
-- Task files live in a `tasks/` folder next to the session database (`~/.local/share/bach/tasks`).
+  live logs, Stop and Remove, and can start a command by hand. It follows `task` events the backend
+  pushes (Satie checks tasks every second while anyone is listening) instead of polling.
+- Satie keeps its own database and task files in a `tasks/` folder next to the session database
+  (`~/.local/share/bach/tasks/satie.db`). Tasks from older versions, kept in `bach.db`, are moved
+  there on startup.
 
 Unix only (`setsid`, `/proc` for ports). Codex and opencode don't get the MCP server yet.

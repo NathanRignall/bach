@@ -42,11 +42,6 @@ impl Store {
                  id         TEXT PRIMARY KEY,
                  data       TEXT NOT NULL,
                  updated_at INTEGER NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS tasks (
-                 id         TEXT PRIMARY KEY,
-                 data       TEXT NOT NULL,
-                 started_at INTEGER NOT NULL
              );",
         )
         .map_err(|e| e.to_string())?;
@@ -93,43 +88,37 @@ impl Store {
         Ok(())
     }
 
-    /// Background tasks (see `satie`), oldest first. Stored as JSON; only `id` is read here.
-    pub fn list_tasks(&self) -> Result<Vec<Value>, String> {
+    /// Background tasks from before Satie had its own database (the old `tasks` table), for
+    /// handing over to it. Empty once [`drop_legacy_tasks`](Self::drop_legacy_tasks) has run.
+    pub fn legacy_tasks(&self) -> Result<Vec<Value>, String> {
         let conn = self.0.lock().unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tasks')",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if !exists {
+            return Ok(vec![]);
+        }
         let mut stmt = conn
             .prepare("SELECT data FROM tasks ORDER BY started_at ASC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?;
-        rows.map(|r| {
-            serde_json::from_str(&r.map_err(|e| e.to_string())?).map_err(|e| e.to_string())
-        })
-        .collect()
+        Ok(rows
+            .filter_map(|r| serde_json::from_str(&r.ok()?).ok())
+            .collect())
     }
 
-    pub fn save_task(&self, task: &Value) -> Result<(), String> {
-        let id = task["id"].as_str().ok_or("task has no string `id`")?;
-        let started = task["startedAt"].as_i64().unwrap_or(0);
+    pub fn drop_legacy_tasks(&self) -> Result<(), String> {
         self.0
             .lock()
             .unwrap()
-            .execute(
-                "INSERT INTO tasks (id, data, started_at) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(id) DO UPDATE SET data = excluded.data",
-                params![id, task.to_string(), started],
-            )
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
-    pub fn delete_task(&self, id: &str) -> Result<(), String> {
-        self.0
-            .lock()
-            .unwrap()
-            .execute("DELETE FROM tasks WHERE id = ?1", params![id])
-            .map_err(|e| e.to_string())?;
-        Ok(())
+            .execute_batch("DROP TABLE IF EXISTS tasks")
+            .map_err(|e| e.to_string())
     }
 
     pub fn delete(&self, id: &str) -> Result<(), String> {
@@ -164,6 +153,22 @@ mod tests {
         s.delete("a").unwrap();
         assert_eq!(s.list().unwrap().len(), 1);
         assert!(s.save(&json!({"title": "no id"})).is_err());
+    }
+
+    #[test]
+    fn hands_over_tasks_from_the_old_table_once() {
+        let s = Store::in_memory().unwrap();
+        assert!(s.legacy_tasks().unwrap().is_empty());
+        s.0.lock()
+            .unwrap()
+            .execute_batch(
+                r#"CREATE TABLE tasks (id TEXT PRIMARY KEY, data TEXT NOT NULL, started_at INTEGER NOT NULL);
+                   INSERT INTO tasks VALUES ('t1', '{"id":"t1","runId":"r"}', 1);"#,
+            )
+            .unwrap();
+        assert_eq!(s.legacy_tasks().unwrap()[0]["runId"], "r");
+        s.drop_legacy_tasks().unwrap();
+        assert!(s.legacy_tasks().unwrap().is_empty());
     }
 
     #[test]

@@ -29,7 +29,8 @@ pub struct Task {
     pub cwd: String,
     /// The project (agent run folder) that started it; agents only see their own project's tasks.
     pub project: Option<String>,
-    pub run_id: Option<String>,
+    /// Who started it, in the embedding app's terms (Bach: the agent run).
+    pub owner: Option<String>,
     pub pid: u32,
     /// Process start time from `/proc`, so a reused pid isn't mistaken for this task.
     pub start_ticks: Option<u64>,
@@ -59,6 +60,15 @@ pub struct TaskView {
     pub problems: Vec<String>,
     /// What is running in it, e.g. `workerd ×8`.
     pub processes: Vec<String>,
+}
+
+/// A change to the task list.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum TaskEvent {
+    /// A task started, or something about it changed (status, ports, problems, processes).
+    Changed { task: TaskView },
+    Removed { id: String },
 }
 
 /// A piece of a log file.

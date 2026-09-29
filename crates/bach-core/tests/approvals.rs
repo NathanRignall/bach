@@ -4,9 +4,9 @@
 use bach_core::{
     adapters::AgentKind,
     runs::{Decision, RunRequest, Runs},
-    satie::Satie,
 };
 use bach_protocol::ErrorCode;
+use satie::Satie;
 use serde_json::Value;
 use std::{os::unix::fs::PermissionsExt, path::Path, sync::mpsc, time::Duration};
 
@@ -75,8 +75,7 @@ async fn begin(dir: &Path, request: &str, rules: &[&str]) -> Waiting {
     let (tx, rx) = mpsc::channel();
     let satie = Satie::start(
         "127.0.0.1:0".parse().unwrap(),
-        bach_core::store::Store::in_memory().unwrap(),
-        dir.join("tasks"),
+        dir.join(format!("tasks-{n}")),
     )
     .await
     .unwrap();
@@ -146,7 +145,7 @@ async fn finish(mut w: Waiting) -> Outcome {
 
     // The run's MCP token is revoked when the run is over.
     for _ in 0..40 {
-        if w.satie.active_runs() == 0 {
+        if w.satie.active_grants() == 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -154,7 +153,7 @@ async fn finish(mut w: Waiting) -> Outcome {
 
     let read = |f: &str| std::fs::read_to_string(w.out.join(f)).unwrap();
     Outcome {
-        tokens_left: w.satie.active_runs(),
+        tokens_left: w.satie.active_grants(),
         answer: serde_json::from_str(&read("answer")).unwrap(),
         args: read("args"),
         first: serde_json::from_str(&read("first")).unwrap(),

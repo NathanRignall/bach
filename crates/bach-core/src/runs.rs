@@ -1,9 +1,9 @@
 use crate::{
     adapters::{AgentCli, AgentEvent, AgentKind},
-    satie::{RunInfo, Satie},
 };
 pub use bach_protocol::{Decision, RunEvent};
 use bach_protocol::ApiError;
+use satie::{Satie, Scope};
 use serde_json::{json, Value};
 use std::{collections::HashMap, os::unix::process::ExitStatusExt, process::Stdio, sync::Arc};
 use tokio::{
@@ -50,7 +50,7 @@ struct Live {
 #[derive(Default)]
 pub struct Runs {
     live: Arc<Mutex<HashMap<String, Live>>>,
-    /// Bach's own MCP server (background tasks), offered to Claude Code runs.
+    /// Satie (background tasks), offered to Claude Code runs as an MCP server.
     satie: Option<Satie>,
 }
 
@@ -181,18 +181,15 @@ impl Runs {
 
         let stdin_prompt = agent.stdin_prompt(&prompt);
 
-        // Claude Code gets Bach's MCP server, with a token that lets us tell which run calls it.
-        // The guard revokes the token when the run ends (or if launching fails below).
+        // Claude Code gets Satie as an MCP server, with a token scoped to this project. The grant
+        // is revoked when the run ends (or if launching fails below).
         let run_id = uuid::Uuid::new_v4().to_string();
-        let (satie_args, token) = match (&self.satie, agent) {
-            (Some(satie), AgentKind::Claude) => {
-                let (args, guard) = satie.register_run(RunInfo {
-                    run_id: run_id.clone(),
-                    cwd: project.as_ref().map(|p| p.to_string_lossy().into_owned()),
-                });
-                (Some(args), Some(guard))
-            }
-            _ => (None, None),
+        let grant = match (&self.satie, agent) {
+            (Some(satie), AgentKind::Claude) => Some(satie.grant(Scope {
+                project: project.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                owner: Some(run_id.clone()),
+            })),
+            _ => None,
         };
 
         let mut cmd = Command::new(agent.binary());
@@ -201,7 +198,7 @@ impl Runs {
             session_id.as_deref(),
             model.as_deref(),
             &allowed_tools,
-            satie_args.as_ref(),
+            grant.as_ref(),
         ))
         .stdin(if stdin_prompt.is_some() {
             Stdio::piped()
@@ -265,7 +262,7 @@ impl Runs {
         });
 
         tokio::spawn(async move {
-            let _token = token; // revoked when the run ends
+            let _grant = grant; // revoked when the run ends
             let mut lines = BufReader::new(stdout).lines();
             let mut done = false;
             loop {

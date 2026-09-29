@@ -2,7 +2,7 @@
 //! processes are, whether a local URL answers, and reading log files in chunks.
 //!
 //! Linux (`/proc`); everything degrades to "nothing found" elsewhere.
-use crate::satie::{proc_stat, process_group_of};
+use crate::process::{proc_stat, process_group_of};
 use satie_protocol::LogChunk;
 use serde::Serialize;
 use std::{
