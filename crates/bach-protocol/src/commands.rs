@@ -95,6 +95,8 @@ commands! {
     get_session(GetSessionArgs) -> SessionLog;
     start_session(StartSessionArgs) -> Session;
     send_message(SendMessageArgs) -> Session;
+    send_queued(SendQueuedArgs) -> Session;
+    remove_queued(RemoveQueuedArgs) -> Session;
     stop_session(StopSessionArgs) -> ();
     answer_approval(AnswerApprovalArgs) -> ();
     update_session(UpdateSessionArgs) -> Session;
@@ -164,12 +166,28 @@ pub struct StartSessionArgs {
     pub prompt: String,
 }
 
-/// Sends a message to a session's agent. The session must not be running.
+/// Sends a message to a session's agent; while it is busy, the message is queued instead.
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SendMessageArgs {
     pub session_id: String,
     pub prompt: String,
+}
+
+/// Sends a queued message now. The session must not be running.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SendQueuedArgs {
+    pub session_id: String,
+    pub message_id: String,
+}
+
+/// Takes a message out of the queue without sending it.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveQueuedArgs {
+    pub session_id: String,
+    pub message_id: String,
 }
 
 /// Stops the session's agent run, if one is going.

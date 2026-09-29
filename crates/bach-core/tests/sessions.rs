@@ -86,12 +86,27 @@ async fn a_session_from_first_message_to_deletion() {
     assert_eq!(s.agent_session_id.as_deref(), Some("s1"));
     assert_eq!(s.model.as_deref(), Some("claude-test"));
 
-    // Sending again while it works is refused.
+    // Sending again while it works queues the message; it can be taken back out.
+    let s: Session = serde_json::from_value(
+        api.call("send_message", json!({ "sessionId": id, "prompt": " more " }))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(s.queued.len(), 1);
+    assert_eq!(s.queued[0].text, "more");
     let e = api
-        .call("send_message", json!({ "sessionId": id, "prompt": "more" }))
+        .call("send_queued", json!({ "sessionId": id, "messageId": s.queued[0].id }))
         .await
         .unwrap_err();
-    assert_eq!(e.code, ErrorCode::Invalid);
+    assert_eq!(e.code, ErrorCode::Invalid, "not while it's running");
+    let s: Session = serde_json::from_value(
+        api.call("remove_queued", json!({ "sessionId": id, "messageId": s.queued[0].id }))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(s.queued.is_empty());
 
     api.call(
         "answer_approval",
@@ -155,13 +170,56 @@ async fn a_session_from_first_message_to_deletion() {
     let second = args().lines().nth(1).unwrap().to_string();
     assert!(second.contains("--resume s1"), "{second}");
     assert!(second.contains("Bash(tmux ls *)"), "{second}");
+
+    // A message queued meanwhile goes as soon as the run finishes, without the session ever
+    // looking idle in between.
+    api.call("send_message", json!({ "sessionId": id, "prompt": "queued" }))
+        .await
+        .unwrap();
+    drain(&mut events);
     api.call(
         "answer_approval",
         json!({ "sessionId": id, "requestId": "r1", "decision": "deny" }),
     )
     .await
     .unwrap();
-    until(&api, &id, "the second run to end", |s| s.run_id.is_none()).await;
+    until(&api, &id, "the queued message's run", |s| {
+        s.queued.is_empty() && s.open_approvals == ["r1"]
+    })
+    .await;
+    assert!(!drain(&mut events).iter().any(|e| matches!(e, SessionEvent::Changed { session }
+        if session.run_id.is_none() && !session.queued.is_empty())));
+    assert_eq!(args().lines().count(), 3);
+    let (_, entries) = session(&api, &id).await;
+    assert!(entries.iter().any(|e| e["entry"]["text"] == "queued"));
+
+    // Stopping a run leaves the queue waiting, to be sent by hand.
+    let s: Session = serde_json::from_value(
+        api.call("send_message", json!({ "sessionId": id, "prompt": "after stop" }))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let waiting = s.queued[0].id.clone();
+    api.call("stop_session", json!({ "sessionId": id })).await.unwrap();
+    until(&api, &id, "the stopped run to end", |s| s.run_id.is_none()).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (s, _) = session(&api, &id).await;
+    assert!(s.run_id.is_none() && s.queued.len() == 1, "{s:?}");
+    api.call("send_queued", json!({ "sessionId": id, "messageId": waiting }))
+        .await
+        .unwrap();
+    until(&api, &id, "the resent message's approval", |s| {
+        s.queued.is_empty() && s.open_approvals == ["r1"]
+    })
+    .await;
+    api.call(
+        "answer_approval",
+        json!({ "sessionId": id, "requestId": "r1", "decision": "deny" }),
+    )
+    .await
+    .unwrap();
+    until(&api, &id, "the last run to end", |s| s.run_id.is_none()).await;
     let e = api
         .call(
             "answer_approval",
