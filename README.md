@@ -103,6 +103,9 @@ This happens when the first message is sent; the folder, branch and worktree are
   "Jump to latest" re-pins.
 - Claude Code sessions have a model picker (Default/Opus/Sonnet/Haiku, passed as `--model`);
   the model each run actually reports using is shown in the session header.
+- The ring next to the model picker shows how full the session's context is; its popover also shows
+  the account's plan usage limits (5-hour, weekly). Claude Code reports both while it runs
+  (`rate_limit_event`, message usage), so the limits are as of the latest run on that backend.
 
 ## Approvals and retry
 

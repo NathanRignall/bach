@@ -1,4 +1,4 @@
-use crate::SessionEvent;
+use crate::{PlanUsage, SessionEvent};
 use satie_protocol::TaskEvent;
 use serde::Serialize;
 use ts_rs::TS;
@@ -10,4 +10,6 @@ pub enum ServerEvent {
     Session(SessionEvent),
     /// A background task changed or was removed.
     Task(TaskEvent),
+    /// New readings of the account's usage limits.
+    Usage(PlanUsage),
 }

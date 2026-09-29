@@ -1,6 +1,6 @@
 //! SQLite persistence for sessions: one row per [`Session`], and each session's transcript as
 //! numbered [`LogEntry`] rows.
-use bach_protocol::{AgentKind, Entry, LogEntry, Session};
+use bach_protocol::{AgentKind, Entry, LogEntry, PlanUsage, Session};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use std::{
@@ -64,6 +64,10 @@ impl Store {
                  at         INTEGER NOT NULL,
                  data       TEXT NOT NULL,
                  PRIMARY KEY (session_id, seq)
+             );
+             CREATE TABLE IF NOT EXISTS meta (
+                 key   TEXT PRIMARY KEY,
+                 value TEXT NOT NULL
              );",
         )
         .map_err(err)?;
@@ -189,6 +193,31 @@ impl Store {
         Ok(changed)
     }
 
+    /// The account's usage limits as last reported.
+    pub fn plan_usage(&self) -> Result<Option<PlanUsage>, String> {
+        let conn = self.0.lock().unwrap();
+        conn.query_row("SELECT value FROM meta WHERE key = 'plan_usage'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()
+        .map_err(err)?
+        .map(|v| serde_json::from_str(&v).map_err(err))
+        .transpose()
+    }
+
+    pub fn set_plan_usage(&self, usage: &PlanUsage) -> Result<(), String> {
+        self.0
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO meta (key, value) VALUES ('plan_usage', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![serde_json::to_string(usage).map_err(err)?],
+            )
+            .map_err(err)?;
+        Ok(())
+    }
+
     /// Background tasks from before Satie had its own database (the old `tasks` table), for
     /// handing over to it. Empty once [`drop_legacy_tasks`](Self::drop_legacy_tasks) has run.
     pub fn legacy_tasks(&self) -> Result<Vec<Value>, String> {
@@ -295,6 +324,7 @@ fn session_from_frontend(v: &Value, updated_at: i64) -> Option<Session> {
         agent_session_id: text("agentSessionId"),
         allow_rules: serde_json::from_value(v["allowRules"].clone()).unwrap_or_default(),
         model: text("model"),
+        context: None,
         run_id: None,
         open_approvals: vec![],
         created_at: updated_at,
@@ -325,6 +355,7 @@ mod tests {
             agent_session_id: None,
             allow_rules: vec![],
             model: None,
+            context: None,
             run_id: None,
             open_approvals: vec![],
             created_at: 1,

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
+use crate::PlanUsage;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use ts_rs::TS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
@@ -122,6 +124,12 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         background: Option<bool>,
     },
+    /// How full the context is after one of the agent's own messages (tokens).
+    Context { used: u64 },
+    /// Each model's context window (tokens), reported at the end of a turn.
+    ContextWindows { windows: BTreeMap<String, u64> },
+    /// The account's usage limits. Not part of the transcript: the backend keeps the latest.
+    Limits { usage: PlanUsage },
     Done { cost_usd: Option<f64>, is_error: bool },
     Error { message: String },
     /// The user stopped the run. Ends the run like `Done` does.

@@ -197,6 +197,10 @@ impl Handler for Api {
         Ok(list_agents())
     }
 
+    async fn get_usage(&self, _: GetUsageArgs) -> Result<Option<PlanUsage>, ApiError> {
+        self.sessions.plan_usage()
+    }
+
     async fn list_sessions(&self, _: ListSessionsArgs) -> Result<Vec<Session>, ApiError> {
         self.sessions.list()
     }
@@ -247,6 +251,7 @@ impl Handler for Api {
             agent_session_id: None,
             allow_rules: vec![],
             model: None,
+            context: None,
             run_id: None,
             open_approvals: vec![],
             created_at: now,

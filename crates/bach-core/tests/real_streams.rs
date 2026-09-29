@@ -141,3 +141,47 @@ fn claude_real_approval_request() {
         matches!(&ev[1], AgentEvent::ApprovalCancelled { request_id } if request_id.starts_with("1f0b"))
     );
 }
+
+#[test]
+fn claude_reports_context_and_usage_limits() {
+    let ev = events(
+        AgentKind::Claude,
+        include_str!("fixtures/claude_bash.jsonl"),
+    );
+    // Context after each of the session's own messages: sent (fresh + cached) plus the reply.
+    let used: Vec<u64> = ev
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Context { used } => Some(*used),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(used.first(), Some(&(2 + 21442 + 12132 + 16)));
+    assert_eq!(used.last(), Some(&(2 + 33574 + 2071 + 3)));
+    assert!(ev.iter().any(|e| matches!(e, AgentEvent::ContextWindows { windows }
+        if windows.get("claude-opus-5-5") == Some(&1_000_000))));
+
+    let usage = ev
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::Limits { usage } => Some(usage),
+            _ => None,
+        })
+        .expect("a rate_limit_event");
+    assert_eq!(usage.status, "allowed");
+    assert_eq!(usage.windows["five_hour"].utilization, 0.0);
+    assert_eq!(usage.windows["seven_day"].utilization, 0.17);
+    assert_eq!(usage.windows["seven_day"].resets_at, Some(1_791_068_400_000), "in ms");
+
+    // A sub-agent's messages don't count towards the session's context.
+    let sub = events(
+        AgentKind::Claude,
+        include_str!("fixtures/claude_subagent.jsonl"),
+    );
+    let top_level = include_str!("fixtures/claude_subagent.jsonl")
+        .lines()
+        .filter(|l| l.contains(r#""type":"assistant""#) && l.contains(r#""parent_tool_use_id":null"#))
+        .count();
+    let contexts = sub.iter().filter(|e| matches!(e, AgentEvent::Context { .. })).count();
+    assert_eq!(contexts, top_level);
+}

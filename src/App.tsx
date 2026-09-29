@@ -22,6 +22,7 @@ import {
 import { BlockView, TranscriptContext } from "@/components/Transcript";
 import { WorktreeCleanup } from "@/components/WorktreeCleanup";
 import { TasksPanel, useTasks } from "@/components/TasksPanel";
+import { UsageIndicator, usePlanUsage } from "@/components/UsageIndicator";
 import { Composer } from "@/components/Composer";
 import { NewSessionPage } from "@/components/NewSessionPage";
 import { SessionHeader } from "@/components/SessionHeader";
@@ -70,6 +71,7 @@ export function App() {
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
   const tasks = useTasks();
+  const planUsage = usePlanUsage();
   // Transcripts of the sessions opened so far. Kept in a ref so event handlers see the latest
   // `seq` (to spot gaps); `rerender` shows changes.
   const transcripts = useRef(new Map<string, Transcript>());
@@ -343,6 +345,7 @@ export function App() {
             starting={starting}
             recentProjects={recentProjects}
             onChange={(p) => setNewDraft((d) => ({ ...d, ...p }))}
+            indicator={<UsageIndicator usage={planUsage} />}
             error={connectionError}
           />
         )}
@@ -405,6 +408,7 @@ export function App() {
                 agent={active.agent}
                 agentLocked
                 onAgent={() => {}}
+                indicator={<UsageIndicator context={active.context} usage={planUsage} />}
                 modelChoice={active.modelChoice ?? undefined}
                 onModel={(modelChoice) => void update({ sessionId: active.id, modelChoice })}
               />

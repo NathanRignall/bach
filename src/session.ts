@@ -117,6 +117,10 @@ function place(blocks: Block[], parent: string | undefined, add: (list: Block[])
 function applyAgentEvent(blocks: Block[], e: AgentEvent, at: number): Block[] {
   switch (e.type) {
     case "session":
+    // Usage readings are shown from the session and the account, not in the transcript.
+    case "context":
+    case "context_windows":
+    case "limits":
       return blocks;
     case "text":
       return place(blocks, e.parent, (l) => [...l, { kind: "text", text: e.text }]);

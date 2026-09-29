@@ -19,7 +19,7 @@ directories: Array<string>, } | { "type": "approval_cancelled", requestId: strin
 /**
  * What it is doing right now.
  */
-activity?: string, toolUses?: number, tokens?: number, durationMs?: number, summary?: string, background?: boolean, } | { "type": "done", costUsd: number | null, isError: boolean, } | { "type": "error", message: string, } | { "type": "cancelled" } | { "type": "raw", line: string, };
+activity?: string, toolUses?: number, tokens?: number, durationMs?: number, summary?: string, background?: boolean, } | { "type": "context", used: number, } | { "type": "context_windows", windows: { [key in string]: number }, } | { "type": "limits", usage: PlanUsage, } | { "type": "done", costUsd: number | null, isError: boolean, } | { "type": "error", message: string, } | { "type": "cancelled" } | { "type": "raw", line: string, };
 
 export type AgentInfo = { kind: AgentKind, name: string, installed: boolean, };
 
@@ -47,6 +47,19 @@ message: string, };
  * A command sent over the WebSocket bridge. `id` is echoed back in the reply.
  */
 export type ClientFrame = { id: number, cmd: string, args?: JsonValue, };
+
+/**
+ * How much of the model's context window a session's conversation fills.
+ */
+export type ContextUsage = { 
+/**
+ * Tokens in the conversation after the agent's latest message.
+ */
+used: number, 
+/**
+ * The model's context window, once the agent has reported it.
+ */
+window: number | null, };
 
 /**
  * How the user answered an approval request.
@@ -81,6 +94,11 @@ export type ErrorCode = "invalid" | "not_found" | "unavailable" | "failed";
  */
 export type GetSessionArgs = { sessionId: string, afterSeq?: number, };
 
+/**
+ * The account's usage limits as last reported by an agent run (none before the first run).
+ */
+export type GetUsageArgs = Record<symbol, never>;
+
 export type GitInfo = { isRepo: boolean, root: string | null, 
 /**
  * None when HEAD is detached.
@@ -101,6 +119,19 @@ dirty: boolean, };
 export type GitInfoArgs = { path: string, };
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
+
+/**
+ * One usage-limit window, e.g. the 5-hour or the weekly limit.
+ */
+export type LimitWindow = { 
+/**
+ * Share used, 0.0 to 1.0.
+ */
+utilization: number, 
+/**
+ * When the window resets (ms since the epoch).
+ */
+resetsAt: number | null, };
 
 /**
  * The agent CLIs Bach knows, and which are installed on the backend host.
@@ -163,6 +194,23 @@ seq: number,
 at: number, entry: Entry, };
 
 /**
+ * The account's usage limits as the agent last reported them. Only updated while agents run.
+ */
+export type PlanUsage = { 
+/**
+ * `allowed`, or why requests are being refused.
+ */
+status: string, 
+/**
+ * By the agent's name for the window: `five_hour`, `seven_day`, ...
+ */
+windows: { [key in string]: LimitWindow }, 
+/**
+ * When this was reported (ms since the epoch).
+ */
+observedAt: number, };
+
+/**
  * Forgets a finished task and deletes its log.
  */
 export type RemoveTaskArgs = { taskId: string, };
@@ -188,7 +236,7 @@ export type SendMessageArgs = { sessionId: string, prompt: string, };
 /**
  * Everything the backend pushes to clients, whichever transport carries it.
  */
-export type ServerEvent = { "topic": "session", "data": SessionEvent } | { "topic": "task", "data": TaskEvent };
+export type ServerEvent = { "topic": "session", "data": SessionEvent } | { "topic": "task", "data": TaskEvent } | { "topic": "usage", "data": PlanUsage };
 
 /**
  * What the WebSocket bridge sends: replies to commands, and events.
@@ -240,6 +288,10 @@ allowRules: Array<string>,
  * The model the agent reported using on its latest run.
  */
 model: string | null, 
+/**
+ * How full the conversation's context is, as of the agent's latest message.
+ */
+context: ContextUsage | null, 
 /**
  * The agent run in progress, if any.
  */
@@ -411,6 +463,10 @@ export type Commands = {
    * The agent CLIs Bach knows, and which are installed on the backend host.
    */
   list_agents: { args: ListAgentsArgs; output: Array<AgentInfo> };
+  /**
+   * The account's usage limits as last reported by an agent run (none before the first run).
+   */
+  get_usage: { args: GetUsageArgs; output: PlanUsage | null };
   /**
    * Every session, most recently active first (without transcripts).
    */

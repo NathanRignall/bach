@@ -1,3 +1,4 @@
+import { ReactNode } from "react";
 import { AgentInfo, AgentKind } from "@/api";
 import { Button } from "@/components/ui/button";
 import { NewSession as Session, projectName } from "@/session";
@@ -16,10 +17,12 @@ interface Props {
   recentProjects: string[];
   onChange: (patch: Partial<Session>) => void;
   error?: string;
+  /** Shown next to the model picker (usage). */
+  indicator?: ReactNode;
 }
 
 /** Where a session is set up: the chat input with the project folder and branch beside it. */
-export function NewSessionPage({ session, agents, draft, onDraft, onSend, starting, recentProjects, onChange, error }: Props) {
+export function NewSessionPage({ session, agents, draft, onDraft, onSend, starting, recentProjects, onChange, error, indicator }: Props) {
   const git = useGitInfo(session, onChange);
   const hasFolder = !!session.cwd.trim();
   const setProject = (cwd: string) => onChange({ cwd, branch: undefined, worktree: false });
@@ -49,6 +52,7 @@ export function NewSessionPage({ session, agents, draft, onDraft, onSend, starti
           agents={agents}
           agent={session.agent}
           agentLocked={false}
+          indicator={indicator}
           onAgent={(agent: AgentKind) => onChange({ agent })}
           modelChoice={session.modelChoice ?? undefined}
           onModel={(modelChoice) => onChange({ modelChoice })}

@@ -26,6 +26,8 @@ interface Props {
   onModel?: (m: string) => void;
   /** Extra controls shown before the agent picker (project, branch, …). */
   left?: ReactNode;
+  /** Shown next to the model picker (usage). */
+  indicator?: ReactNode;
   tall?: boolean;
   autoFocus?: boolean;
 }
@@ -59,6 +61,7 @@ export function Composer(p: Props) {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-1 pt-1">
         {p.left}
         <div className="ml-auto flex items-center gap-2">
+          {p.indicator}
           {p.agent === "claude" && p.onModel && (
             <Select items={MODELS} value={p.modelChoice ?? "default"} onValueChange={(v) => v && p.onModel!(v)}>
               <SelectTrigger size="sm" aria-label="Model">

@@ -1,7 +1,7 @@
 //! Sessions: a conversation with one agent in one project folder. The backend keeps each one as
 //! [`Session`] (what it is and where it stands) plus an append-only transcript of [`LogEntry`]s,
 //! which clients fold into whatever they render.
-use crate::{AgentEvent, AgentKind, Decision};
+use crate::{AgentEvent, AgentKind, ContextUsage, Decision};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -46,6 +46,9 @@ pub struct Session {
     /// The model the agent reported using on its latest run.
     #[serde(default)]
     pub model: Option<String>,
+    /// How full the conversation's context is, as of the agent's latest message.
+    #[serde(default)]
+    pub context: Option<ContextUsage>,
 
     /// The agent run in progress, if any.
     #[serde(default)]

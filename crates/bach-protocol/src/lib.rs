@@ -11,6 +11,7 @@ pub mod commands;
 mod error;
 mod events;
 mod session;
+mod usage;
 mod typescript;
 mod workspace;
 
@@ -19,6 +20,7 @@ pub use commands::{Handler, Request};
 pub use error::*;
 pub use events::*;
 pub use session::*;
+pub use usage::*;
 pub use typescript::typescript;
 pub use workspace::*;
 

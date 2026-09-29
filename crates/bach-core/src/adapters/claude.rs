@@ -1,4 +1,5 @@
 use super::AgentEvent;
+use bach_protocol::{LimitWindow, PlanUsage};
 use satie::Grant;
 use serde_json::{json, Value};
 
@@ -143,6 +144,39 @@ fn rules_from(suggestions: &Value) -> Vec<String> {
         .collect()
 }
 
+/// Tokens in the conversation after a message: everything sent (fresh or cached) plus the reply.
+fn context_used(usage: &Value) -> Option<u64> {
+    let n = |k: &str| usage[k].as_u64().unwrap_or(0);
+    usage.is_object().then(|| {
+        n("input_tokens")
+            + n("cache_read_input_tokens")
+            + n("cache_creation_input_tokens")
+            + n("output_tokens")
+    })
+}
+
+/// A `rate_limit_event`'s windows (`five_hour`, `seven_day`, ...); times in ms.
+fn limits(info: &Value) -> Option<PlanUsage> {
+    let windows = info["unifiedWindows"]
+        .as_object()?
+        .iter()
+        .filter_map(|(name, w)| {
+            Some((
+                name.clone(),
+                LimitWindow {
+                    utilization: w["utilization"].as_f64()?,
+                    resets_at: w["resetsAt"].as_i64().map(|s| s * 1000),
+                },
+            ))
+        })
+        .collect();
+    Some(PlanUsage {
+        status: info["status"].as_str().unwrap_or("allowed").to_string(),
+        windows,
+        observed_at: crate::store::now_ms(),
+    })
+}
+
 /// Tool results are either a string or a list of content blocks; keep the readable text.
 fn content_text(content: &Value) -> String {
     match content {
@@ -201,7 +235,7 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
         Some(kind @ ("assistant" | "user")) => {
             // Set for everything a sub-agent does; the id is the tool call that spawned it.
             let parent = opt(&v["parent_tool_use_id"]);
-            v["message"]["content"]
+            let mut events: Vec<AgentEvent> = v["message"]["content"]
                 .as_array()
                 .into_iter()
                 .flatten()
@@ -229,8 +263,17 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
                     }),
                     _ => None,
                 })
-                .collect()
+                .collect();
+            // The session's own messages say how full its context is; a sub-agent has its own.
+            if kind == "assistant" && parent.is_none() {
+                events.extend(context_used(&v["message"]["usage"]).map(|used| AgentEvent::Context { used }));
+            }
+            events
         }
+        Some("rate_limit_event") => limits(&v["rate_limit_info"])
+            .map(|usage| AgentEvent::Limits { usage })
+            .into_iter()
+            .collect(),
         Some("control_request") if v["request"]["subtype"] == "can_use_tool" => {
             let r = &v["request"];
             vec![AgentEvent::Approval {
@@ -248,10 +291,23 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
         Some("control_cancel_request") => vec![AgentEvent::ApprovalCancelled {
             request_id: s(&v["request_id"]),
         }],
-        Some("result") => vec![AgentEvent::Done {
-            cost_usd: v["total_cost_usd"].as_f64(),
-            is_error: v["is_error"].as_bool().unwrap_or(false),
-        }],
+        Some("result") => {
+            let windows: std::collections::BTreeMap<String, u64> = v["modelUsage"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(|(model, u)| Some((model.clone(), u["contextWindow"].as_u64()?)))
+                .collect();
+            let mut events = vec![];
+            if !windows.is_empty() {
+                events.push(AgentEvent::ContextWindows { windows });
+            }
+            events.push(AgentEvent::Done {
+                cost_usd: v["total_cost_usd"].as_f64(),
+                is_error: v["is_error"].as_bool().unwrap_or(false),
+            });
+            events
+        }
         _ => vec![],
     }
 }

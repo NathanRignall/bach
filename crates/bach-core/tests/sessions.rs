@@ -10,10 +10,11 @@ const FAKE_CLAUDE: &str = r#"#!/bin/sh
 echo "$@" >> "$BACH_TEST_DIR/args"
 read first
 echo '{"type":"system","subtype":"init","session_id":"s1","model":"claude-test"}'
+echo '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","unifiedWindows":{"five_hour":{"utilization":0.31,"resetsAt":1790706600},"seven_day":{"utilization":0.22,"resetsAt":1791068400}}}}'
 echo '{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"tmux ls"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"tmux ls *"}],"behavior":"allow","destination":"localSettings"}],"tool_use_id":"tu1"}}'
 read answer
-echo '{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}'
-echo '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"done"}],"usage":{"input_tokens":10,"cache_read_input_tokens":400,"cache_creation_input_tokens":50,"output_tokens":40}},"parent_tool_use_id":null}'
+echo '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0,"modelUsage":{"claude-haiku":{"contextWindow":200000},"claude-test":{"contextWindow":1000000}}}'
 cat > /dev/null
 "#;
 
@@ -100,6 +101,13 @@ async fn a_session_from_first_message_to_deletion() {
     .unwrap();
     let s = until(&api, &id, "the run to end", |s| s.run_id.is_none()).await;
     assert_eq!(s.allow_rules, ["Bash(tmux ls *)"], "remembered for the session");
+    // How full its context is, with the window of the session's own model.
+    let ctx = s.context.clone().expect("context usage");
+    assert_eq!((ctx.used, ctx.window), (500, Some(1_000_000)));
+    // The account's limits, kept by the backend rather than in the transcript.
+    let usage = api.call("get_usage", Value::Null).await.unwrap();
+    assert_eq!(usage["windows"]["five_hour"]["utilization"], 0.31);
+    assert_eq!(usage["windows"]["seven_day"]["resetsAt"], 1_791_068_400_000i64);
     assert!(s.open_approvals.is_empty());
 
     // The transcript: what was said, what the agent did, what was decided.
@@ -124,7 +132,15 @@ async fn a_session_from_first_message_to_deletion() {
     assert_eq!(later["entries"].as_array().unwrap().len(), 2);
 
     // Clients were told as it happened.
-    let seen = drain(&mut events);
+    let all: Vec<ServerEvent> = std::iter::from_fn(|| events.try_recv().ok()).collect();
+    assert!(all.iter().any(|e| matches!(e, ServerEvent::Usage(u) if u.windows.contains_key("seven_day"))));
+    let seen: Vec<SessionEvent> = all
+        .into_iter()
+        .filter_map(|e| match e {
+            ServerEvent::Session(e) => Some(e),
+            _ => None,
+        })
+        .collect();
     assert!(seen.iter().any(|e| matches!(e, SessionEvent::Entry { session_id, entry }
         if *session_id == id && matches!(entry.entry, Entry::Decision { .. }))));
     assert!(seen

@@ -4,7 +4,10 @@ use crate::{
     runs::{Emit, RunEvent},
     store::Store,
 };
-use bach_protocol::{AgentEvent, ApiError, Entry, LogEntry, ServerEvent, Session, SessionEvent};
+use bach_protocol::{
+    AgentEvent, ApiError, ContextUsage, Entry, LogEntry, PlanUsage, ServerEvent, Session,
+    SessionEvent,
+};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -80,6 +83,11 @@ impl Sessions {
         Ok(log)
     }
 
+    /// The account's usage limits as last reported by any run.
+    pub fn plan_usage(&self) -> Result<Option<PlanUsage>, ApiError> {
+        Ok(self.store.plan_usage()?)
+    }
+
     /// Where a run of session `id` sends its events.
     pub fn recorder(&self, id: &str) -> Emit {
         let (sessions, id) = (self.clone(), id.to_string());
@@ -88,6 +96,41 @@ impl Sessions {
 
     /// Records one event of a session's run, and what it means for the session.
     fn record(&self, id: &str, RunEvent { run_id, event }: RunEvent) {
+        // Usage readings describe the session (or the account), not what happened in it.
+        match event {
+            AgentEvent::Limits { usage } => {
+                if let Err(e) = self.store.set_plan_usage(&usage) {
+                    eprintln!("couldn't save usage limits: {e}");
+                }
+                let _ = self.events.send(ServerEvent::Usage(usage));
+                return;
+            }
+            AgentEvent::Context { used } => {
+                let _ = self.update(id, |s| {
+                    let window = s.context.as_ref().and_then(|c| c.window);
+                    s.context = Some(ContextUsage { used, window });
+                    Ok(())
+                });
+                return;
+            }
+            AgentEvent::ContextWindows { windows } => {
+                let _ = self.update(id, |s| {
+                    // The session's own model; failing that, the largest (sub-agents often use
+                    // smaller models).
+                    let window = s
+                        .model
+                        .as_ref()
+                        .and_then(|m| windows.get(m))
+                        .or_else(|| windows.values().max())
+                        .copied();
+                    let used = s.context.as_ref().map_or(0, |c| c.used);
+                    s.context = Some(ContextUsage { used, window });
+                    Ok(())
+                });
+                return;
+            }
+            _ => {}
+        }
         // A session deleted mid-run still gets its run's last events; they have nowhere to go.
         if self
             .append(
