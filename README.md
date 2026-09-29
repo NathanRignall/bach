@@ -5,19 +5,35 @@ CLI in headless JSON-streaming mode and normalizing their output into one event 
 
 ## Layout
 
-- `bach-core/` — UI-free Rust crate.
+- `crates/bach-protocol/` — the wire protocol: the command table (`commands.rs`: each command's
+  name, arguments and result), `ServerEvent`s, `ApiError { code, message }`, and the frames the
+  WebSocket carries. `cargo test -p bach-protocol` regenerates `src/api/generated/protocol.ts`
+  from it (the test fails once when the file changes; commit the result).
+- `crates/satie-protocol/` — Satie's wire types (tasks, log chunks, task command arguments).
+- `crates/bach-core/` — the engine, with no UI or transport.
+  - `api.rs` — `Api`: implements every command (`bach_protocol::Handler`) and broadcasts events.
   - `adapters/` — one adapter per agent: builds the CLI args, parses its JSON lines into
     `AgentEvent`s. Claude Code is implemented and tested against real output; Codex is
     best-effort; opencode is a stub.
   - `runs.rs` — spawns/cancels agent processes and emits events.
   - `store.rs` — SQLite session storage (`~/.local/share/bach/bach.db`, or `$BACH_DB`). Sessions
     are saved by whichever backend is in use: the Tauri app's data dir, or the bach-server host.
-  - `server.rs`, `bin/bach-server.rs` — WebSocket bridge for browser use (see below).
-- `src-tauri/` — Tauri shell exposing the same commands to the window.
+  - `satie.rs`, `probe.rs` — background tasks (see below).
+- `crates/bach-server/` — the WebSocket bridge for browser use (see below).
+- `src-tauri/` — Tauri shell: one `rpc` command into `Api`, events on the `bach` channel.
+- `src/api/` — the typed client: `call("start_run", {...})` is checked against the generated
+  `Commands` map; `transport.ts` carries it over Tauri IPC or the WebSocket.
 - `src/` — React frontend styled with Tailwind v4 and shadcn/ui (Base UI primitives, `base-nova`
   style; components live in `src/components/ui`, add more with `pnpm dlx shadcn@latest add <name>`).
-  Theme tokens are in `src/index.css` and follow the system light/dark setting. Uses Tauri IPC inside the
-  app and the WebSocket bridge in a plain browser (`src/api.ts`).
+  Theme tokens are in `src/index.css` and follow the system light/dark setting.
+
+### Adding a command
+
+1. Add an `...Args` struct and a line to the `commands!` table in `crates/bach-protocol/src/commands.rs`.
+2. Implement the new `Handler` method in `crates/bach-core/src/api.rs` (it won't compile until you do).
+3. `cargo test -p bach-protocol` to regenerate the TypeScript, then `call("your_command", {...})`.
+
+Commands and enum values are `snake_case`; fields are `camelCase`.
 
 ## Develop
 

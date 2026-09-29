@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertCircle, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
-import { ApprovalDecision } from "@/api";
+import { Decision } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +12,7 @@ import { ApprovalBlock, Block, ToolBlock, isSubagent } from "@/session";
 
 /** What the transcript can ask the app to do on the user's behalf. */
 export interface TranscriptActions {
-  decide: (requestId: string, decision: ApprovalDecision, answers?: Record<string, string>) => Promise<void>;
+  decide: (requestId: string, decision: Decision, answers?: Record<string, string>) => Promise<void>;
   /** Sends a message again; with no text, the last one. Not offered while a run is going. */
   retry?: (text?: string) => void;
 }
@@ -271,7 +271,7 @@ function ApprovalCard({ block, live }: { block: ApprovalBlock; live: boolean }) 
     );
   }
 
-  const answer = async (d: ApprovalDecision) => {
+  const answer = async (d: Decision) => {
     setBusy(true);
     await decide(block.requestId, d).finally(() => setBusy(false));
   };

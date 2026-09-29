@@ -1,4 +1,4 @@
-import type { AgentKind, ApprovalDecision, RunEvent } from "./api";
+import type { AgentKind, Decision, RunEvent } from "./api";
 
 export type Block =
   | { kind: "user"; text: string }
@@ -46,7 +46,7 @@ export interface ApprovalBlock {
   reason?: string;
   rules: string[];
   directories: string[];
-  decision?: ApprovalDecision | "expired";
+  decision?: Decision | "expired";
   /** What the user answered, for a question from the agent. */
   answers?: Record<string, string>;
 }
@@ -140,7 +140,7 @@ export const expireApprovals = (blocks: Block[]): Block[] =>
 export function decideApproval(
   s: Session,
   requestId: string,
-  decision: ApprovalDecision,
+  decision: Decision,
   answers?: Record<string, string>,
 ): Session {
   let rules: string[] = [];
@@ -182,7 +182,7 @@ export function applyEvent(s: Session, e: RunEvent): Session {
         ]),
       };
     case "tool_result": {
-      const done = (t: ToolBlock): ToolBlock => ({ ...t, output: e.output, isError: e.is_error });
+      const done = (t: ToolBlock): ToolBlock => ({ ...t, output: e.output, isError: e.isError });
       return {
         ...s,
         blocks: e.parent
@@ -194,11 +194,11 @@ export function applyEvent(s: Session, e: RunEvent): Session {
       const patch: TaskInfo = {
         status: e.status,
         title: e.title,
-        agentType: e.agent_type,
+        agentType: e.agentType,
         activity: e.activity,
-        toolUses: e.tool_uses,
+        toolUses: e.toolUses,
         tokens: e.tokens,
-        durationMs: e.duration_ms,
+        durationMs: e.durationMs,
         summary: e.summary,
         background: e.background,
       };
@@ -213,11 +213,11 @@ export function applyEvent(s: Session, e: RunEvent): Session {
           ...blocks,
           {
             kind: "approval",
-            requestId: e.request_id,
-            toolName: e.tool_name,
+            requestId: e.requestId,
+            toolName: e.toolName,
             input: e.input,
-            description: e.description,
-            reason: e.reason,
+            description: e.description ?? undefined,
+            reason: e.reason ?? undefined,
             rules: e.rules,
             directories: e.directories ?? [],
           },
@@ -226,7 +226,7 @@ export function applyEvent(s: Session, e: RunEvent): Session {
     case "approval_cancelled":
       return {
         ...s,
-        blocks: blocks.map((b) => (b.kind === "approval" && b.requestId === e.request_id && !b.decision ? { ...b, decision: "expired" } : b)),
+        blocks: blocks.map((b) => (b.kind === "approval" && b.requestId === e.requestId && !b.decision ? { ...b, decision: "expired" } : b)),
       };
     case "error":
       return { ...s, blocks: [...blocks, { kind: "error", text: e.message }] };

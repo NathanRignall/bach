@@ -1,0 +1,9 @@
+[package]
+name = "satie-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Wire types for Satie, the background-task launcher"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+ts-rs = { version = "12", features = ["serde-json-impl"] }

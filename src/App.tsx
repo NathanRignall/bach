@@ -3,13 +3,14 @@ import { ArrowDown, ShieldAlert } from "lucide-react";
 import {
   AgentInfo,
   AgentKind,
-  ApprovalDecision,
+  ApiError,
+  Decision,
   RunEvent,
   cancelRun,
   deleteSession,
   listAgents,
   listSessions,
-  onAgentEvent,
+  onRunEvent,
   prepareWorkspace,
   respondApproval,
   saveSession,
@@ -73,7 +74,7 @@ export function App() {
     Promise.all([listAgents(), listSessions()])
       .then(([a, stored]) => {
         setAgents(a);
-        const old = (stored as Session[]).map((s) => ({ ...s, runId: undefined, blocks: expireApprovals(s.blocks) }));
+        const old = (stored as unknown as Session[]).map((s) => ({ ...s, runId: undefined, blocks: expireApprovals(s.blocks) }));
         old.forEach((s) => saved.current.set(s.id, s));
         // Open on a fresh session; it is only saved once it has content.
         const fresh = newSession(old[0]?.agent ?? a.find((x) => x.installed)?.kind ?? "claude", old[0]?.cwd);
@@ -84,18 +85,19 @@ export function App() {
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => {
-    const un = onAgentEvent((e) =>
-      setSessions((all) => {
-        if (!all.some((s) => s.runId === e.run_id)) {
-          early.current.set(e.run_id, [...(early.current.get(e.run_id) ?? []), e]);
-          return all;
-        }
-        return all.map((s) => (s.runId === e.run_id ? applyEvent(s, e) : s));
-      }),
-    );
-    return () => void un.then((f) => f());
-  }, []);
+  useEffect(
+    () =>
+      onRunEvent((e) =>
+        setSessions((all) => {
+          if (!all.some((s) => s.runId === e.runId)) {
+            early.current.set(e.runId, [...(early.current.get(e.runId) ?? []), e]);
+            return all;
+          }
+          return all.map((s) => (s.runId === e.runId ? applyEvent(s, e) : s));
+        }),
+      ),
+    [],
+  );
 
   const active = sessions.find((s) => s.id === activeId);
 
@@ -249,17 +251,17 @@ export function App() {
     }
   }
 
-  async function decide(requestId: string, decision: ApprovalDecision, answers?: Record<string, string>) {
+  async function decide(requestId: string, decision: Decision, answers?: Record<string, string>) {
     const s = active;
     if (!s?.runId) return;
     try {
       await respondApproval({ runId: s.runId, requestId, decision, answers });
       patch(s.id, (x) => decideApproval(x, requestId, decision, answers));
     } catch (e) {
-      const message = String((e as Error).message ?? e);
-      if (!/no longer pending|already finished/.test(message)) {
+      const err = ApiError.from(e);
+      if (err.code !== "not_found") {
         // Rejected (e.g. an incomplete answer): the agent is still waiting, so leave it open.
-        setConnectionError(message);
+        setConnectionError(err.message);
         return;
       }
       // The run moved on without it (finished, stopped, or the agent withdrew the request).
