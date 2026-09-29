@@ -190,10 +190,24 @@ pub fn process_summary(pgid: u32) -> Vec<String> {
             if proc_stat(pid).is_some_and(|(state, _)| state == 'Z') {
                 continue;
             }
-            let comm = std::fs::read_to_string(format!("/proc/{pid}/comm"))
+            // The command as started ("node", "workerd"), not the kernel's 15-character thread name
+            // (Node reports its threads as "MainThread"). Fall back to that when there's no command line.
+            let raw = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+            let first = String::from_utf8_lossy(&raw)
+                .split('\0')
+                .next()
+                .and_then(|a| a.split_whitespace().next())
+                .and_then(|a| a.rsplit('/').next())
                 .unwrap_or_default()
-                .trim()
                 .to_string();
+            let comm = if first.is_empty() {
+                std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string()
+            } else {
+                first
+            };
             if !comm.is_empty() && comm != "sh" {
                 *counts.entry(comm).or_default() += 1;
             }
