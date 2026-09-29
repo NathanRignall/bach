@@ -1,5 +1,5 @@
 use crate::{
-    adapters::{AgentCli, AgentEvent, AgentKind},
+    adapters::{codex_answer, AgentCli, AgentEvent, AgentKind, Conversation},
 };
 pub use bach_protocol::Decision;
 use bach_protocol::ApiError;
@@ -62,6 +62,7 @@ struct PendingApproval {
 
 /// A running agent process.
 struct Live {
+    agent: AgentKind,
     session_key: Option<String>,
     cancel: Option<oneshot::Sender<()>>,
     /// Open for agents driven over stdin, so approvals can be answered; closed when the run ends.
@@ -215,6 +216,19 @@ fn build_response(
     Ok(r)
 }
 
+/// Writes `lines` to the agent, if it is still listening.
+async fn send(stdin: &Mutex<Option<ChildStdin>>, lines: &[String]) {
+    if lines.is_empty() {
+        return;
+    }
+    if let Some(w) = stdin.lock().await.as_mut() {
+        for line in lines {
+            let _ = w.write_all(format!("{line}\n").as_bytes()).await;
+        }
+        let _ = w.flush().await;
+    }
+}
+
 impl Runs {
     pub fn with_satie(satie: Option<Satie>) -> Self {
         Self {
@@ -283,8 +297,6 @@ impl Runs {
             .as_ref()
             .map(|d| d.canonicalize().unwrap_or_else(|_| d.clone()));
 
-        let stdin_prompt = agent.stdin_prompt(&prompt, &images);
-
         let run_id = run_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         // Agents that take images by path get files that last as long as the run.
         let image_files = if agent.images_as_files() {
@@ -292,6 +304,15 @@ impl Runs {
         } else {
             ImageFiles::NONE
         };
+        let (mut conversation, opening) = Conversation::new(
+            agent,
+            &prompt,
+            &images,
+            &image_files.paths,
+            session_id.as_deref(),
+            cwd.as_deref().and_then(|d| d.to_str()),
+            &allowed_tools,
+        );
 
         // Claude Code gets Satie as an MCP server, with a token scoped to this project. The grant
         // is revoked when the run ends (or if launching fails below).
@@ -313,7 +334,7 @@ impl Runs {
             &allowed_tools,
             grant.as_ref(),
         ))
-        .stdin(if stdin_prompt.is_some() {
+        .stdin(if conversation.uses_stdin() {
             Stdio::piped()
         } else {
             Stdio::null()
@@ -329,18 +350,15 @@ impl Runs {
             .map_err(|e| format!("failed to launch `{}`: {e}", agent.binary()))?;
 
         // Deliver the prompt, leaving stdin open for the agent's requests until the run ends.
-        let mut stdin = child.stdin.take();
-        if let (Some(line), Some(w)) = (&stdin_prompt, stdin.as_mut()) {
-            let _ = w.write_all(format!("{line}\n").as_bytes()).await;
-            let _ = w.flush().await;
-        }
-        let stdin = Arc::new(Mutex::new(stdin));
+        let stdin = Arc::new(Mutex::new(child.stdin.take()));
+        send(&stdin, &opening).await;
         let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
 
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
         self.live.lock().await.insert(
             run_id.clone(),
             Live {
+                agent,
                 session_key,
                 cancel: Some(cancel_tx),
                 stdin: stdin.clone(),
@@ -385,6 +403,16 @@ impl Runs {
             loop {
                 tokio::select! {
                     _ = &mut cancel_rx => {
+                        // Agents that can stop a turn themselves get a moment to wrap it up.
+                        if let Some(line) = conversation.interrupt() {
+                            send(&stdin, &[line]).await;
+                            stdin.lock().await.take();
+                            let _ = tokio::time::timeout(
+                                std::time::Duration::from_secs(3),
+                                child.wait(),
+                            )
+                            .await;
+                        }
                         let _ = child.kill().await;
                         emit(AgentEvent::Cancelled);
                         runs.lock().await.remove(&id);
@@ -392,7 +420,9 @@ impl Runs {
                     }
                     line = lines.next_line() => match line {
                         Ok(Some(line)) if !line.trim().is_empty() => {
-                            for mut ev in agent.parse_line(&line) {
+                            let (events, replies) = conversation.on_line(&line);
+                            send(&stdin, &replies).await;
+                            for mut ev in events {
                                 // The agent offers to "add" the file's folder even when it is the
                                 // project itself; only folders truly outside are worth showing.
                                 if let (AgentEvent::Approval { directories, .. }, Some(project)) = (&mut ev, &project) {
@@ -413,8 +443,11 @@ impl Runs {
                                             },
                                         );
                                     }
+                                    // One already answered needs no cancelling.
                                     AgentEvent::ApprovalCancelled { request_id } => {
-                                        pending.lock().unwrap().remove(request_id);
+                                        if pending.lock().unwrap().remove(request_id).is_none() {
+                                            continue;
+                                        }
                                     }
                                     AgentEvent::Task { id, status: Some(status), background: bg, agent_type, .. } => {
                                         if status != "running" {
@@ -524,10 +557,10 @@ impl Runs {
         answers: Option<HashMap<String, String>>,
     ) -> Result<Vec<String>, ApiError> {
         let finished = || ApiError::not_found("That run has already finished.");
-        let (stdin, pending) = {
+        let (agent, stdin, pending) = {
             let runs = self.live.lock().await;
             let live = runs.get(run_id).ok_or_else(finished)?;
-            (live.stdin.clone(), live.pending.clone())
+            (live.agent, live.stdin.clone(), live.pending.clone())
         };
         // Build (and so validate) the reply before taking the request off the list: a rejected
         // answer must leave the agent's question open to be answered properly.
@@ -536,16 +569,23 @@ impl Runs {
             let approval = list
                 .get(request_id)
                 .ok_or_else(|| ApiError::not_found("That approval is no longer pending."))?;
-            let response =
-                build_response(approval, decision, message, answers).map_err(ApiError::invalid)?;
+            let line = match agent {
+                AgentKind::Codex => codex_answer(&approval.suggestions, decision, answers.as_ref())
+                    .map_err(ApiError::invalid)?,
+                _ => {
+                    let response = build_response(approval, decision, message, answers)
+                        .map_err(ApiError::invalid)?;
+                    json!({
+                        "type": "control_response",
+                        "response": { "subtype": "success", "request_id": request_id, "response": response },
+                    })
+                    .to_string()
+                }
+            };
             let rules = list.remove(request_id).map(|a| a.rules).unwrap_or_default();
-            (response, rules)
+            (line, rules)
         };
-        let (response, rules) = response;
-        let line = json!({
-            "type": "control_response",
-            "response": { "subtype": "success", "request_id": request_id, "response": response },
-        });
+        let (line, rules) = response;
 
         let mut guard = stdin.lock().await;
         let w = guard.as_mut().ok_or_else(finished)?;

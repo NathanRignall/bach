@@ -71,6 +71,8 @@ pub fn args(
         "--output-format",
         "stream-json",
         "--verbose",
+        // Text as it is written (`stream_event`s), for showing it live.
+        "--include-partial-messages",
         "--permission-prompt-tool",
         "stdio",
     ]
@@ -244,6 +246,21 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
     let opt = |x: &Value| x.as_str().map(str::to_string);
     let num = |x: &Value| x.as_u64();
     match v["type"].as_str() {
+        // Only the main conversation's text streams; the whole block follows as a message.
+        Some("stream_event") => {
+            let e = &v["event"];
+            match (e["type"].as_str(), e["delta"]["type"].as_str()) {
+                (Some("content_block_delta"), Some("text_delta"))
+                    if v["parent_tool_use_id"].is_null() =>
+                {
+                    vec![AgentEvent::TextDelta {
+                        id: format!("{}", e["index"]),
+                        text: s(&e["delta"]["text"]),
+                    }]
+                }
+                _ => vec![],
+            }
+        }
         Some("system") => match v["subtype"].as_str() {
             Some("init") => vec![AgentEvent::Session {
                 id: s(&v["session_id"]),

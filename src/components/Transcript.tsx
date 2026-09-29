@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AlertCircle, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
-import { Decision } from "@/api";
+import { AgentKind, Decision } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +17,8 @@ export interface TranscriptActions {
   decide: (requestId: string, decision: Decision, answers?: Record<string, string>) => Promise<void>;
   /** Sends a message again; with no text, the last one. Not offered while a run is going. */
   retry?: (text?: string, images?: string[]) => void;
+  /** The agent the transcript is with. */
+  agent?: AgentKind;
 }
 export const TranscriptContext = createContext<TranscriptActions>({ decide: async () => {} });
 
@@ -269,14 +271,23 @@ function ErrorMessage({ text, retryText }: { text: string; retryText?: string })
   );
 }
 
+const AGENT_NAMES: Record<AgentKind, string> = { claude: "Claude", codex: "Codex", opencode: "opencode" };
+
 /** What the tool would do, in a form worth reading before saying yes. */
 function describeInput(input: unknown): { main?: string; rest?: string } {
   if (!input || typeof input !== "object") return { main: String(input ?? "") };
-  // `description` is shown on its own above the preview.
-  const { command, file_path, path, description: _d, ...others } = input as Record<string, unknown>;
+  // `description` is shown on its own above the preview; a diff (Codex's file changes) as is.
+  const { command, file_path, path, description: _d, diff, ...others } = input as Record<string, unknown>;
   const main = [command, file_path, path].find((v): v is string => typeof v === "string");
-  const rest = Object.keys(others).length ? JSON.stringify(others, null, 2) : undefined;
+  const json = Object.keys(others).length ? JSON.stringify(others, null, 2) : undefined;
+  const rest = typeof diff === "string" && diff ? diff : json;
   return { main: main ?? (rest ? undefined : ""), rest: main ? rest : (rest ?? JSON.stringify(input, null, 2)) };
+}
+
+/** Where "Always allow" keeps the rule, or nothing when the agent has no lasting rule for it. */
+function alwaysSavesTo(agent: AgentKind, toolName: string): string | undefined {
+  if (agent === "codex") return toolName === "Edit" ? undefined : "Adds the command to Codex's own rules (~/.codex/rules)";
+  return "Saves to this project's settings";
 }
 
 const DECIDED: Record<string, string> = {
@@ -289,9 +300,10 @@ const DECIDED: Record<string, string> = {
 
 /** A tool the agent wants to use. It waits here until the user answers. */
 function ApprovalCard({ block, live }: { block: ApprovalBlock; live: boolean }) {
-  const { decide } = useContext(TranscriptContext);
+  const { decide, agent = "claude" } = useContext(TranscriptContext);
   const [busy, setBusy] = useState(false);
   const { main, rest } = describeInput(block.input);
+  const always = alwaysSavesTo(agent, block.toolName);
 
   if (block.decision || !live) {
     const decision = block.decision ?? "expired";
@@ -316,7 +328,7 @@ function ApprovalCard({ block, live }: { block: ApprovalBlock; live: boolean }) 
       <div className="flex items-center gap-2 text-sm">
         <ShieldAlert className="size-4 shrink-0 text-primary" />
         <span>
-          Claude wants to use <span className="font-semibold">{toolLabel(block.toolName)}</span>
+          {AGENT_NAMES[agent]} wants to use <span className="font-semibold">{toolLabel(block.toolName)}</span>
         </span>
         {block.reason && <span className="text-xs text-muted-foreground">· {block.reason}</span>}
       </div>
@@ -341,15 +353,17 @@ function ApprovalCard({ block, live }: { block: ApprovalBlock; live: boolean }) 
             <Button variant="outline" size="sm" disabled={busy} title={block.rules.join("\n")} onClick={() => void answer("allow_session")}>
               Allow for this session
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy}
-              title={"Saves to this project's settings:\n" + block.rules.join("\n")}
-              onClick={() => void answer("allow_always")}
-            >
-              Always allow
-            </Button>
+            {always && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                title={`${always}:\n` + block.rules.join("\n")}
+                onClick={() => void answer("allow_always")}
+              >
+                Always allow
+              </Button>
+            )}
           </>
         )}
         <Button variant="ghost" size="sm" className="ml-auto text-destructive" disabled={busy} onClick={() => void answer("deny")}>
@@ -371,7 +385,7 @@ const OTHER = "\u0000other"; // can't collide with an option label
 
 /** A question from the agent (its AskUserQuestion tool), answered by picking options or typing. */
 function QuestionCard({ block, live }: { block: ApprovalBlock; live: boolean }) {
-  const { decide } = useContext(TranscriptContext);
+  const { decide, agent = "claude" } = useContext(TranscriptContext);
   const questions = ((block.input as { questions?: Question[] })?.questions ?? []).filter((q) => q.question);
   // Chosen labels per question (OTHER = the free-text choice) and the free text itself.
   const [picked, setPicked] = useState<Record<string, string[]>>({});
@@ -424,7 +438,7 @@ function QuestionCard({ block, live }: { block: ApprovalBlock; live: boolean }) 
     <div role="group" aria-label="Question from the agent" className="flex flex-col gap-4 rounded-xl border border-primary/40 bg-primary/5 p-4">
       <div className="flex items-center gap-2 text-sm">
         <MessageCircleQuestion className="size-4 shrink-0 text-primary" />
-        Claude has {questions.length === 1 ? "a question" : "some questions"}
+        {AGENT_NAMES[agent]} has {questions.length === 1 ? "a question" : "some questions"}
       </div>
 
       {questions.map((q) => {

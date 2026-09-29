@@ -146,5 +146,13 @@ pub enum SessionEvent {
     Changed { session: Session },
     /// A new transcript entry.
     Entry { session_id: String, entry: LogEntry },
+    /// More of a message the agent is writing (see [`AgentEvent::TextDelta`]). Not part of the
+    /// transcript: the finished message arrives as an entry.
+    TextDelta {
+        session_id: String,
+        run_id: String,
+        id: String,
+        text: String,
+    },
     Deleted { session_id: String },
 }
