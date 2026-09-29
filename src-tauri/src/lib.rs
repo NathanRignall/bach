@@ -50,8 +50,9 @@ async fn respond_approval(
     request_id: String,
     decision: Decision,
     message: Option<String>,
+    answers: Option<std::collections::HashMap<String, String>>,
 ) -> Result<(), String> {
-    runs.respond_approval(&run_id, &request_id, decision, message)
+    runs.respond_approval(&run_id, &request_id, decision, message, answers)
         .await
 }
 

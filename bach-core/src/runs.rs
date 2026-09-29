@@ -44,6 +44,7 @@ pub enum Decision {
 }
 
 struct PendingApproval {
+    tool_name: String,
     input: Value,
     suggestions: Value,
 }
@@ -63,6 +64,70 @@ pub struct Runs(Arc<Mutex<HashMap<String, Live>>>);
 
 fn valid_rule(r: &str) -> bool {
     !r.is_empty() && !r.starts_with('-') && r.len() < 500
+}
+
+/// The reply to a permission request. Errors leave the request unanswered.
+fn build_response(
+    approval: &PendingApproval,
+    decision: Decision,
+    message: Option<String>,
+    answers: Option<HashMap<String, String>>,
+) -> Result<Value, String> {
+    if decision == Decision::Deny {
+        return Ok(json!({
+            "behavior": "deny",
+            "message": message.unwrap_or_else(|| "The user denied this request.".into()),
+        }));
+    }
+
+    let mut input = approval.input.clone();
+    // A question for the user (AskUserQuestion) is answered by allowing it with the answers
+    // filled in, keyed by the question text. Only questions actually asked can be answered,
+    // and the questions themselves can't be altered.
+    if approval.tool_name == "AskUserQuestion" {
+        let answers = answers.ok_or("Answer the question first.")?;
+        let asked: Vec<&str> = input["questions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|q| q["question"].as_str())
+            .collect();
+        if let Some(unknown) = answers.keys().find(|k| !asked.contains(&k.as_str())) {
+            return Err(format!("`{unknown}` isn't one of the questions asked."));
+        }
+        input["answers"] = json!(answers);
+    } else if answers.is_some() {
+        return Err("That request doesn't take answers.".into());
+    }
+
+    let mut r = json!({ "behavior": "allow", "updatedInput": input });
+    // Only ever the rule itself. The agent also offers to widen directory access or switch
+    // permission mode; "allow this command" must not quietly grant those.
+    let rules: Vec<Value> = approval
+        .suggestions
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| s["type"] == "addRules" && s["behavior"] == "allow")
+        .cloned()
+        .collect();
+    let updates = match decision {
+        Decision::AllowSession => Some(
+            rules
+                .into_iter()
+                .map(|mut s| {
+                    s["destination"] = json!("session");
+                    s
+                })
+                .collect::<Vec<_>>(),
+        ),
+        Decision::AllowAlways => Some(rules),
+        _ => None,
+    };
+    if let Some(u) = updates.filter(|u| !u.is_empty()) {
+        r["updatedPermissions"] = json!(u);
+    }
+    Ok(r)
 }
 
 impl Runs {
@@ -206,10 +271,14 @@ impl Runs {
                                     });
                                 }
                                 match &ev {
-                                    AgentEvent::Approval { request_id, input, suggestions, .. } => {
+                                    AgentEvent::Approval { request_id, tool_name, input, suggestions, .. } => {
                                         pending.lock().unwrap().insert(
                                             request_id.clone(),
-                                            PendingApproval { input: input.clone(), suggestions: suggestions.clone() },
+                                            PendingApproval {
+                                                tool_name: tool_name.clone(),
+                                                input: input.clone(),
+                                                suggestions: suggestions.clone(),
+                                            },
                                         );
                                     }
                                     AgentEvent::ApprovalCancelled { request_id } => {
@@ -264,53 +333,23 @@ impl Runs {
         request_id: &str,
         decision: Decision,
         message: Option<String>,
+        answers: Option<HashMap<String, String>>,
     ) -> Result<(), String> {
         let (stdin, pending) = {
             let runs = self.0.lock().await;
             let live = runs.get(run_id).ok_or("That run has already finished.")?;
             (live.stdin.clone(), live.pending.clone())
         };
-        let approval = pending
-            .lock()
-            .unwrap()
-            .remove(request_id)
-            .ok_or("That approval is no longer pending.")?;
-
-        let response = match decision {
-            Decision::Deny => json!({
-                "behavior": "deny",
-                "message": message.unwrap_or_else(|| "The user denied this request.".into()),
-            }),
-            allow => {
-                let mut r = json!({ "behavior": "allow", "updatedInput": approval.input });
-                // Only ever the rule itself. The agent also offers to widen directory access or
-                // switch permission mode; "allow this command" must not quietly grant those.
-                let rules: Vec<Value> = approval
-                    .suggestions
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|s| s["type"] == "addRules" && s["behavior"] == "allow")
-                    .cloned()
-                    .collect();
-                let updates = match allow {
-                    Decision::AllowSession => Some(
-                        rules
-                            .into_iter()
-                            .map(|mut s| {
-                                s["destination"] = json!("session");
-                                s
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
-                    Decision::AllowAlways => Some(rules),
-                    _ => None,
-                };
-                if let Some(u) = updates.filter(|u| !u.is_empty()) {
-                    r["updatedPermissions"] = json!(u);
-                }
-                r
-            }
+        // Build (and so validate) the reply before taking the request off the list: a rejected
+        // answer must leave the agent's question open to be answered properly.
+        let response = {
+            let mut list = pending.lock().unwrap();
+            let approval = list
+                .get(request_id)
+                .ok_or("That approval is no longer pending.")?;
+            let response = build_response(approval, decision, message, answers)?;
+            list.remove(request_id);
+            response
         };
         let line = json!({
             "type": "control_response",

@@ -47,6 +47,8 @@ export interface ApprovalBlock {
   rules: string[];
   directories: string[];
   decision?: ApprovalDecision | "expired";
+  /** What the user answered, for a question from the agent. */
+  answers?: Record<string, string>;
 }
 
 export const isSubagent = (b: ToolBlock) => !!b.task || b.name === "Agent" || b.name === "Task";
@@ -135,12 +137,17 @@ export const awaitingApproval = (s: Session) => s.blocks.some((b) => b.kind === 
 export const expireApprovals = (blocks: Block[]): Block[] =>
   blocks.map((b) => (b.kind === "approval" && !b.decision ? { ...b, decision: "expired" } : b));
 
-export function decideApproval(s: Session, requestId: string, decision: ApprovalDecision): Session {
+export function decideApproval(
+  s: Session,
+  requestId: string,
+  decision: ApprovalDecision,
+  answers?: Record<string, string>,
+): Session {
   let rules: string[] = [];
   const blocks = s.blocks.map((b) => {
     if (b.kind !== "approval" || b.requestId !== requestId) return b;
     rules = b.rules;
-    return { ...b, decision };
+    return { ...b, decision, answers };
   });
   // "For this session" outlasts the run: later runs are started with these rules pre-approved.
   const allowRules = decision === "allow_session" ? [...new Set([...(s.allowRules ?? []), ...rules])] : s.allowRules;

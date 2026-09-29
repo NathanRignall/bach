@@ -166,9 +166,10 @@ async fn handle(st: &AppState, req: Request) -> Result<Value, String> {
             request_id,
             decision,
             message,
+            answers,
         } => st
             .runs
-            .respond_approval(&run_id, &request_id, decision, message)
+            .respond_approval(&run_id, &request_id, decision, message, answers)
             .await
             .map(|_| Value::Null),
         Request::ListDir { path, show_hidden } => crate::fs::list_dir(path.as_deref(), show_hidden)

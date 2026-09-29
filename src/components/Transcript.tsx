@@ -1,17 +1,18 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, Ban, Bot, Brain, CheckCircle2, ChevronRight, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
+import { AlertCircle, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
 import { ApprovalDecision } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { ApprovalBlock, Block, ToolBlock, isSubagent } from "@/session";
 
 /** What the transcript can ask the app to do on the user's behalf. */
 export interface TranscriptActions {
-  decide: (requestId: string, decision: ApprovalDecision) => Promise<void>;
+  decide: (requestId: string, decision: ApprovalDecision, answers?: Record<string, string>) => Promise<void>;
   /** Sends a message again; with no text, the last one. Not offered while a run is going. */
   retry?: (text?: string) => void;
 }
@@ -84,7 +85,11 @@ export function BlockView({ block, live }: { block: Block; live: boolean }) {
       return <ErrorMessage text={block.text} retryText={block.retryText} />;
 
     case "approval":
-      return <ApprovalCard block={block} live={live} />;
+      return block.toolName === "AskUserQuestion" ? (
+        <QuestionCard block={block} live={live} />
+      ) : (
+        <ApprovalCard block={block} live={live} />
+      );
 
     case "tool":
       return isSubagent(block) ? <SubagentCard block={block} live={live} /> : <ToolCard block={block} live={live} />;
@@ -308,6 +313,122 @@ function ApprovalCard({ block, live }: { block: ApprovalBlock; live: boolean }) 
         )}
         <Button variant="ghost" size="sm" className="ml-auto text-destructive" disabled={busy} onClick={() => void answer("deny")}>
           Deny
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+interface Question {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: { label: string; description?: string }[];
+}
+
+const OTHER = "\u0000other"; // can't collide with an option label
+
+/** A question from the agent (its AskUserQuestion tool), answered by picking options or typing. */
+function QuestionCard({ block, live }: { block: ApprovalBlock; live: boolean }) {
+  const { decide } = useContext(TranscriptContext);
+  const questions = ((block.input as { questions?: Question[] })?.questions ?? []).filter((q) => q.question);
+  // Chosen labels per question (OTHER = the free-text choice) and the free text itself.
+  const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const [other, setOther] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+
+  const answerFor = (q: Question): string => {
+    const labels = (picked[q.question] ?? []).flatMap((l) => (l === OTHER ? [(other[q.question] ?? "").trim()] : [l]));
+    return labels.filter(Boolean).join(", ");
+  };
+
+  if (block.decision || !live) {
+    const decision = block.decision ?? "expired";
+    const answered = decision === "allow" && block.answers;
+    return (
+      <div className="flex flex-col gap-1 px-1 text-xs text-muted-foreground">
+        {answered ? (
+          Object.entries(block.answers!).map(([q, a]) => (
+            <p key={q} className="flex items-start gap-2">
+              <MessageCircleQuestion className="mt-0.5 size-3.5 shrink-0" />
+              <span>
+                {q} <span className="font-semibold text-foreground">→ {a}</span>
+              </span>
+            </p>
+          ))
+        ) : (
+          <p className="flex items-center gap-2">
+            <Ban className="size-3.5 shrink-0" />
+            {decision === "deny" ? "Skipped a question" : "Question no longer needed"}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  const complete = questions.length > 0 && questions.every((q) => answerFor(q));
+  const toggle = (q: Question, label: string) =>
+    setPicked((p) => {
+      const cur = p[q.question] ?? [];
+      const next = q.multiSelect ? (cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label]) : [label];
+      return { ...p, [q.question]: next };
+    });
+  const submit = async () => {
+    setBusy(true);
+    const answers = Object.fromEntries(questions.map((q) => [q.question, answerFor(q)]));
+    await decide(block.requestId, "allow", answers).finally(() => setBusy(false));
+  };
+
+  return (
+    <div role="group" aria-label="Question from the agent" className="flex flex-col gap-4 rounded-xl border border-primary/40 bg-primary/5 p-4">
+      <div className="flex items-center gap-2 text-sm">
+        <MessageCircleQuestion className="size-4 shrink-0 text-primary" />
+        Claude has {questions.length === 1 ? "a question" : "some questions"}
+      </div>
+
+      {questions.map((q) => {
+        const on = picked[q.question] ?? [];
+        const type = q.multiSelect ? "checkbox" : "radio";
+        return (
+          <fieldset key={q.question} className="flex flex-col gap-2">
+            <legend className="mb-1 flex items-center gap-2 text-sm font-medium">
+              {q.header && <Badge variant="outline">{q.header}</Badge>}
+              {q.question}
+            </legend>
+            {q.options.map((o) => (
+              <label
+                key={o.label}
+                className="flex cursor-pointer items-start gap-3 rounded-lg border bg-background px-3 py-2 text-sm hover:bg-accent has-[:checked]:border-primary"
+              >
+                <input type={type} name={q.question} className="mt-1 accent-primary" checked={on.includes(o.label)} onChange={() => toggle(q, o.label)} />
+                <span className="flex flex-col">
+                  <span className="font-medium">{o.label}</span>
+                  {o.description && <span className="text-xs text-muted-foreground">{o.description}</span>}
+                </span>
+              </label>
+            ))}
+            <label className="flex cursor-pointer items-center gap-3 rounded-lg border bg-background px-3 py-2 text-sm hover:bg-accent has-[:checked]:border-primary">
+              <input type={type} name={q.question} className="accent-primary" checked={on.includes(OTHER)} onChange={() => toggle(q, OTHER)} />
+              <span className="font-medium">Other</span>
+              <Input
+                aria-label={`Other answer for: ${q.question}`}
+                className="h-7 flex-1"
+                placeholder="Type your own answer"
+                value={other[q.question] ?? ""}
+                onFocus={() => !on.includes(OTHER) && toggle(q, OTHER)}
+                onChange={(e) => setOther((o) => ({ ...o, [q.question]: e.target.value }))}
+              />
+            </label>
+          </fieldset>
+        );
+      })}
+
+      <div className="flex items-center gap-2">
+        <Button size="sm" disabled={!complete || busy} onClick={() => void submit()}>
+          Send answer
+        </Button>
+        <Button variant="ghost" size="sm" disabled={busy} onClick={() => void decide(block.requestId, "deny")}>
+          Skip
         </Button>
       </div>
     </div>

@@ -151,7 +151,7 @@ export function App() {
   // Something is waiting on the user: say so in the tab, in case it's in the background.
   const anyWaiting = sessions.some(awaitingApproval);
   useEffect(() => {
-    document.title = anyWaiting ? "● Approval needed — Bach" : "Bach";
+    document.title = anyWaiting ? "● Waiting for you — Bach" : "Bach";
   }, [anyWaiting]);
 
   const patch = (id: string, f: (s: Session) => Session) =>
@@ -245,13 +245,19 @@ export function App() {
     }
   }
 
-  async function decide(requestId: string, decision: ApprovalDecision) {
+  async function decide(requestId: string, decision: ApprovalDecision, answers?: Record<string, string>) {
     const s = active;
     if (!s?.runId) return;
     try {
-      await respondApproval({ runId: s.runId, requestId, decision });
-      patch(s.id, (x) => decideApproval(x, requestId, decision));
-    } catch {
+      await respondApproval({ runId: s.runId, requestId, decision, answers });
+      patch(s.id, (x) => decideApproval(x, requestId, decision, answers));
+    } catch (e) {
+      const message = String((e as Error).message ?? e);
+      if (!/no longer pending|already finished/.test(message)) {
+        // Rejected (e.g. an incomplete answer): the agent is still waiting, so leave it open.
+        setConnectionError(message);
+        return;
+      }
       // The run moved on without it (finished, stopped, or the agent withdrew the request).
       patch(s.id, (x) => ({
         ...x,
@@ -342,7 +348,10 @@ export function App() {
                   {(running || starting) &&
                     (awaitingApproval(active) ? (
                       <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
-                        <ShieldAlert className="size-4 animate-pulse text-primary" /> Waiting for your approval
+                        <ShieldAlert className="size-4 animate-pulse text-primary" />{" "}
+                        {active.blocks.some((b) => b.kind === "approval" && !b.decision && b.toolName === "AskUserQuestion")
+                          ? "Waiting for your answer"
+                          : "Waiting for your approval"}
                       </div>
                     ) : (
                       <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">

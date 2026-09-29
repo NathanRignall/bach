@@ -147,7 +147,14 @@ export const startRun = (args: {
 
 export type ApprovalDecision = "allow" | "allow_session" | "allow_always" | "deny";
 
-export const respondApproval = (args: { runId: string; requestId: string; decision: ApprovalDecision; message?: string }) =>
+export const respondApproval = (args: {
+  runId: string;
+  requestId: string;
+  decision: ApprovalDecision;
+  message?: string;
+  /** For a question from the agent: the chosen answer per question text. */
+  answers?: Record<string, string>;
+}) =>
   call<void>("respond_approval", args);
 
 export const cancelRun = (runId: string) => call<void>("cancel_run", { runId });

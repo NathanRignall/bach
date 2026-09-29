@@ -33,6 +33,8 @@ pub enum Request {
         request_id: String,
         decision: crate::runs::Decision,
         message: Option<String>,
+        /// For a question from the agent: the chosen answer per question text.
+        answers: Option<std::collections::HashMap<String, String>>,
     },
     ListDir {
         path: Option<String>,
