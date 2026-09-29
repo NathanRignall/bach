@@ -153,6 +153,8 @@ export function App() {
     });
     // Whatever happened while disconnected: catch up.
     const unReconnect = onReconnect(() => {
+      // The first load may have failed while disconnected.
+      void listAgents().then(setAgents, () => {});
       void loadSessions();
       for (const id of transcripts.current.keys()) void fetchTranscript(id);
     });

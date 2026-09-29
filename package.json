@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "tauri": "tauri"
+    "tauri": "cargo tauri"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

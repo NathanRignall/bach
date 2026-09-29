@@ -3,7 +3,16 @@
 // ApiError; events are ServerEvents.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { ApiError as ApiErrorData, ClientFrame, ErrorCode, JsonValue, ServerEvent, ServerFrame } from "./generated/protocol";
+import type {
+  ApiError as ApiErrorData,
+  ClientFrame,
+  ConnectionStatus,
+  ErrorCode,
+  JsonValue,
+  ServerEvent,
+  ServerFrame,
+} from "./generated/protocol";
+import { PROTOCOL } from "./generated/protocol";
 
 /** A command failed. `code` is for code that reacts to the failure; `message` is for people. */
 export class ApiError extends Error {
@@ -33,8 +42,10 @@ export interface Transport {
   onReconnect(cb: () => void): () => void;
 }
 
-/** The Tauri app's own backend: one `rpc` command, events on the `bach` channel. */
+/** The desktop app: one `rpc` command, events on the `bach` channel. */
 export class TauriTransport implements Transport {
+  private connected = false;
+
   async call(name: string, args: unknown) {
     try {
       return await invoke("rpc", { name, args });
@@ -48,8 +59,14 @@ export class TauriTransport implements Transport {
     return () => void un.then((f) => f());
   }
 
-  onReconnect() {
-    return () => {}; // in-process: never disconnects
+  /** When the app's connection (to this computer, or over SSH) comes back up. */
+  onReconnect(cb: () => void) {
+    const un = listen<ConnectionStatus>("bach-connection", (e) => {
+      const up = e.payload.state === "connected";
+      if (up && !this.connected) cb();
+      this.connected = up;
+    });
+    return () => void un.then((f) => f());
   }
 }
 
@@ -64,6 +81,8 @@ export class SocketTransport implements Transport {
   private reconnectListeners = new Set<() => void>();
   private connectedBefore = false;
   private retryMs = 500;
+  /** Set when the server speaks a different protocol. */
+  private mismatch?: string;
 
   constructor(private url: string) {}
 
@@ -95,6 +114,12 @@ export class SocketTransport implements Transport {
   }
 
   private receive(frame: ServerFrame) {
+    if (frame.kind === "hello") {
+      if (frame.protocol !== PROTOCOL) {
+        this.mismatch = `bach-server ${frame.version} is a different version from this page; reload it, or restart the server.`;
+      }
+      return;
+    }
     if (frame.kind === "event") return this.listeners.forEach((l) => l(frame.event));
     const p = this.pending.get(frame.id);
     if (!p) return;
@@ -104,6 +129,7 @@ export class SocketTransport implements Transport {
 
   async call(cmd: string, args: unknown) {
     const ws = await this.connect();
+    if (this.mismatch) throw new ApiError("unavailable", this.mismatch);
     const id = ++this.nextId;
     const frame: ClientFrame = { id, cmd, args: args as JsonValue };
     return new Promise<unknown>((resolve, reject) => {

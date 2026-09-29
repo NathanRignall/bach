@@ -1,5 +1,8 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
+/** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
+export const PROTOCOL = "ff8b19d5c60af77a";
+
 /**
  * Agent-independent events the UI renders.
  */
@@ -47,6 +50,38 @@ message: string, };
  * A command sent over the WebSocket bridge. `id` is echoed back in the reply.
  */
 export type ClientFrame = { id: number, cmd: string, args?: JsonValue, };
+
+/**
+ * Where the desktop app's agents run.
+ */
+export type Connection = { "mode": "local" } | { "mode": "ssh", 
+/**
+ * As you would pass it to `ssh`: a `~/.ssh/config` alias, `host`, or `user@host`.
+ */
+host: string, 
+/**
+ * How to run bach-server there (default `bach-server`).
+ */
+command: string, };
+
+export type ConnectionState = "connecting" | "connected" | "disconnected";
+
+/**
+ * How the desktop app's connection is doing. Sent on the `bach-connection` channel as it changes.
+ */
+export type ConnectionStatus = { connection: Connection, state: ConnectionState, 
+/**
+ * Why it isn't connected.
+ */
+error: string | null, 
+/**
+ * Whether it will try again by itself.
+ */
+retrying: boolean, 
+/**
+ * The server's version, once connected.
+ */
+version: string | null, };
 
 /**
  * How much of the model's context window a session's conversation fills.
@@ -239,9 +274,10 @@ export type SendMessageArgs = { sessionId: string, prompt: string, };
 export type ServerEvent = { "topic": "session", "data": SessionEvent } | { "topic": "task", "data": TaskEvent } | { "topic": "usage", "data": PlanUsage };
 
 /**
- * What the WebSocket bridge sends: replies to commands, and events.
+ * What the WebSocket bridge (and `bach-server attach`) sends: first a `hello`, then replies to
+ * commands, and events.
  */
-export type ServerFrame = { "kind": "reply", id: number, result: JsonValue, } | { "kind": "error", id: number, error: ApiError, } | { "kind": "event", event: ServerEvent, };
+export type ServerFrame = { "kind": "hello", protocol: string, version: string, } | { "kind": "reply", id: number, result: JsonValue, } | { "kind": "error", id: number, error: ApiError, } | { "kind": "event", event: ServerEvent, };
 
 export type Session = { id: string, title: string, 
 /**

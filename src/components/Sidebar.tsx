@@ -7,7 +7,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { Session } from "@/api";
 import { awaitingApproval, groupByProject, projectName } from "@/session";
-import { BackendPicker } from "./BackendPicker";
+import { ConnectionPicker } from "./ConnectionPicker";
 
 interface Props {
   sessions: Session[];
@@ -155,7 +155,7 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
           <GitFork data-icon="inline-start" />
           Clean up worktrees…
         </Button>
-        <BackendPicker />
+        <ConnectionPicker />
       </div>
     </aside>
   );

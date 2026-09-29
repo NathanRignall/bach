@@ -7,6 +7,7 @@
 //! - [`ClientFrame`] / [`ServerFrame`] are how the WebSocket bridge carries both. Tauri carries
 //!   the same `cmd` + `args` through one `rpc` command and events on the `bach` channel.
 mod agent;
+pub mod app;
 pub mod commands;
 mod error;
 mod events;
@@ -21,7 +22,7 @@ pub use error::*;
 pub use events::*;
 pub use session::*;
 pub use usage::*;
-pub use typescript::typescript;
+pub use typescript::{fingerprint, typescript};
 pub use workspace::*;
 
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,8 @@ use ts_rs::TS;
 
 /// Tauri's event channel for [`ServerEvent`]s.
 pub const EVENT_CHANNEL: &str = "bach";
+/// Tauri's event channel for [`app::ConnectionStatus`] changes.
+pub const CONNECTION_CHANNEL: &str = "bach-connection";
 
 /// A command sent over the WebSocket bridge. `id` is echoed back in the reply.
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -41,10 +44,17 @@ pub struct ClientFrame {
     pub args: Option<Value>,
 }
 
-/// What the WebSocket bridge sends: replies to commands, and events.
+/// What the WebSocket bridge (and `bach-server attach`) sends: first a `hello`, then replies to
+/// commands, and events.
 #[derive(Debug, Serialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ServerFrame {
+    /// Sent once on connecting. A client built from a different protocol (see [`fingerprint`])
+    /// should say so rather than send commands the server may not understand.
+    Hello {
+        protocol: String,
+        version: String,
+    },
     Reply { id: u64, result: Value },
     Error { id: u64, error: ApiError },
     Event { event: ServerEvent },
@@ -117,6 +127,13 @@ mod tests {
             serde_json::to_value(&err).unwrap(),
             json!({"kind": "error", "id": 3, "error": {"code": "not_found", "message": "gone"}})
         );
+    }
+
+    #[test]
+    fn the_fingerprint_follows_the_protocol() {
+        assert_eq!(fingerprint(), fingerprint());
+        assert_eq!(fingerprint().len(), 16);
+        assert!(typescript().contains(&format!("export const PROTOCOL = \"{}\";", fingerprint())));
     }
 
     #[test]

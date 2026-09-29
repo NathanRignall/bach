@@ -1,5 +1,5 @@
-//! The WebSocket bridge: carries [`ClientFrame`] commands to [`Api::call`] and pushes every
-//! [`ServerEvent`](bach_protocol::ServerEvent) to the socket.
+//! The WebSocket bridge, for browsers: frames are WebSocket text messages (see
+//! [`crate::connection`]).
 //!
 //! It runs agent CLIs as the current user, so it must only be reachable locally (SSH tunnel) and
 //! only from allowed browser origins.
@@ -14,11 +14,10 @@ use axum::{
     Router,
 };
 use bach_core::Api;
-use bach_protocol::{ApiError, ClientFrame, ServerFrame};
+use bach_protocol::ServerFrame;
 use futures_util::{SinkExt, StreamExt};
-use serde_json::Value;
 use std::{collections::HashSet, sync::Arc};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 
 pub struct Config {
     pub allowed_origins: HashSet<String>,
@@ -54,9 +53,8 @@ async fn ws_handler(
 }
 
 async fn serve(socket: WebSocket, api: Arc<Api>) {
-    let (mut sink, mut stream) = socket.split();
+    let (mut sink, stream) = socket.split();
     let (out, mut out_rx) = mpsc::unbounded_channel::<ServerFrame>();
-
     let writer = tokio::spawn(async move {
         while let Some(frame) = out_rx.recv().await {
             let text = serde_json::to_string(&frame).expect("frames serialize");
@@ -65,51 +63,14 @@ async fn serve(socket: WebSocket, api: Arc<Api>) {
             }
         }
     });
-
-    let mut events = api.subscribe();
-    let forward = {
-        let out = out.clone();
-        tokio::spawn(async move {
-            loop {
-                match events.recv().await {
-                    Ok(event) => {
-                        let _ = out.send(ServerFrame::Event { event });
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(_) => break,
-                }
+    let incoming = stream
+        .take_while(|m| std::future::ready(m.is_ok()))
+        .filter_map(|m| async move {
+            match m {
+                Ok(Message::Text(t)) => Some(t.to_string()),
+                _ => None,
             }
-        })
-    };
-
-    while let Some(Ok(msg)) = stream.next().await {
-        let Message::Text(text) = msg else { continue };
-        let frame = match serde_json::from_str::<ClientFrame>(&text) {
-            Ok(f) => f,
-            Err(e) => {
-                // Answer if we can tell which request it was, so the caller doesn't hang.
-                if let Some(id) = serde_json::from_str::<Value>(&text)
-                    .ok()
-                    .and_then(|v| v["id"].as_u64())
-                {
-                    let error = ApiError::invalid(format!("Bad request: {e}"));
-                    let _ = out.send(ServerFrame::Error { id, error });
-                }
-                continue;
-            }
-        };
-        // Each command runs on its own, so a slow one doesn't hold up the rest.
-        let (api, out) = (api.clone(), out.clone());
-        tokio::spawn(async move {
-            let id = frame.id;
-            let reply = match api.call(&frame.cmd, frame.args.unwrap_or_default()).await {
-                Ok(result) => ServerFrame::Reply { id, result },
-                Err(error) => ServerFrame::Error { id, error },
-            };
-            let _ = out.send(reply);
         });
-    }
-
-    forward.abort();
+    crate::connection::serve(api, Box::pin(incoming), out).await;
     writer.abort();
 }

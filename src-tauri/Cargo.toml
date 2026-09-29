@@ -12,6 +12,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+bach-client = { path = "../crates/bach-client" }
 bach-core = { path = "../crates/bach-core" }
 bach-protocol = { path = "../crates/bach-protocol" }
 tauri = { version = "2", features = [] }

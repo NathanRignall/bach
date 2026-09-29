@@ -9,6 +9,26 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
+      # The backend, for the machine agents run on: `ssh <host> bach-server attach` is how the
+      # desktop app reaches it, so it must be on that machine's PATH.
+      packages = forAllSystems (pkgs: rec {
+        bach-server = pkgs.rustPlatform.buildRustPackage {
+          pname = "bach-server";
+          version = (builtins.fromTOML (builtins.readFile ./crates/bach-server/Cargo.toml)).package.version;
+          # Only what cargo needs: every workspace member's manifest must be there, not node_modules.
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [ ./Cargo.toml ./Cargo.lock ./crates ./src-tauri ];
+          };
+          cargoLock.lockFile = ./Cargo.lock;
+          cargoBuildFlags = [ "-p" "bach-server" ];
+          # The tests start real agents and servers; they run in the devShell instead.
+          doCheck = false;
+          meta.mainProgram = "bach-server";
+        };
+        default = bach-server;
+      });
+
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           packages = [
@@ -21,6 +41,8 @@
             pkgs.nodejs
             pkgs.pnpm
             pkgs.pkg-config
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            pkgs.libiconv
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
             pkgs.gobject-introspection
             pkgs.openssl

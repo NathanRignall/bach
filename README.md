@@ -29,8 +29,13 @@ CLI in headless JSON-streaming mode and normalizing their output into one event 
     JSON) are converted on startup, their transcript kept as one `imported` entry.
   - `adapters/claude.rs` also steers Claude Code to Satie (system prompt, a hook refusing Bash
     `run_in_background`, the MCP config with the run's token).
-- `crates/bach-server/` — the WebSocket bridge for browser use (see below).
-- `src-tauri/` — Tauri shell: one `rpc` command into `Api`, events on the `bach` channel.
+- `crates/bach-server/` — the server binary: `serve` (a private Unix socket for the desktop app,
+  plus a WebSocket for browsers; one server per database) and `attach` (stdin/stdout to that
+  socket, starting the server if needed).
+- `crates/bach-client/` — the desktop app's side of a remote connection: runs
+  `ssh <host> bach-server attach`, checks the protocol, matches replies, reconnects.
+- `src-tauri/` — Tauri shell: one `rpc` command, routed to a backend inside the app or to
+  `bach-client`; events on the `bach` channel, connection status on `bach-connection`.
 - `src/api/` — the typed client: `call("send_message", {...})` is checked against the generated
   `Commands` map; `transport.ts` carries it over Tauri IPC or the WebSocket.
 - `src/session.ts` folds a session's transcript entries into the blocks the UI renders; `App.tsx`
@@ -54,14 +59,56 @@ Commands and enum values are `snake_case`; fields are `camelCase`.
 direnv allow        # or: nix develop
 pnpm install
 cargo test
-pnpm tauri dev      # needs a display
+pnpm tauri dev      # the desktop app (needs a display)
 ```
+
+## The Mac app, agents on orion
+
+The desktop app talks to agents either **on this computer** (inside the app) or **on another
+machine over SSH**. Pick in the sidebar (the settings button next to "Agents on …"): for SSH, give
+the host as you'd pass it to `ssh` (`orion`, a `~/.ssh/config` alias, `user@host`). The choice is
+saved in the app.
+
+Over SSH the app runs `ssh <host> bach-server attach` with your own ssh (keys, agent,
+`~/.ssh/config`, ProxyJump), never prompting: connect once with `ssh orion` in a terminal first
+so its host key is trusted. `attach` connects to the server's private Unix socket on that machine
+(`~/.local/share/bach/bach.sock`, next to the database, only accessible to you), and starts the
+server there if it isn't running. So nothing listens on the network for the app, and agents and
+background tasks keep running when the Mac disconnects. The app reconnects by itself and catches
+up. Its status and any SSH error are shown in the sidebar.
+
+`bach-server` must be on the remote's PATH (or set the command in the connection settings, e.g.
+`~/dev/bach/target/release/bach-server`). The flake exports it as a package; on NixOS, add it to
+the host, for example:
+
+```nix
+# flake inputs:   bach.url = "github:<you>/bach";   (or wherever the repo lives)
+environment.systemPackages = [ inputs.bach.packages.${pkgs.system}.bach-server ];
+```
+
+The app and the server must come from the same commit: they check each other's protocol
+fingerprint (`bach-server --version`) when connecting and say so if they differ.
+
+### Building and signing the Mac app
+
+On the Mac, in the devShell:
+
+```sh
+export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+# notarization: an App Store Connect API key ...
+export APPLE_API_ISSUER=... APPLE_API_KEY=... APPLE_API_KEY_PATH=~/keys/AuthKey_XXXX.p8
+# ... or an Apple ID with an app-specific password
+# export APPLE_ID=... APPLE_PASSWORD=... APPLE_TEAM_ID=...
+nix develop -c scripts/build-mac.sh
+```
+
+It builds `target/release/bundle/macos/Bach.app` and a DMG, signed with hardened runtime and
+notarized (the app by Tauri, the DMG by the script), and checks both the way Gatekeeper will.
 
 ## Using it from a browser (e.g. Mac -> orion)
 
-Agents run wherever `bach-server` runs. It listens on `127.0.0.1:3421` only and rejects
-WebSocket connections from origins other than the Vite dev page, because it can run agents
-(and so shell commands) as your user.
+`bach-server` also serves browsers, on a WebSocket at `127.0.0.1:3421` that rejects origins other
+than the Vite dev page, because it can run agents (and so shell commands) as your user.
 
 ```sh
 # on orion
@@ -73,14 +120,8 @@ ssh -L 3421:localhost:3421 orion           # then open http://orion:3420
 ```
 
 `BACH_PORT` changes the port; `BACH_ALLOWED_ORIGINS` (comma-separated) replaces the allowed
-origins. Point the UI elsewhere with `VITE_BACH_WS`.
-
-## Native app on the Mac, agents on orion
-
-Run the tunnel as above, then start the Tauri app on the Mac (`pnpm tauri dev`) and, in the
-sidebar, set "Agents run" to "on a remote bach-server" (`ws://localhost:3421`) and Apply. The
-choice is saved in the app. Working directories are then paths on orion. The server accepts
-the Tauri webview origins (`tauri://localhost`, `http://tauri.localhost`) by default.
+origins. Point the UI elsewhere with `VITE_BACH_WS`. `BACH_DB` moves the database (and with it
+the socket, lock and `server.log`).
 
 ## Branches and worktrees
 

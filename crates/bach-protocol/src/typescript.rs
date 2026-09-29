@@ -33,7 +33,29 @@ impl TypeVisitor for Collect<'_> {
     }
 }
 
+/// Identifies the protocol: a hash of everything in the TypeScript bindings, so it changes
+/// whenever a command, event or type on the wire does. FNV-1a, which (unlike std's hasher) is the
+/// same on every build.
+pub fn fingerprint() -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in declarations().bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
 pub fn typescript() -> String {
+    format!(
+        "// Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.\n\n\
+         /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */\n\
+         export const PROTOCOL = \"{}\";\n\n{}",
+        fingerprint(),
+        declarations()
+    )
+}
+
+fn declarations() -> String {
     // Every integer on the wire (timestamps, byte offsets, counts) fits a JS number.
     let cfg = Config::new().with_large_int("number");
     let mut c = Collect {
@@ -44,10 +66,9 @@ pub fn typescript() -> String {
     commands::visit_types(&mut c);
     c.visit::<ClientFrame>();
     c.visit::<ServerFrame>();
+    c.visit::<crate::app::ConnectionStatus>();
 
-    let mut out = String::from(
-        "// Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.\n\n",
-    );
+    let mut out = String::new();
     for decl in c.decls.values() {
         out += decl;
         out += "\n";

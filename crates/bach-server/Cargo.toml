@@ -9,5 +9,12 @@ axum = { version = "0.8", features = ["ws"] }
 bach-core = { path = "../bach-core" }
 bach-protocol = { path = "../bach-protocol" }
 futures-util = "0.3"
+libc = "0.2.189"
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "io-std", "io-util", "time"] }
+tokio-stream = { version = "0.1", features = ["io-util"] }
+
+[dev-dependencies]
+bach-protocol = { path = "../bach-protocol" }
+bach-client = { path = "../bach-client" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

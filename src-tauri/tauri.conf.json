@@ -11,13 +11,33 @@
   },
   "app": {
     "windows": [
-      { "title": "Bach", "width": 1200, "height": 800, "minWidth": 720, "minHeight": 480 }
+      {
+        "title": "Bach",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 720,
+        "minHeight": 480
+      }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": null
+    }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png"]
+    "category": "DeveloperTool",
+    "shortDescription": "Claude Code, Codex and opencode in one app, locally or on another machine over SSH",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "hardenedRuntime": true
+    }
   }
 }

@@ -1,30 +1,44 @@
-// Which backend commands go to: the Tauri app's own (local), or a `bach-server` over a
-// WebSocket (normally reached through `ssh -L 3421:localhost:3421 orion`).
+// Which backend commands go to. In the desktop app, always the app itself (it runs agents here or
+// relays to a server over SSH; see `ConnectionPicker`). In a plain browser, a `bach-server` over
+// a WebSocket, normally reached through `ssh -L 3421:localhost:3421 orion`.
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import type { Connection, ConnectionStatus } from "./generated/protocol";
 
 export const inTauri = "__TAURI_INTERNALS__" in window;
 
 const DEFAULT_WS_URL = import.meta.env.VITE_BACH_WS ?? "ws://localhost:3421";
-const STORAGE_KEY = "bach.backend";
 
-const stored = (): string | null => {
-  try {
-    return localStorage.getItem(STORAGE_KEY);
-  } catch {
-    return null;
-  }
-};
+/** The bach-server a browser page talks to; null in the desktop app. */
+export const remoteUrl: string | null = inTauri ? null : DEFAULT_WS_URL;
 
-/** The remote backend URL in use, or null when commands run locally through Tauri. */
-export const remoteUrl: string | null = inTauri ? stored() : (stored() ?? DEFAULT_WS_URL);
-export const canSwitchBackend = inTauri;
+let current: ConnectionStatus | null = null;
 
-/** Persists the choice (null = local) and reloads so every listener uses the new transport. */
-export function setBackend(url: string | null) {
-  try {
-    url ? localStorage.setItem(STORAGE_KEY, url) : localStorage.removeItem(STORAGE_KEY);
-  } catch {}
-  location.reload();
+/** The desktop app's connection and how it's doing. */
+export async function getConnection(): Promise<ConnectionStatus> {
+  current = await invoke<ConnectionStatus>("get_connection");
+  return current;
 }
 
-/** Host to reach a task's ports on, when the UI can tell (a page served by the backend host, or a local app). */
-export const taskHost = (): string | null => (remoteUrl ? (inTauri ? null : location.hostname) : "localhost");
+/** Switches where the desktop app's agents run. Saved in the app. */
+export const setConnection = (connection: Connection) => invoke<void>("set_connection", { connection });
+
+/** Every change to the desktop app's connection. Returns an unsubscribe function. */
+export function onConnection(cb: (s: ConnectionStatus) => void): () => void {
+  const un = listen<ConnectionStatus>("bach-connection", (e) => {
+    current = e.payload;
+    cb(e.payload);
+  });
+  return () => void un.then((f) => f());
+}
+
+if (inTauri) void getConnection().catch(() => {});
+
+/** Host to reach a task's ports on, when the UI can tell. */
+export function taskHost(): string | null {
+  if (!inTauri) return location.hostname;
+  const c = current?.connection;
+  if (!c || c.mode === "local") return "localhost";
+  // `user@host` or an ssh alias; an alias only works in a browser if it also resolves there.
+  return c.host.replace(/^.*@/, "");
+}
