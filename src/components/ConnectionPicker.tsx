@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Settings2 } from "lucide-react";
-import { ConnectionStatus, getConnection, inTauri, onConnection, relaunchApp, remoteUrl, restartServer, setConnection } from "@/api";
+import { ConnectionStatus, TaskView, getConnection, inTauri, onConnection, relaunchApp, remoteUrl, restartServer, setConnection } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -29,7 +29,7 @@ function hint(error: string, host: string) {
 const where = (s: ConnectionStatus) => (s.connection.mode === "local" ? "this computer" : s.connection.host);
 
 /** Where the desktop app's agents run, how that connection is doing, and a way to change it. */
-export function ConnectionPicker() {
+export function ConnectionPicker({ tasks }: { tasks: TaskView[] }) {
   const [status, setStatus] = useState<ConnectionStatus>();
   const [open, setOpen] = useState(false);
   const forwarding = useForwarding();
@@ -51,7 +51,7 @@ export function ConnectionPicker() {
         <span className="min-w-0 flex-1 truncate text-muted-foreground" title={status.version ? `bach-server ${status.version}` : undefined}>
           {status.state === "connecting" ? `Connecting to ${where(status)}…` : `Agents on ${where(status)}`}
         </span>
-        <PortsButton forwarding={forwarding} />
+        <PortsButton forwarding={forwarding} tasks={tasks} />
         <Button variant="ghost" size="icon-xs" aria-label="Connection settings" title="Where agents run" onClick={() => setOpen(true)}>
           <Settings2 />
         </Button>
