@@ -133,6 +133,15 @@ impl Sessions {
                 });
                 return;
             }
+            AgentEvent::TextDelta { id: message, text } => {
+                self.send(SessionEvent::TextDelta {
+                    session_id: id.into(),
+                    run_id,
+                    id: message,
+                    text,
+                });
+                return;
+            }
             _ => {}
         }
         // A session deleted mid-run still gets its run's last events; they have nowhere to go.

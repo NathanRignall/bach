@@ -259,7 +259,7 @@ fn codex_real_command_approval_and_session_rules() {
 
     // Answers reply to the server's own request id. This request didn't offer
     // `acceptForSession`, so "for this session" is a plain accept (Bach keeps the rule).
-    let answer = |d| serde_json::from_str::<Value>(&codex_answer(suggestions, d)).unwrap();
+    let answer = |d| serde_json::from_str::<Value>(&codex_answer(suggestions, d, None).unwrap()).unwrap();
     assert_eq!(answer(Decision::Allow), json!({ "id": 0, "result": { "decision": "accept" } }));
     assert_eq!(answer(Decision::AllowSession)["result"]["decision"], "accept");
     assert_eq!(

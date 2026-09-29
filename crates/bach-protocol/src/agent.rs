@@ -64,6 +64,9 @@ pub enum AgentEvent {
         parent: Option<String>,
     },
     Thinking { text: String },
+    /// More of the message `id` as it is written. Only for showing it live: the whole message
+    /// follows as `Text`, and deltas aren't kept in the transcript.
+    TextDelta { id: String, text: String },
     ToolUse {
         id: String,
         name: String,

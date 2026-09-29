@@ -443,8 +443,11 @@ impl Runs {
                                             },
                                         );
                                     }
+                                    // One already answered needs no cancelling.
                                     AgentEvent::ApprovalCancelled { request_id } => {
-                                        pending.lock().unwrap().remove(request_id);
+                                        if pending.lock().unwrap().remove(request_id).is_none() {
+                                            continue;
+                                        }
                                     }
                                     AgentEvent::Task { id, status: Some(status), background: bg, agent_type, .. } => {
                                         if status != "running" {
@@ -567,12 +570,8 @@ impl Runs {
                 .get(request_id)
                 .ok_or_else(|| ApiError::not_found("That approval is no longer pending."))?;
             let line = match agent {
-                AgentKind::Codex => {
-                    if answers.is_some() {
-                        return Err(ApiError::invalid("That request doesn't take answers."));
-                    }
-                    codex_answer(&approval.suggestions, decision)
-                }
+                AgentKind::Codex => codex_answer(&approval.suggestions, decision, answers.as_ref())
+                    .map_err(ApiError::invalid)?,
                 _ => {
                     let response = build_response(approval, decision, message, answers)
                         .map_err(ApiError::invalid)?;

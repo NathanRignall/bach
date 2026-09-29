@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "60a7ed8edabe2c83";
+export const PROTOCOL = "d7302ec984e04168";
 
 /**
  * Agent-independent events the UI renders.
@@ -10,7 +10,7 @@ export type AgentEvent = { "type": "session", id: string,
 /**
  * The model the agent reports using for this run.
  */
-model?: string, } | { "type": "text", text: string, parent?: string, } | { "type": "thinking", text: string, } | { "type": "tool_use", id: string, name: string, input: JsonValue, parent?: string, } | { "type": "tool_result", id: string, output: string, isError: boolean, 
+model?: string, } | { "type": "text", text: string, parent?: string, } | { "type": "thinking", text: string, } | { "type": "text_delta", id: string, text: string, } | { "type": "tool_use", id: string, name: string, input: JsonValue, parent?: string, } | { "type": "tool_result", id: string, output: string, isError: boolean, 
 /**
  * Images the tool returned (e.g. a browser screenshot), as `data:` URLs.
  */
@@ -481,7 +481,7 @@ lastSeq: number, };
 /**
  * A change to sessions, pushed to every client.
  */
-export type SessionEvent = { "type": "changed", session: Session, } | { "type": "entry", sessionId: string, entry: LogEntry, } | { "type": "deleted", sessionId: string, };
+export type SessionEvent = { "type": "changed", session: Session, } | { "type": "entry", sessionId: string, entry: LogEntry, } | { "type": "text_delta", sessionId: string, runId: string, id: string, text: string, } | { "type": "deleted", sessionId: string, };
 
 /**
  * A session with (part of) its transcript.

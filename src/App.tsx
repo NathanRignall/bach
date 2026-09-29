@@ -89,6 +89,8 @@ export function App() {
   // `seq` (to spot gaps); `rerender` shows changes.
   const transcripts = useRef(new Map<string, Transcript>());
   const [, rerender] = useReducer((n: number) => n + 1, 0);
+  // The message each session's agent is writing right now, shown until the finished one arrives.
+  const drafts = useRef(new Map<string, { id: string; text: string }>());
   // Transcripts being fetched, with the entries that arrived meanwhile.
   const fetching = useRef(new Map<string, LogEntry[]>());
   // Follow new output only while the reader is at the bottom; scrolling up pins the view.
@@ -118,6 +120,9 @@ export function App() {
   }
 
   function addEntry(id: string, entry: LogEntry) {
+    const e = entry.entry;
+    if (e.type === "user" || (e.type === "agent" && ["text", "done", "cancelled", "error"].includes(e.event.type) && !("parent" in e.event && e.event.parent)))
+      drafts.current.delete(id);
     setSessions((all) => all.map((s) => (s.id === id ? { ...s, updatedAt: entry.at, lastSeq: entry.seq } : s)).sort(byActivity));
     const buffer = fetching.current.get(id);
     if (buffer) return void buffer.push(entry);
@@ -158,6 +163,11 @@ export function App() {
           return setSessions((all) => upsert(all, e.session));
         case "entry":
           return addEntry(e.sessionId, e.entry);
+        case "text_delta": {
+          const d = drafts.current.get(e.sessionId);
+          drafts.current.set(e.sessionId, { id: e.id, text: d?.id === e.id ? d.text + e.text : e.text });
+          return rerender();
+        }
         case "deleted":
           transcripts.current.delete(e.sessionId);
           setSessions((all) => all.filter((s) => s.id !== e.sessionId));
@@ -176,6 +186,7 @@ export function App() {
 
   const active = sessions.find((s) => s.id === activeId);
   const transcript = activeId ? transcripts.current.get(activeId) : undefined;
+  const writing = activeId ? drafts.current.get(activeId) : undefined;
 
   useEffect(() => {
     if (activeId && !transcripts.current.has(activeId)) void fetchTranscript(activeId);
@@ -449,6 +460,7 @@ export function App() {
                   {blocks.map((b, i) => (
                     <BlockView key={i} block={b} live={running} />
                   ))}
+                  {running && writing && <BlockView block={{ kind: "text", text: writing.text }} live />}
                   {(running || starting) &&
                     (awaitingApproval(active) ? (
                       <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">

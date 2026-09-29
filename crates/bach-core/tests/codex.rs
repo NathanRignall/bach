@@ -140,7 +140,10 @@ async fn codex_app_server_round_trip() {
 
     // A new thread that may write to the project, and asks before going further.
     let mut run = begin(&dir, None).await;
-    assert_eq!(std::fs::read_to_string(run.out.join("args")).unwrap().trim(), "app-server");
+    assert_eq!(
+        std::fs::read_to_string(run.out.join("args")).unwrap().trim(),
+        "app-server --enable default_mode_request_user_input"
+    );
     let thread = run.file("thread");
     assert_eq!(thread["method"], "thread/start");
     assert_eq!(thread["params"]["sandbox"], "workspace-write");
@@ -245,4 +248,60 @@ async fn real_codex_edits_and_commits() {
     assert_eq!(std::fs::read_to_string(dir.join("hello.txt")).unwrap().trim(), "hi");
     let log = String::from_utf8(git(&["log", "--oneline"]).stdout).unwrap();
     assert!(log.contains("add hello"), "{log}");
+}
+
+/// The real Codex asking a question, answered with its first option. Whether it can ask
+/// depends on its version and mode. `cargo test -p bach-core --test codex real_codex_question
+/// -- --ignored --nocapture`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn real_codex_question() {
+    let dir = std::env::temp_dir().join(format!("bach-real-codex-q-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let runs = Runs::default();
+    let run_id = runs
+        .start(
+            std::sync::Arc::new(move |ev| {
+                let _ = tx.send(serde_json::to_value(&ev).unwrap());
+            }),
+            RunRequest {
+                agent: AgentKind::Codex,
+                prompt: "Use your request_user_input tool (not plain text) to ask me whether I prefer red or blue, then reply with just my answer.".into(),
+                images: vec![],
+                cwd: Some(dir.to_string_lossy().into()),
+                session_id: None,
+                model: None,
+                permission_mode: None,
+                allowed_tools: vec![],
+                session_key: None,
+                run_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    let mut deltas = 0;
+    loop {
+        let ev = rx.recv_timeout(Duration::from_secs(180)).unwrap();
+        if ev["type"] == "text_delta" {
+            deltas += 1;
+            continue;
+        }
+        println!("{ev}");
+        if ev["type"] == "approval" {
+            let q = &ev["input"]["questions"][0];
+            let answers = q["options"][0]["label"]
+                .as_str()
+                .map(|a| std::collections::HashMap::from([(q["question"].as_str().unwrap().to_string(), a.to_string())]));
+            runs.respond_approval(&run_id, ev["requestId"].as_str().unwrap(), Decision::Allow, None, answers)
+                .await
+                .unwrap();
+        }
+        if ev["type"] == "done" {
+            break;
+        }
+    }
+    println!("{deltas} text deltas");
+    let _ = std::fs::remove_dir_all(&dir);
 }

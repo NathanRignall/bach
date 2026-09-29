@@ -385,7 +385,7 @@ const OTHER = "\u0000other"; // can't collide with an option label
 
 /** A question from the agent (its AskUserQuestion tool), answered by picking options or typing. */
 function QuestionCard({ block, live }: { block: ApprovalBlock; live: boolean }) {
-  const { decide } = useContext(TranscriptContext);
+  const { decide, agent = "claude" } = useContext(TranscriptContext);
   const questions = ((block.input as { questions?: Question[] })?.questions ?? []).filter((q) => q.question);
   // Chosen labels per question (OTHER = the free-text choice) and the free text itself.
   const [picked, setPicked] = useState<Record<string, string[]>>({});
@@ -438,7 +438,7 @@ function QuestionCard({ block, live }: { block: ApprovalBlock; live: boolean }) 
     <div role="group" aria-label="Question from the agent" className="flex flex-col gap-4 rounded-xl border border-primary/40 bg-primary/5 p-4">
       <div className="flex items-center gap-2 text-sm">
         <MessageCircleQuestion className="size-4 shrink-0 text-primary" />
-        Claude has {questions.length === 1 ? "a question" : "some questions"}
+        {AGENT_NAMES[agent]} has {questions.length === 1 ? "a question" : "some questions"}
       </div>
 
       {questions.map((q) => {

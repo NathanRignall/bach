@@ -132,6 +132,9 @@ function applyAgentEvent(blocks: Block[], e: AgentEvent, at: number): Block[] {
       return place(blocks, e.parent, (l) => [...l, { kind: "text", text: e.text }]);
     case "thinking":
       return [...blocks, { kind: "thinking", text: e.text }];
+    // Shown live, never kept (see App's drafts).
+    case "text_delta":
+      return blocks;
     case "tool_use":
       return place(blocks, e.parent, (l) => [...l, { kind: "tool", id: e.id, name: e.name, input: e.input, startedAt: at }]);
     case "tool_result": {

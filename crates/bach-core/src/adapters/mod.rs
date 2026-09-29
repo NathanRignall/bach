@@ -171,8 +171,12 @@ impl Conversation {
 }
 
 /// The reply to a Codex approval request (see [`codex::answer`]).
-pub fn codex_answer(suggestions: &Value, decision: bach_protocol::Decision) -> String {
-    codex::answer(suggestions, decision)
+pub fn codex_answer(
+    suggestions: &Value,
+    decision: bach_protocol::Decision,
+    answers: Option<&std::collections::HashMap<String, String>>,
+) -> Result<String, String> {
+    codex::answer(suggestions, decision, answers)
 }
 
 /// The agent CLIs Bach knows, and whether each is on the backend host's PATH.
@@ -252,6 +256,23 @@ mod tests {
         );
         assert!(AgentKind::Codex.images_as_files() && AgentKind::Opencode.images_as_files());
         assert!(!AgentKind::Claude.images_as_files());
+    }
+
+    #[test]
+    fn claude_text_streams_but_sub_agents_dont() {
+        // Recorded from `claude -p --include-partial-messages`.
+        let delta = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" I'm Claude"}},"session_id":"s","parent_tool_use_id":null,"uuid":"u"}"#;
+        assert!(matches!(
+            &AgentKind::Claude.parse_line(delta)[..],
+            [AgentEvent::TextDelta { id, text }] if id == "1" && text == " I'm Claude"
+        ));
+        let sub = delta.replace(r#""parent_tool_use_id":null"#, r#""parent_tool_use_id":"t1""#);
+        assert!(AgentKind::Claude.parse_line(&sub).is_empty());
+        let thinking = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}},"parent_tool_use_id":null}"#;
+        assert!(AgentKind::Claude.parse_line(thinking).is_empty());
+        assert!(AgentKind::Claude
+            .args("hi", &[], None, None, None, &[], None)
+            .contains(&"--include-partial-messages".to_string()));
     }
 
     #[test]
