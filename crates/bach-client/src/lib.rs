@@ -30,8 +30,13 @@ pub enum Status {
     Connecting,
     /// `version` is the server's.
     Connected { version: String },
-    /// Why it isn't connected. Retried automatically unless `retrying` is false.
-    Disconnected { error: String, retrying: bool },
+    /// Why it isn't connected. Retried automatically unless `retrying` is false. `incompatible`:
+    /// the server is reachable but speaks a different protocol (an update left one side old).
+    Disconnected {
+        error: String,
+        retrying: bool,
+        incompatible: bool,
+    },
 }
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, ApiError>>>>>;
@@ -189,14 +194,16 @@ async fn supervise(
                 on_status(Status::Disconnected {
                     error,
                     retrying: true,
+                    incompatible: false,
                 });
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
-            End::GiveUp(error) => {
+            End::GiveUp(error, incompatible) => {
                 on_status(Status::Disconnected {
                     error,
                     retrying: false,
+                    incompatible,
                 });
                 return;
             }
@@ -207,7 +214,7 @@ async fn supervise(
 enum End {
     Retry(String),
     /// Retrying can't help (e.g. the versions differ).
-    GiveUp(String),
+    GiveUp(String, bool),
 }
 
 /// One run of the command, until it ends.
@@ -219,7 +226,7 @@ async fn session(
     on_status: &OnStatus,
 ) -> End {
     let Some((program, args)) = command.split_first() else {
-        return End::GiveUp("No command to connect with.".into());
+        return End::GiveUp("No command to connect with.".into(), false);
     };
     let mut child = match Command::new(program)
         .args(args)
@@ -230,7 +237,7 @@ async fn session(
         .spawn()
     {
         Ok(c) => c,
-        Err(e) => return End::GiveUp(format!("Couldn't run `{program}`: {e}")),
+        Err(e) => return End::GiveUp(format!("Couldn't run `{program}`: {e}"), false),
     };
     let mut stdin = child.stdin.take().expect("piped");
     let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
@@ -265,13 +272,16 @@ async fn session(
         Err(_) => return End::Retry(format!("{label} didn't answer.")),
     };
     if hello["kind"] != "hello" {
-        return End::GiveUp(format!("{label} doesn't look like a Bach server."));
+        return End::GiveUp(format!("{label} doesn't look like a Bach server."), false);
     }
     if hello["protocol"] != fingerprint().as_str() {
-        return End::GiveUp(format!(
-            "Bach on {label} ({}) is a different version from this app; update one of them.",
-            hello["version"].as_str().unwrap_or("unknown version")
-        ));
+        return End::GiveUp(
+            format!(
+                "Bach on {label} ({}) is a different version from this app; restart the server, or update one of them.",
+                hello["version"].as_str().unwrap_or("unknown version")
+            ),
+            true,
+        );
     }
 
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();

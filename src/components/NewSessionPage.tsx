@@ -1,7 +1,6 @@
 import { ReactNode } from "react";
 import { AgentInfo, AgentKind } from "@/api";
-import { Button } from "@/components/ui/button";
-import { NewSession as Session, projectName } from "@/session";
+import { NewSession as Session } from "@/session";
 import { BlockView } from "./Transcript";
 import { BranchControls, BranchHint, useGitInfo } from "./GitControls";
 import { Composer } from "./Composer";
@@ -25,12 +24,12 @@ interface Props {
 export function NewSessionPage({ session, agents, draft, onDraft, onSend, starting, recentProjects, onChange, error, indicator }: Props) {
   const git = useGitInfo(session, onChange);
   const hasFolder = !!session.cwd.trim();
-  const setProject = (cwd: string) => onChange({ cwd, branch: undefined, worktree: false });
+  const setProject = (cwd: string) => onChange({ cwd, branch: undefined, worktree: false, newBranch: undefined });
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center overflow-y-auto px-5 py-10">
       <div className="flex w-full max-w-2xl flex-col gap-4">
-        <h1 className="text-center text-2xl font-medium tracking-tight">What should we work on?</h1>
+        <h1 className="text-center text-2xl font-medium tracking-tight">What should we compose?</h1>
 
         {/* Errors from a failed start stay here so the settings can be fixed and retried. */}
         <div className="contents select-text">
@@ -62,7 +61,7 @@ export function NewSessionPage({ session, agents, draft, onDraft, onSend, starti
           onPermissionMode={(permissionMode) => onChange({ permissionMode })}
           left={
             <>
-              <ProjectButton cwd={session.cwd} onChange={setProject} />
+              <ProjectButton cwd={session.cwd} recent={recentProjects} onChange={setProject} />
               <BranchControls session={session} git={git} onChange={onChange} />
             </>
           }
@@ -71,17 +70,6 @@ export function NewSessionPage({ session, agents, draft, onDraft, onSend, starti
         <div className="min-h-5 px-1">
           <BranchHint session={session} git={git} />
         </div>
-
-        {recentProjects.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5 px-1">
-            <span className="text-xs text-muted-foreground">Recent</span>
-            {recentProjects.map((p) => (
-              <Button key={p} variant={p === session.cwd.trim() ? "secondary" : "ghost"} size="xs" title={p} onClick={() => setProject(p)}>
-                {projectName(p)}
-              </Button>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   );

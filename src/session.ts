@@ -66,6 +66,8 @@ export interface NewSession {
   cwd: string;
   branch?: string | null;
   worktree?: boolean;
+  /** The worktree's branch name; the backend makes one up from the message when empty. */
+  newBranch?: string;
   modelChoice?: string | null;
   permissionMode?: string | null;
   /** Why the last attempt to start it failed. */
@@ -77,7 +79,8 @@ export const isSubagent = (b: ToolBlock) => !!b.task || b.name === "Agent" || b.
 // crypto.randomUUID needs a secure context, which a page opened over plain http from another host isn't.
 export const newId = () => crypto.randomUUID?.() ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 
-export const newSession = (agent: AgentKind, cwd = ""): NewSession => ({ agent, cwd, blocks: [] });
+/** New sessions start in Claude Code's auto mode; the picker can change it before the first message. */
+export const newSession = (agent: AgentKind, cwd = ""): NewSession => ({ agent, cwd, permissionMode: "auto", blocks: [] });
 
 // Sessions saved before folders were mandatory may have none but can still be resumed.
 export const canRun = (s: Session) => !s.workdirRemoved && (!!s.cwd.trim() || !!s.agentSessionId);

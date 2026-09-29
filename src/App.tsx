@@ -4,6 +4,7 @@ import {
   AgentInfo,
   AgentKind,
   ApiError,
+  inTauri,
   macTitleBar,
   Decision,
   LogEntry,
@@ -259,6 +260,7 @@ export function App() {
           cwd: newDraft.cwd.trim(),
           branch: newDraft.branch ?? undefined,
           worktree: !!newDraft.worktree,
+          newBranch: newDraft.worktree ? newDraft.newBranch?.trim() || undefined : undefined,
           modelChoice: newDraft.modelChoice ?? undefined,
           permissionMode: newDraft.permissionMode ?? undefined,
           prompt,
@@ -340,6 +342,14 @@ export function App() {
       )}
 
       <main className="flex min-w-0 flex-1 flex-col">
+        {!inTauri && connectionError?.includes("different version") && (
+          <div className="flex items-center gap-3 border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive" role="alert">
+            <p className="min-w-0 flex-1">{connectionError}</p>
+            <Button size="xs" onClick={() => location.reload()}>
+              Reload page
+            </Button>
+          </div>
+        )}
         {!active && connectionError && <p className="p-6 text-sm text-destructive">{connectionError}</p>}
         {!active && macTitleBar && <div data-tauri-drag-region className="h-(--title-bar-height) shrink-0" />}
         {!active && (

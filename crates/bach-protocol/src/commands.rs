@@ -157,6 +157,8 @@ pub struct StartSessionArgs {
     pub cwd: String,
     pub branch: Option<String>,
     pub worktree: Option<bool>,
+    /// The worktree's branch name; made up from the prompt when not given.
+    pub new_branch: Option<String>,
     pub model_choice: Option<String>,
     pub permission_mode: Option<String>,
     pub prompt: String,
