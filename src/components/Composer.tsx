@@ -92,9 +92,12 @@ export function Picker({ heading, label, choices, value, placeholder, disabled, 
     <Select items={choices} value={value} disabled={disabled} onValueChange={(v) => v && onChange(v)}>
       <SelectTrigger size="sm" aria-label={label} className={cn(mono && "font-mono text-xs", className)}>
         {icon}
-        <SelectValue placeholder={placeholder} className="max-w-40 truncate" />
+        <SelectValue placeholder={placeholder}>
+          {/* The value box is a flex row (see SelectTrigger), which can't show an ellipsis; a block child can. */}
+          {(v: string | null) => <span className="block max-w-40 truncate">{choices.find((c) => c.value === v)?.label ?? placeholder}</span>}
+        </SelectValue>
       </SelectTrigger>
-      <SelectContent className="min-w-64" align={align} alignItemWithTrigger={false}>
+      <SelectContent className="w-max min-w-64 max-w-96" align={align} alignItemWithTrigger={false}>
         <SelectGroup>
           <SelectLabel>{heading}</SelectLabel>
           {choices.map((c) => (
@@ -103,7 +106,7 @@ export function Picker({ heading, label, choices, value, placeholder, disabled, 
               <SelectItem value={c.value} disabled={c.disabled} className="py-1.5">
                 {c.icon}
                 <span className="flex flex-col gap-0.5">
-                  <span className={cn(mono && "font-mono text-xs")}>{c.label}</span>
+                  <span className={cn("whitespace-normal break-all", mono && "font-mono text-xs")}>{c.label}</span>
                   <span className="font-sans text-xs font-normal whitespace-normal text-muted-foreground">{c.description}</span>
                 </span>
               </SelectItem>
