@@ -4,6 +4,8 @@
 //!
 //! [`Remote`] keeps the connection up: it checks the server speaks the same protocol, matches
 //! replies to calls, hands events on, and reconnects (with backoff) when the command ends.
+pub mod forward;
+
 use bach_protocol::{fingerprint, ApiError, ClientFrame, ErrorCode};
 use serde_json::Value;
 use std::{

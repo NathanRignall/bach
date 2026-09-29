@@ -44,3 +44,28 @@ pub struct ConnectionStatus {
     /// The server's version, once connected.
     pub version: Option<String>,
 }
+
+/// A port on the agents' machine reachable on this computer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PortForward {
+    /// The port there.
+    pub remote: u16,
+    /// Where it is here (`localhost:<local>`); the same number when that was free.
+    pub local: u16,
+    /// Forwarded because a background task listens on it; ends when no running task does.
+    pub auto: bool,
+}
+
+/// Port forwarding in the desktop app. Sent on the `bach-forwards` channel as it changes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Forwarding {
+    /// Only connections over SSH forward; on this computer, ports are already local.
+    pub available: bool,
+    /// Forward the ports background tasks listen on without being asked.
+    pub auto: bool,
+    pub forwards: Vec<PortForward>,
+    /// The latest thing that went wrong, if anything.
+    pub error: Option<String>,
+}

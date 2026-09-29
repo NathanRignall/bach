@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ArrowDownToLine, Copy, Download, Search, WrapText, X } from "lucide-react";
-import { TaskView, taskHost, taskLogChunk } from "@/api";
+import { TaskView, macTitleBar, taskLogChunk } from "@/api";
+import { PortLink, useForwarding } from "./Ports";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -157,29 +158,23 @@ export function LogViewer({ task, onClose }: { task: TaskView; onClose: () => vo
     URL.revokeObjectURL(url);
   };
 
-  const host = taskHost();
+  const forwarding = useForwarding();
   const gutter = String(buffer.dropped + buffer.lines.length).length;
 
   return (
     <div role="dialog" aria-modal="true" aria-label={`Log: ${task.name}`} className="fixed inset-0 z-50 flex flex-col bg-background">
-      <header className="flex flex-col gap-1.5 border-b px-4 py-2.5">
-        <div className="flex items-center gap-3">
+      {/* In the Mac app it covers the window's top bar, so it becomes it: the title row is the
+          bar's height, clears the traffic lights, and drags the window. */}
+      <header data-tauri-drag-region={macTitleBar || undefined} className={cn("flex flex-col gap-1.5 border-b px-4 pb-2.5", !macTitleBar && "pt-2.5")}>
+        <div data-tauri-drag-region={macTitleBar || undefined} className={cn("flex items-center gap-3", macTitleBar && "-mb-1.5 h-11 pl-[68px]")}>
           <h2 className="min-w-0 truncate text-sm font-semibold">{task.name}</h2>
           <Badge variant={task.status === "failed" ? "destructive" : "outline"}>
             {STATUS[task.status]}
             {task.status === "failed" && task.exitCode !== null ? ` (${task.exitCode})` : ""}
           </Badge>
-          {task.ports.map((p) =>
-            host ? (
-              <a key={p} href={`http://${host}:${p}`} target="_blank" rel="noopener noreferrer" className="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-xs text-primary hover:underline">
-                :{p}
-              </a>
-            ) : (
-              <span key={p} className="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-xs text-primary">
-                :{p}
-              </span>
-            ),
-          )}
+          {task.ports.map((p) => (
+            <PortLink key={p} port={p} forwarding={forwarding} className="text-xs" />
+          ))}
           <span className="ml-auto text-xs text-muted-foreground tabular-nums">
             {matching.length === buffer.lines.length ? `${buffer.dropped + buffer.lines.length} lines` : `${matching.length} of ${buffer.lines.length} lines match`}
           </span>

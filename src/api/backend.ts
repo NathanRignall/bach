@@ -3,7 +3,7 @@
 // a WebSocket, normally reached through `ssh -L 3421:localhost:3421 orion`.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Connection, ConnectionStatus } from "./generated/protocol";
+import type { Connection, ConnectionStatus, Forwarding, PortForward } from "./generated/protocol";
 
 export const inTauri = "__TAURI_INTERNALS__" in window;
 
@@ -44,4 +44,18 @@ export function taskHost(): string | null {
   if (!c || c.mode === "local") return "localhost";
   // `user@host` or an ssh alias; an alias only works in a browser if it also resolves there.
   return c.host.replace(/^.*@/, "");
+}
+
+// Port forwarding (desktop app over SSH): ports on the agents' machine, reachable on this computer.
+
+export const getForwarding = () => invoke<Forwarding>("get_forwarding");
+export const forwardPort = (port: number) => invoke<PortForward>("forward_port", { port });
+export const stopForward = (port: number) => invoke<void>("stop_forward", { port });
+/** Opens the port in the default browser, forwarding it first when agents run elsewhere. */
+export const openPort = (port: number) => invoke<void>("open_port", { port });
+export const setAutoForward = (auto: boolean) => invoke<void>("set_auto_forward", { auto });
+
+export function onForwarding(cb: (f: Forwarding) => void): () => void {
+  const un = listen<Forwarding>("bach-forwards", (e) => cb(e.payload));
+  return () => void un.then((f) => f());
 }

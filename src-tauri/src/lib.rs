@@ -3,10 +3,15 @@
 //! a backend inside the app (agents run on this computer) or over SSH to `bach-server attach` on
 //! another machine. `get_connection` / `set_connection` choose, and `bach-connection` events say
 //! how the connection is doing.
-use bach_client::{Remote, Status};
+mod ports;
+
+use bach_client::{
+    forward::{self, Forwards},
+    Remote, Status,
+};
 use bach_core::Api;
 use bach_protocol::{
-    app::{Connection, ConnectionState, ConnectionStatus},
+    app::{Connection, ConnectionState, ConnectionStatus, Forwarding, PortForward},
     ApiError, ErrorCode, CONNECTION_CHANNEL, EVENT_CHANNEL,
 };
 use serde_json::Value;
@@ -49,11 +54,19 @@ fn status(connection: Connection, state: ConnectionState) -> ConnectionStatus {
     }
 }
 
-/// `ssh <host> <command> attach`, never prompting (there's no terminal to answer in) and
-/// noticing a dead connection within a minute.
+/// `ssh <host> <command> attach`, never prompting (there's no terminal to answer in), noticing a
+/// dead connection within a minute, and serving as the master that port forwards are added to.
 fn ssh_command(host: &str, command: &str) -> Vec<String> {
+    let master = forward::master_options(&forward::control_path());
+    ["ssh".to_string()]
+        .into_iter()
+        .chain(master)
+        .chain(ssh_args(host, command))
+        .collect()
+}
+
+fn ssh_args(host: &str, command: &str) -> Vec<String> {
     [
-        "ssh",
         "-T",
         "-o",
         "BatchMode=yes",
@@ -112,6 +125,7 @@ impl App {
         *self.backend.lock().unwrap() = None;
         match &connection {
             Connection::Local => {
+                self.handle.state::<ports::Ports>().use_forwards(None).await;
                 self.set_status(status(connection.clone(), ConnectionState::Connecting));
                 match self.local().await {
                     Ok(api) => {
@@ -126,6 +140,27 @@ impl App {
                 }
             }
             Connection::Ssh { host, command } => {
+                let control = forward::control_path();
+                if let Err(e) = forward::prepare_control_dir(&control) {
+                    eprintln!("ssh control socket folder: {e}");
+                }
+                let forwards = Arc::new(Forwards::new(
+                    "ssh",
+                    vec![],
+                    host.clone(),
+                    control,
+                    {
+                        let handle = self.handle.clone();
+                        move |_| {
+                            let handle = handle.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let ports = handle.state::<ports::Ports>();
+                                let _ = handle.emit(bach_protocol::FORWARDS_CHANNEL, ports.snapshot().await);
+                            });
+                        }
+                    },
+                ));
+                self.handle.state::<ports::Ports>().use_forwards(Some(forwards)).await;
                 let (events, statuses) = (self.handle.clone(), self.handle.clone());
                 let (g1, g2) = (self.generation.clone(), self.generation.clone());
                 let conn = connection.clone();
@@ -133,15 +168,43 @@ impl App {
                     host.clone(),
                     ssh_command(host, command),
                     move |ev: Value| {
-                        if g1.load(Ordering::SeqCst) == generation {
-                            let _ = events.emit(EVENT_CHANNEL, ev);
+                        if g1.load(Ordering::SeqCst) != generation {
+                            return;
                         }
+                        // Background tasks' ports decide what is forwarded automatically.
+                        if ev["topic"] == "task" {
+                            let (handle, data) = (events.clone(), ev["data"].clone());
+                            tauri::async_runtime::spawn(async move {
+                                handle.state::<ports::Ports>().task_event(&data).await;
+                            });
+                        }
+                        let _ = events.emit(EVENT_CHANNEL, ev);
                     },
                     move |s: Status| {
                         if g2.load(Ordering::SeqCst) != generation {
                             return;
                         }
                         let app = statuses.state::<App>();
+                        if matches!(s, Status::Connected { .. }) {
+                            // (Re)connected: reopen forwards and catch up on running tasks.
+                            let handle = statuses.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let remote = match &*handle.state::<App>().backend.lock().unwrap() {
+                                    Some(Backend::Remote(r)) => Some(r.clone()),
+                                    _ => None,
+                                };
+                                let tasks = match remote {
+                                    Some(r) => r
+                                        .call("list_tasks", Value::Null)
+                                        .await
+                                        .ok()
+                                        .and_then(|v| v.as_array().cloned())
+                                        .unwrap_or_default(),
+                                    None => vec![],
+                                };
+                                handle.state::<ports::Ports>().connected(tasks).await;
+                            });
+                        }
                         app.set_status(match s {
                             Status::Connecting => status(conn.clone(), ConnectionState::Connecting),
                             Status::Connected { version } => ConnectionStatus {
@@ -190,6 +253,31 @@ async fn rpc(app: State<'_, App>, name: String, args: Option<Value>) -> Result<V
                 .unwrap_or_else(|| "Not connected yet.".into()),
         )),
     }
+}
+
+#[tauri::command]
+async fn get_forwarding(ports: State<'_, ports::Ports>) -> Result<Forwarding, ()> {
+    Ok(ports.snapshot().await)
+}
+
+#[tauri::command]
+async fn forward_port(ports: State<'_, ports::Ports>, port: u16) -> Result<PortForward, String> {
+    ports.forward(port).await
+}
+
+#[tauri::command]
+async fn stop_forward(ports: State<'_, ports::Ports>, port: u16) -> Result<(), String> {
+    ports.stop(port).await
+}
+
+#[tauri::command]
+async fn open_port(ports: State<'_, ports::Ports>, port: u16) -> Result<(), String> {
+    ports.open(port).await
+}
+
+#[tauri::command]
+async fn set_auto_forward(ports: State<'_, ports::Ports>, auto: bool) -> Result<(), String> {
+    ports.set_auto(auto).await
 }
 
 #[tauri::command]
@@ -258,7 +346,9 @@ pub fn run() {
 
     tauri::Builder::default()
         .setup(|app| {
-            let config = app.path().app_config_dir()?.join("connection.json");
+            let config_dir = app.path().app_config_dir()?;
+            app.manage(ports::Ports::new(app.handle().clone(), config_dir.join("forwarding.json")));
+            let config = config_dir.join("connection.json");
             let connection = load_connection(&config);
             app.manage(App {
                 handle: app.handle().clone(),
@@ -275,7 +365,16 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![rpc, get_connection, set_connection])
+        .invoke_handler(tauri::generate_handler![
+            rpc,
+            get_connection,
+            set_connection,
+            get_forwarding,
+            forward_port,
+            stop_forward,
+            open_port,
+            set_auto_forward
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Bach");
 }

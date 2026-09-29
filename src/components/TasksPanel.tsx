@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Ban, CheckCircle2, Maximize2, ScrollText, Square, Trash2, X, XCircle } from "lucide-react";
-import { TaskStatus, TaskView, listTasks, onReconnect, onTaskEvent, removeTask, startTask, stopTask, taskHost, taskLogs } from "@/api";
+import { Forwarding, TaskStatus, TaskView, listTasks, onReconnect, onTaskEvent, removeTask, startTask, stopTask, taskLogs } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { AnsiLine } from "@/lib/ansi";
 import { LogViewer } from "./LogViewer";
+import { ForwardedPorts, PortLink, useForwarding } from "./Ports";
 import { projectName } from "@/session";
 
 /** Background tasks on the backend host: listed once, then kept current by the backend's task events. */
@@ -121,11 +122,20 @@ function Logs({ id, running }: { id: string; running: boolean }) {
   );
 }
 
-function TaskCard({ task, onChanged, onOpenViewer }: { task: TaskView; onChanged: () => void; onOpenViewer: () => void }) {
+function TaskCard({
+  task,
+  forwarding,
+  onChanged,
+  onOpenViewer,
+}: {
+  task: TaskView;
+  forwarding: Forwarding | null;
+  onChanged: () => void;
+  onOpenViewer: () => void;
+}) {
   const [showLogs, setShowLogs] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const host = taskHost();
   const running = task.status === "running";
   const now = useNow(running);
   const act = async (f: () => Promise<unknown>) => {
@@ -165,17 +175,9 @@ function TaskCard({ task, onChanged, onOpenViewer }: { task: TaskView; onChanged
         <span className="tabular-nums" title={new Date(task.startedAt).toLocaleString()}>
           {running ? `up ${duration(now - task.startedAt)}` : `ran ${duration((task.endedAt ?? now) - task.startedAt)}`}
         </span>
-        {task.ports.slice(0, MAX_PORTS).map((p) =>
-          host ? (
-            <a key={p} href={`http://${host}:${p}`} target="_blank" rel="noopener noreferrer" className="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary hover:underline">
-              :{p}
-            </a>
-          ) : (
-            <span key={p} className="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary">
-              :{p}
-            </span>
-          ),
-        )}
+        {task.ports.slice(0, MAX_PORTS).map((p) => (
+          <PortLink key={p} port={p} forwarding={forwarding} />
+        ))}
         {task.ports.length > MAX_PORTS && (
           <span className="text-xs" title={task.ports.slice(MAX_PORTS).map((p) => `:${p}`).join(" ")}>
             +{task.ports.length - MAX_PORTS} more
@@ -241,6 +243,7 @@ export function TasksPanel({ tasks, error, refresh, defaultCwd, onClose }: Props
   const [startError, setStartError] = useState<string>();
   const [viewing, setViewing] = useState<string>();
   const viewed = tasks.find((t) => t.id === viewing);
+  const forwarding = useForwarding();
 
   async function start() {
     if (!command.trim() || !defaultCwd) return;
@@ -264,6 +267,8 @@ export function TasksPanel({ tasks, error, refresh, defaultCwd, onClose }: Props
           <X />
         </Button>
       </header>
+
+      <ForwardedPorts forwarding={forwarding} />
 
       <div className="flex flex-col gap-1.5 border-b p-3">
         <div className="flex gap-2">
@@ -299,7 +304,7 @@ export function TasksPanel({ tasks, error, refresh, defaultCwd, onClose }: Props
         )}
         <ul className="flex flex-col gap-2">
           {tasks.map((t) => (
-            <TaskCard key={t.id} task={t} onChanged={refresh} onOpenViewer={() => setViewing(t.id)} />
+            <TaskCard key={t.id} task={t} forwarding={forwarding} onChanged={refresh} onOpenViewer={() => setViewing(t.id)} />
           ))}
         </ul>
       </div>

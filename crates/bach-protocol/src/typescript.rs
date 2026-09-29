@@ -67,6 +67,7 @@ fn declarations() -> String {
     c.visit::<ClientFrame>();
     c.visit::<ServerFrame>();
     c.visit::<crate::app::ConnectionStatus>();
+    c.visit::<crate::app::Forwarding>();
 
     let mut out = String::new();
     for decl in c.decls.values() {

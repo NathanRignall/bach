@@ -33,7 +33,8 @@ CLI in headless JSON-streaming mode and normalizing their output into one event 
   plus a WebSocket for browsers; one server per database) and `attach` (stdin/stdout to that
   socket, starting the server if needed).
 - `crates/bach-client/` — the desktop app's side of a remote connection: runs
-  `ssh <host> bach-server attach`, checks the protocol, matches replies, reconnects.
+  `ssh <host> bach-server attach`, checks the protocol, matches replies, reconnects; `forward.rs`
+  adds port forwards to that SSH connection.
 - `src-tauri/` — Tauri shell: one `rpc` command, routed to a backend inside the app or to
   `bach-client`; events on the `bach` channel, connection status on `bach-connection`.
 - `src/api/` — the typed client: `call("send_message", {...})` is checked against the generated
@@ -76,6 +77,15 @@ so its host key is trusted. `attach` connects to the server's private Unix socke
 server there if it isn't running. So nothing listens on the network for the app, and agents and
 background tasks keep running when the Mac disconnects. The app reconnects by itself and catches
 up. Its status and any SSH error are shown in the sidebar.
+
+**Port forwarding.** Over SSH, the ports background tasks listen on are forwarded to the Mac as
+they come and go (like VS Code), so `http://localhost:5173` on the Mac reaches the dev server on
+orion; switch it off in the tasks panel's "Forwarded ports", which also forwards any other port by
+hand. Clicking a port anywhere opens it in the browser, forwarding it first if needed. Forwards
+use the app's own SSH connection (it runs as a `ControlMaster`; each forward is
+`ssh -O forward -L 127.0.0.1:<local>:localhost:<port>`), so there's no second login, they listen
+on the Mac's loopback only, and they come back after a reconnect. When a port is taken on the Mac
+(or below 1024) another one is used, and shown next to the port.
 
 `bach-server` must be on the remote's PATH (or set the command in the connection settings, e.g.
 `~/dev/bach/target/release/bach-server`). The flake exports it as a package; on NixOS, add it to

@@ -33,6 +33,8 @@ use ts_rs::TS;
 pub const EVENT_CHANNEL: &str = "bach";
 /// Tauri's event channel for [`app::ConnectionStatus`] changes.
 pub const CONNECTION_CHANNEL: &str = "bach-connection";
+/// Tauri's event channel for [`app::Forwarding`] changes.
+pub const FORWARDS_CHANNEL: &str = "bach-forwards";
 
 /// A command sent over the WebSocket bridge. `id` is echoed back in the reply.
 #[derive(Debug, Serialize, Deserialize, TS)]

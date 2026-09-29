@@ -6,7 +6,21 @@ import { SocketTransport, TauriTransport, type Transport } from "./transport";
 
 export * from "./generated/protocol";
 export { ApiError } from "./transport";
-export { getConnection, inTauri, macTitleBar, onConnection, remoteUrl, setConnection, taskHost } from "./backend";
+export {
+  forwardPort,
+  getConnection,
+  getForwarding,
+  inTauri,
+  macTitleBar,
+  onConnection,
+  onForwarding,
+  openPort,
+  remoteUrl,
+  setAutoForward,
+  setConnection,
+  stopForward,
+  taskHost,
+} from "./backend";
 
 const transport: Transport = remoteUrl ? new SocketTransport(remoteUrl) : new TauriTransport();
 

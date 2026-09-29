@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "ff8b19d5c60af77a";
+export const PROTOCOL = "e3145bf143b79c41";
 
 /**
  * Agent-independent events the UI renders.
@@ -125,6 +125,23 @@ export type Entry = { "type": "user", text: string, } | { "type": "agent", runId
 export type ErrorCode = "invalid" | "not_found" | "unavailable" | "failed";
 
 /**
+ * Port forwarding in the desktop app. Sent on the `bach-forwards` channel as it changes.
+ */
+export type Forwarding = { 
+/**
+ * Only connections over SSH forward; on this computer, ports are already local.
+ */
+available: boolean, 
+/**
+ * Forward the ports background tasks listen on without being asked.
+ */
+auto: boolean, forwards: Array<PortForward>, 
+/**
+ * The latest thing that went wrong, if anything.
+ */
+error: string | null, };
+
+/**
  * A session and its transcript, or only the entries after `afterSeq`.
  */
 export type GetSessionArgs = { sessionId: string, afterSeq?: number, };
@@ -244,6 +261,23 @@ windows: { [key in string]: LimitWindow },
  * When this was reported (ms since the epoch).
  */
 observedAt: number, };
+
+/**
+ * A port on the agents' machine reachable on this computer.
+ */
+export type PortForward = { 
+/**
+ * The port there.
+ */
+remote: number, 
+/**
+ * Where it is here (`localhost:<local>`); the same number when that was free.
+ */
+local: number, 
+/**
+ * Forwarded because a background task listens on it; ends when no running task does.
+ */
+auto: boolean, };
 
 /**
  * Forgets a finished task and deletes its log.
