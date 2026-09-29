@@ -1,11 +1,12 @@
-//! The backend behind every transport: owns runs, git, storage and Satie, implements each
+//! The backend behind every transport: owns sessions, runs, git and Satie, implements each
 //! command of the protocol, and broadcasts [`ServerEvent`]s. Transports only parse, call
 //! [`Api::call`], and forward [`Api::subscribe`].
 use crate::{
     adapters::list_agents,
     git::Git,
-    runs::{Emit, RunRequest, Runs},
-    store::Store,
+    runs::{RunRequest, Runs},
+    sessions::Sessions,
+    store::{now_ms, Store},
 };
 use bach_protocol::{commands::*, *};
 use satie::{Satie, StartTask};
@@ -13,7 +14,7 @@ use satie_protocol::*;
 use serde_json::Value;
 use std::{
     path::Path,
-    sync::{Arc, Mutex},
+    sync::Mutex,
     time::Duration,
 };
 use tokio::{sync::broadcast, task::JoinHandle};
@@ -21,7 +22,7 @@ use tokio::{sync::broadcast, task::JoinHandle};
 pub struct Api {
     runs: Runs,
     git: Git,
-    store: Store,
+    sessions: Sessions,
     satie: Satie,
     events: broadcast::Sender<ServerEvent>,
     /// Passes Satie's task events on while anyone is subscribed.
@@ -34,6 +35,8 @@ impl Api {
     pub async fn open(db: &Path) -> Result<Api, String> {
         let dir = db.parent().unwrap_or(Path::new("."));
         let store = Store::open(db)?;
+        // Nothing survives a restart of the backend: no run is live any more.
+        store.end_all_runs()?;
         let satie = Satie::start("127.0.0.1:0".parse().unwrap(), dir.join("tasks"))
             .await
             .map_err(|e| format!("couldn't start Satie: {e}"))?;
@@ -52,7 +55,7 @@ impl Api {
         Api {
             runs: Runs::with_satie(Some(satie.clone())),
             git,
-            store,
+            sessions: Sessions::new(store, events.clone()),
             satie,
             events,
             task_events: Mutex::default(),
@@ -99,13 +102,85 @@ impl Api {
             }
         }));
     }
+}
 
-    fn emit(&self) -> Emit {
-        let events = self.events.clone();
-        Arc::new(move |ev| {
-            // No subscribers is fine: nobody is watching.
-            let _ = events.send(ServerEvent::Run(ev));
-        })
+/// `bach/<first words of the prompt>-<random>`, e.g. "Fix the login bug!" -> `bach/fix-the-login-bug-a3f1`.
+fn branch_name_for(prompt: &str) -> String {
+    let lower = prompt.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .take(5)
+        .collect();
+    let slug = if words.is_empty() {
+        "session".to_string()
+    } else {
+        words.join("-")
+    };
+    format!("bach/{slug}-{}", &uuid::Uuid::new_v4().simple().to_string()[..4])
+}
+
+fn title_for(prompt: &str) -> String {
+    prompt.trim().chars().take(40).collect()
+}
+
+/// No choice, "", and "default" all mean the agent's default model.
+fn model_choice(m: Option<String>) -> Option<String> {
+    m.map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty() && m != "default")
+}
+
+impl Api {
+    /// Sends `prompt` to session `id`'s agent: records it, marks the session running and starts
+    /// the run. A run that can't start is recorded as failed.
+    async fn send(&self, id: &str, prompt: String) -> Result<Session, ApiError> {
+        let prompt = prompt.trim().to_string();
+        if prompt.is_empty() {
+            return Err(ApiError::invalid("Write a message first."));
+        }
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let s = self.sessions.update(id, |s| {
+            if s.run_id.is_some() {
+                return Err(ApiError::invalid("The agent is still working on the last message."));
+            }
+            if s.workdir_removed {
+                return Err(ApiError::invalid(
+                    "This session's worktree was removed, so it can't be continued.",
+                ));
+            }
+            s.run_id = Some(run_id.clone());
+            Ok(())
+        })?;
+        self.sessions.append(id, Entry::User { text: prompt.clone() })?;
+        let req = RunRequest {
+            agent: s.agent,
+            prompt: prompt.clone(),
+            cwd: s.workdir.clone().or(Some(s.cwd.clone())),
+            session_id: s.agent_session_id.clone(),
+            model: s.model_choice.clone().filter(|_| s.agent == AgentKind::Claude),
+            allowed_tools: s.allow_rules.clone(),
+            session_key: Some(id.to_string()),
+            run_id: Some(run_id.clone()),
+        };
+        match self.runs.start(self.sessions.recorder(id), req).await {
+            Ok(_) => self.sessions.get(id),
+            Err(message) => {
+                self.sessions.append(
+                    id,
+                    Entry::Failed {
+                        message: message.clone(),
+                        retry_text: Some(prompt),
+                    },
+                )?;
+                self.sessions.update(id, |s| {
+                    if s.run_id.as_deref() == Some(&run_id) {
+                        s.run_id = None;
+                    }
+                    Ok(())
+                })?;
+                Err(ApiError::failed(message))
+            }
+        }
     }
 }
 
@@ -122,28 +197,149 @@ impl Handler for Api {
         Ok(list_agents())
     }
 
-    async fn start_run(&self, a: StartRunArgs) -> Result<String, ApiError> {
-        let req = RunRequest {
-            agent: a.agent,
-            prompt: a.prompt,
-            cwd: a.cwd,
-            session_id: a.session_id,
-            model: a.model,
-            allowed_tools: a.allowed_tools.unwrap_or_default(),
-            session_key: a.session_key,
-        };
-        Ok(self.runs.start(self.emit(), req).await?)
+    async fn list_sessions(&self, _: ListSessionsArgs) -> Result<Vec<Session>, ApiError> {
+        self.sessions.list()
     }
 
-    async fn cancel_run(&self, a: CancelRunArgs) -> Result<(), ApiError> {
-        self.runs.cancel(&a.run_id).await;
+    async fn get_session(&self, a: GetSessionArgs) -> Result<SessionLog, ApiError> {
+        Ok(SessionLog {
+            session: self.sessions.get(&a.session_id)?,
+            entries: self
+                .sessions
+                .entries(&a.session_id, a.after_seq.unwrap_or(0))?,
+        })
+    }
+
+    async fn start_session(&self, a: StartSessionArgs) -> Result<Session, ApiError> {
+        let prompt = a.prompt.trim().to_string();
+        if prompt.is_empty() {
+            return Err(ApiError::invalid("Write a message first."));
+        }
+        let cwd = a.cwd.trim().to_string();
+        if cwd.is_empty() {
+            return Err(ApiError::invalid("Choose a project folder first."));
+        }
+        // Where it runs: the folder on the chosen branch, or a new worktree branched from it.
+        let worktree = a.worktree.unwrap_or(false);
+        let ws = self
+            .git
+            .prepare(
+                cwd.clone(),
+                a.branch.clone(),
+                worktree,
+                worktree.then(|| branch_name_for(&prompt)),
+            )
+            .await
+            .map_err(ApiError::failed)?;
+        let now = now_ms();
+        let session = Session {
+            id: uuid::Uuid::new_v4().to_string(),
+            title: title_for(&prompt),
+            title_edited: false,
+            agent: a.agent,
+            cwd,
+            branch: a.branch,
+            worktree: ws.worktree,
+            model_choice: model_choice(a.model_choice),
+            workdir: Some(ws.workdir),
+            git_branch: ws.branch,
+            workdir_removed: false,
+            agent_session_id: None,
+            allow_rules: vec![],
+            model: None,
+            run_id: None,
+            open_approvals: vec![],
+            created_at: now,
+            updated_at: now,
+            last_seq: 0,
+        };
+        self.sessions.put_quietly(&session)?;
+        match self.send(&session.id, prompt).await {
+            Ok(s) => Ok(s),
+            Err(e) => {
+                // A session is only kept once its first message reached the agent.
+                self.sessions.delete(&session.id)?;
+                Err(e)
+            }
+        }
+    }
+
+    async fn send_message(&self, a: SendMessageArgs) -> Result<Session, ApiError> {
+        self.send(&a.session_id, a.prompt).await
+    }
+
+    async fn stop_session(&self, a: StopSessionArgs) -> Result<(), ApiError> {
+        let Some(run_id) = self.sessions.get(&a.session_id)?.run_id else {
+            return Ok(());
+        };
+        if self.runs.is_live(&run_id).await {
+            // The run ends with a `cancelled` event, which marks the session stopped.
+            self.runs.cancel(&run_id).await;
+        } else {
+            self.sessions.update(&a.session_id, |s| {
+                s.run_id = None;
+                s.open_approvals.clear();
+                Ok(())
+            })?;
+        }
         Ok(())
     }
 
-    async fn respond_approval(&self, a: RespondApprovalArgs) -> Result<(), ApiError> {
-        self.runs
-            .respond_approval(&a.run_id, &a.request_id, a.decision, a.message, a.answers)
-            .await
+    async fn answer_approval(&self, a: AnswerApprovalArgs) -> Result<(), ApiError> {
+        let id = &a.session_id;
+        let run_id = self
+            .sessions
+            .get(id)?
+            .run_id
+            .ok_or_else(|| ApiError::not_found("That run has already finished."))?;
+        let rules = self
+            .runs
+            .respond_approval(&run_id, &a.request_id, a.decision, a.message, a.answers.clone())
+            .await?;
+        self.sessions.append(
+            id,
+            Entry::Decision {
+                request_id: a.request_id.clone(),
+                decision: a.decision,
+                answers: a.answers,
+            },
+        )?;
+        self.sessions.update(id, |s| {
+            s.open_approvals.retain(|r| *r != a.request_id);
+            // "For this session" outlasts the run: later runs start with these rules.
+            if a.decision == Decision::AllowSession {
+                for r in rules {
+                    if !s.allow_rules.contains(&r) {
+                        s.allow_rules.push(r);
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    async fn update_session(&self, a: UpdateSessionArgs) -> Result<Session, ApiError> {
+        let title = a.title.map(|t| t.trim().to_string());
+        if title.as_ref().is_some_and(|t| t.is_empty()) {
+            return Err(ApiError::invalid("A session needs a name."));
+        }
+        self.sessions.update(&a.session_id, |s| {
+            if let Some(t) = title {
+                s.title = t;
+                s.title_edited = true;
+            }
+            if a.model_choice.is_some() {
+                s.model_choice = model_choice(a.model_choice);
+            }
+            Ok(())
+        })
+    }
+
+    async fn delete_session(&self, a: DeleteSessionArgs) -> Result<(), ApiError> {
+        // A deleted session's agent run must not outlive it (its background tasks do).
+        self.runs.cancel_session(&a.session_id).await;
+        self.sessions.delete(&a.session_id)
     }
 
     async fn list_dir(&self, a: ListDirArgs) -> Result<DirListing, ApiError> {
@@ -157,26 +353,28 @@ impl Handler for Api {
         Ok(self.git.info(a.path).await?)
     }
 
-    async fn prepare_workspace(&self, a: PrepareWorkspaceArgs) -> Result<Workspace, ApiError> {
-        Ok(self
-            .git
-            .prepare(a.cwd, a.branch, a.worktree.unwrap_or(false), a.new_branch)
-            .await?)
-    }
-
     async fn list_worktrees(&self, _: ListWorktreesArgs) -> Result<Vec<WorktreeEntry>, ApiError> {
         Ok(self.git.list_worktrees().await)
     }
 
     async fn remove_worktree(&self, a: RemoveWorktreeArgs) -> Result<(), ApiError> {
-        Ok(self
-            .git
+        self.git
             .remove_worktree(
-                a.path,
+                a.path.clone(),
                 a.discard.unwrap_or(false),
                 a.delete_branch.unwrap_or(false),
             )
-            .await?)
+            .await?;
+        // Their folder is gone: keep the transcripts readable, but they can't be continued.
+        for s in self.sessions.list()? {
+            if s.workdir.as_deref() == Some(&a.path) && !s.workdir_removed {
+                self.sessions.update(&s.id, |s| {
+                    s.workdir_removed = true;
+                    Ok(())
+                })?;
+            }
+        }
+        Ok(())
     }
 
     async fn list_tasks(&self, _: ListTasksArgs) -> Result<Vec<TaskView>, ApiError> {
@@ -214,19 +412,5 @@ impl Handler for Api {
                 ports: vec![],
             })
             .map_err(satie_error)
-    }
-
-    async fn list_sessions(&self, _: ListSessionsArgs) -> Result<Vec<Value>, ApiError> {
-        Ok(self.store.list()?)
-    }
-
-    async fn save_session(&self, a: SaveSessionArgs) -> Result<(), ApiError> {
-        self.store.save(&a.session).map_err(ApiError::invalid)
-    }
-
-    async fn delete_session(&self, a: DeleteSessionArgs) -> Result<(), ApiError> {
-        // A deleted session's agent runs must not outlive it (its background tasks do).
-        self.runs.cancel_session(&a.session_id).await;
-        Ok(self.store.delete(&a.session_id)?)
     }
 }

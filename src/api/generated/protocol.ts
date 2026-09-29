@@ -1,8 +1,38 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
+/**
+ * Agent-independent events the UI renders.
+ */
+export type AgentEvent = { "type": "session", id: string, 
+/**
+ * The model the agent reports using for this run.
+ */
+model?: string, } | { "type": "text", text: string, parent?: string, } | { "type": "thinking", text: string, } | { "type": "tool_use", id: string, name: string, input: JsonValue, parent?: string, } | { "type": "tool_result", id: string, output: string, isError: boolean, parent?: string, } | { "type": "approval", requestId: string, toolUseId: string | null, toolName: string, input: JsonValue, description: string | null, reason: string | null, 
+/**
+ * Permission rules an "allow for this session / always" answer would add.
+ */
+rules: Array<string>, 
+/**
+ * Folders outside the project this would also reach into.
+ */
+directories: Array<string>, } | { "type": "approval_cancelled", requestId: string, } | { "type": "task", id: string, status?: string, title?: string, agentType?: string, 
+/**
+ * What it is doing right now.
+ */
+activity?: string, toolUses?: number, tokens?: number, durationMs?: number, summary?: string, background?: boolean, } | { "type": "done", costUsd: number | null, isError: boolean, } | { "type": "error", message: string, } | { "type": "cancelled" } | { "type": "raw", line: string, };
+
 export type AgentInfo = { kind: AgentKind, name: string, installed: boolean, };
 
 export type AgentKind = "claude" | "codex" | "opencode";
+
+/**
+ * Answers an approval request (or a question) the session's agent is waiting on.
+ */
+export type AnswerApprovalArgs = { sessionId: string, requestId: string, decision: Decision, message?: string, 
+/**
+ * For a question from the agent: the chosen answer per question text.
+ */
+answers?: { [key in string]: string }, };
 
 /**
  * Every command fails with one of these.
@@ -12,11 +42,6 @@ export type ApiError = { code: ErrorCode,
  * Written for the user.
  */
 message: string, };
-
-/**
- * Stops a run. Stopping one that already ended does nothing.
- */
-export type CancelRunArgs = { runId: string, };
 
 /**
  * A command sent over the WebSocket bridge. `id` is echoed back in the reply.
@@ -29,7 +54,7 @@ export type ClientFrame = { id: number, cmd: string, args?: JsonValue, };
 export type Decision = "allow" | "allow_session" | "allow_always" | "deny";
 
 /**
- * Deletes a session and stops its runs (its background tasks keep going).
+ * Deletes a session and stops its run (its background tasks keep going).
  */
 export type DeleteSessionArgs = { sessionId: string, };
 
@@ -42,9 +67,19 @@ git: boolean, };
 export type DirListing = { path: string, parent: string | null, home: string, entries: Array<DirEntry>, };
 
 /**
+ * One step of a session's transcript.
+ */
+export type Entry = { "type": "user", text: string, } | { "type": "agent", runId: string, event: AgentEvent, } | { "type": "decision", requestId: string, decision: Decision, answers?: { [key in string]: string }, } | { "type": "failed", message: string, retryText?: string, } | { "type": "imported", blocks: JsonValue, };
+
+/**
  * What kind of failure an [`ApiError`] is, for code that reacts to it. People read `message`.
  */
 export type ErrorCode = "invalid" | "not_found" | "unavailable" | "failed";
+
+/**
+ * A session and its transcript, or only the entries after `afterSeq`.
+ */
+export type GetSessionArgs = { sessionId: string, afterSeq?: number, };
 
 export type GitInfo = { isRepo: boolean, root: string | null, 
 /**
@@ -82,7 +117,7 @@ export type ListDirArgs = {
 path?: string, showHidden?: boolean, };
 
 /**
- * Saved sessions, most recently saved first.
+ * Every session, most recently active first (without transcripts).
  */
 export type ListSessionsArgs = Record<symbol, never>;
 
@@ -117,11 +152,15 @@ size: number,
  */
 restarted: boolean, };
 
+export type LogEntry = { 
 /**
- * Readies where a new session runs: switches `cwd` to `branch`, or (with `worktree`) creates
- * `newBranch` from `branch` in an isolated worktree.
+ * 1, 2, 3, ... within its session.
  */
-export type PrepareWorkspaceArgs = { cwd: string, branch?: string, worktree?: boolean, newBranch?: string, };
+seq: number, 
+/**
+ * When it was recorded (ms since the epoch).
+ */
+at: number, entry: Entry, };
 
 /**
  * Forgets a finished task and deletes its log.
@@ -129,7 +168,7 @@ export type PrepareWorkspaceArgs = { cwd: string, branch?: string, worktree?: bo
 export type RemoveTaskArgs = { taskId: string, };
 
 /**
- * Removes a worktree Bach created.
+ * Removes a worktree Bach created. Sessions that ran in it can still be read, not continued.
  */
 export type RemoveWorktreeArgs = { path: string, 
 /**
@@ -142,71 +181,108 @@ discard?: boolean,
 deleteBranch?: boolean, };
 
 /**
- * Answers an approval request (or a question) a run is waiting on.
+ * Sends a message to a session's agent. The session must not be running.
  */
-export type RespondApprovalArgs = { runId: string, requestId: string, decision: Decision, message?: string, 
-/**
- * For a question from the agent: the chosen answer per question text.
- */
-answers?: { [key in string]: string }, };
-
-/**
- * One event from an agent run.
- */
-export type RunEvent = { runId: string, } & ({ "type": "session", id: string, 
-/**
- * The model the agent reports using for this run.
- */
-model?: string, } | { "type": "text", text: string, parent?: string, } | { "type": "thinking", text: string, } | { "type": "tool_use", id: string, name: string, input: JsonValue, parent?: string, } | { "type": "tool_result", id: string, output: string, isError: boolean, parent?: string, } | { "type": "approval", requestId: string, toolUseId: string | null, toolName: string, input: JsonValue, description: string | null, reason: string | null, 
-/**
- * Permission rules an "allow for this session / always" answer would add.
- */
-rules: Array<string>, 
-/**
- * Folders outside the project this would also reach into.
- */
-directories: Array<string>, } | { "type": "approval_cancelled", requestId: string, } | { "type": "task", id: string, status?: string, title?: string, agentType?: string, 
-/**
- * What it is doing right now.
- */
-activity?: string, toolUses?: number, tokens?: number, durationMs?: number, summary?: string, background?: boolean, } | { "type": "done", costUsd: number | null, isError: boolean, } | { "type": "error", message: string, } | { "type": "cancelled" } | { "type": "raw", line: string, });
-
-/**
- * Saves (inserts or replaces) a session. Sessions are the frontend's JSON; only `id` is read.
- */
-export type SaveSessionArgs = { session: JsonValue, };
+export type SendMessageArgs = { sessionId: string, prompt: string, };
 
 /**
  * Everything the backend pushes to clients, whichever transport carries it.
  */
-export type ServerEvent = { "topic": "run", "data": RunEvent } | { "topic": "task", "data": TaskEvent };
+export type ServerEvent = { "topic": "session", "data": SessionEvent } | { "topic": "task", "data": TaskEvent };
 
 /**
  * What the WebSocket bridge sends: replies to commands, and events.
  */
 export type ServerFrame = { "kind": "reply", id: number, result: JsonValue, } | { "kind": "error", id: number, error: ApiError, } | { "kind": "event", event: ServerEvent, };
 
+export type Session = { id: string, title: string, 
 /**
- * Starts one turn of an agent and returns its run id. Its events arrive as `run` events.
+ * The user named it, so the first prompt shouldn't.
  */
-export type StartRunArgs = { agent: AgentKind, prompt: string, cwd?: string, 
+titleEdited: boolean, agent: AgentKind, 
 /**
- * The agent's own session id, to continue an earlier conversation.
+ * The project folder; sessions are grouped by it.
  */
-sessionId?: string, model?: string, 
+cwd: string, 
 /**
- * Permission rules approved earlier in the session.
+ * The git branch it was started on (or, with `worktree`, branched from).
  */
-allowedTools?: Array<string>, 
+branch: string | null, 
 /**
- * The UI session this run belongs to, so deleting it stops the run.
+ * Runs in an isolated git worktree on its own branch.
  */
-sessionKey?: string, };
+worktree: boolean, 
+/**
+ * Model choice for Claude Code: an alias like `opus`, or none for the default.
+ */
+modelChoice: string | null, 
+/**
+ * Where the agent runs (a worktree, or `cwd`).
+ */
+workdir: string | null, 
+/**
+ * The branch it runs on.
+ */
+gitBranch: string | null, 
+/**
+ * Its worktree was removed: it can be read but not continued.
+ */
+workdirRemoved: boolean, 
+/**
+ * The agent's own session id, to resume the conversation.
+ */
+agentSessionId: string | null, 
+/**
+ * Permission rules approved "for this session"; every later run gets them.
+ */
+allowRules: Array<string>, 
+/**
+ * The model the agent reported using on its latest run.
+ */
+model: string | null, 
+/**
+ * The agent run in progress, if any.
+ */
+runId: string | null, 
+/**
+ * Approval requests the running agent is waiting on.
+ */
+openApprovals: Array<string>, createdAt: number, 
+/**
+ * Last activity; sessions are listed most recent first.
+ */
+updatedAt: number, 
+/**
+ * `seq` of the latest transcript entry (0 when there are none).
+ */
+lastSeq: number, };
+
+/**
+ * A change to sessions, pushed to every client.
+ */
+export type SessionEvent = { "type": "changed", session: Session, } | { "type": "entry", sessionId: string, entry: LogEntry, } | { "type": "deleted", sessionId: string, };
+
+/**
+ * A session with (part of) its transcript.
+ */
+export type SessionLog = { session: Session, entries: Array<LogEntry>, };
+
+/**
+ * Creates a session and sends its first message. Readies where it runs first: switches `cwd` to
+ * `branch`, or (with `worktree`) creates a new branch from it in an isolated worktree. Nothing is
+ * saved if that, or starting the agent, fails.
+ */
+export type StartSessionArgs = { agent: AgentKind, cwd: string, branch?: string, worktree?: boolean, modelChoice?: string, prompt: string, };
 
 /**
  * Starts a command by hand, as a task of the project in `cwd`.
  */
 export type StartTaskArgs = { command: string, cwd: string, name?: string, };
+
+/**
+ * Stops the session's agent run, if one is going.
+ */
+export type StopSessionArgs = { sessionId: string, };
 
 /**
  * Stops a task and everything it started.
@@ -309,13 +385,9 @@ startTicks: number | null, startedAt: number, endedAt: number | null, status: Ta
 expectedPorts: Array<number>, };
 
 /**
- * Where a session's agent runs.
+ * Renames a session, or changes the model its next messages use (`""` for the default).
  */
-export type Workspace = { 
-/**
- * The directory the agent should run in.
- */
-workdir: string, branch: string | null, worktree: boolean, };
+export type UpdateSessionArgs = { sessionId: string, title?: string, modelChoice?: string, };
 
 /**
  * A worktree Bach created.
@@ -340,17 +412,39 @@ export type Commands = {
    */
   list_agents: { args: ListAgentsArgs; output: Array<AgentInfo> };
   /**
-   * Starts one turn of an agent and returns its run id. Its events arrive as `run` events.
+   * Every session, most recently active first (without transcripts).
    */
-  start_run: { args: StartRunArgs; output: string };
+  list_sessions: { args: ListSessionsArgs; output: Array<Session> };
   /**
-   * Stops a run. Stopping one that already ended does nothing.
+   * A session and its transcript, or only the entries after `afterSeq`.
    */
-  cancel_run: { args: CancelRunArgs; output: null };
+  get_session: { args: GetSessionArgs; output: SessionLog };
   /**
-   * Answers an approval request (or a question) a run is waiting on.
+   * Creates a session and sends its first message. Readies where it runs first: switches `cwd` to
+   * `branch`, or (with `worktree`) creates a new branch from it in an isolated worktree. Nothing is
+   * saved if that, or starting the agent, fails.
    */
-  respond_approval: { args: RespondApprovalArgs; output: null };
+  start_session: { args: StartSessionArgs; output: Session };
+  /**
+   * Sends a message to a session's agent. The session must not be running.
+   */
+  send_message: { args: SendMessageArgs; output: Session };
+  /**
+   * Stops the session's agent run, if one is going.
+   */
+  stop_session: { args: StopSessionArgs; output: null };
+  /**
+   * Answers an approval request (or a question) the session's agent is waiting on.
+   */
+  answer_approval: { args: AnswerApprovalArgs; output: null };
+  /**
+   * Renames a session, or changes the model its next messages use (`""` for the default).
+   */
+  update_session: { args: UpdateSessionArgs; output: Session };
+  /**
+   * Deletes a session and stops its run (its background tasks keep going).
+   */
+  delete_session: { args: DeleteSessionArgs; output: null };
   /**
    * Lists sub-directories on the backend host, for the folder picker.
    */
@@ -360,16 +454,11 @@ export type Commands = {
    */
   git_info: { args: GitInfoArgs; output: GitInfo };
   /**
-   * Readies where a new session runs: switches `cwd` to `branch`, or (with `worktree`) creates
-   * `newBranch` from `branch` in an isolated worktree.
-   */
-  prepare_workspace: { args: PrepareWorkspaceArgs; output: Workspace };
-  /**
    * Worktrees Bach created on the backend host.
    */
   list_worktrees: { args: ListWorktreesArgs; output: Array<WorktreeEntry> };
   /**
-   * Removes a worktree Bach created.
+   * Removes a worktree Bach created. Sessions that ran in it can still be read, not continued.
    */
   remove_worktree: { args: RemoveWorktreeArgs; output: null };
   /**
@@ -396,16 +485,4 @@ export type Commands = {
    * Starts a command by hand, as a task of the project in `cwd`.
    */
   start_task: { args: StartTaskArgs; output: Task };
-  /**
-   * Saved sessions, most recently saved first.
-   */
-  list_sessions: { args: ListSessionsArgs; output: Array<JsonValue> };
-  /**
-   * Saves (inserts or replaces) a session. Sessions are the frontend's JSON; only `id` is read.
-   */
-  save_session: { args: SaveSessionArgs; output: null };
-  /**
-   * Deletes a session and stops its runs (its background tasks keep going).
-   */
-  delete_session: { args: DeleteSessionArgs; output: null };
 };

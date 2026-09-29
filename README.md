@@ -19,15 +19,23 @@ CLI in headless JSON-streaming mode and normalizing their output into one event 
   - `adapters/` — one adapter per agent: builds the CLI args, parses its JSON lines into
     `AgentEvent`s. Claude Code is implemented and tested against real output; Codex is
     best-effort; opencode is a stub.
-  - `runs.rs` — spawns/cancels agent processes and emits events.
-  - `store.rs` — SQLite session storage (`~/.local/share/bach/bach.db`, or `$BACH_DB`). Sessions
-    are saved by whichever backend is in use: the Tauri app's data dir, or the bach-server host.
+  - `runs.rs` — spawns/cancels agent processes and emits their events.
+  - `sessions.rs` — the backend owns sessions: it records every run event into the session's
+    transcript as it happens (whether or not a client is watching), tracks what the session is
+    waiting on, and pushes `session` events (`changed` / `entry` / `deleted`) to clients.
+  - `store.rs` — SQLite storage (`~/.local/share/bach/bach.db`, or `$BACH_DB`): a row per session
+    and its transcript as numbered entries. Sessions live wherever the backend runs: the Tauri
+    app's data dir, or the bach-server host. Sessions saved by older versions (the frontend's own
+    JSON) are converted on startup, their transcript kept as one `imported` entry.
   - `adapters/claude.rs` also steers Claude Code to Satie (system prompt, a hook refusing Bash
     `run_in_background`, the MCP config with the run's token).
 - `crates/bach-server/` — the WebSocket bridge for browser use (see below).
 - `src-tauri/` — Tauri shell: one `rpc` command into `Api`, events on the `bach` channel.
-- `src/api/` — the typed client: `call("start_run", {...})` is checked against the generated
+- `src/api/` — the typed client: `call("send_message", {...})` is checked against the generated
   `Commands` map; `transport.ts` carries it over Tauri IPC or the WebSocket.
+- `src/session.ts` folds a session's transcript entries into the blocks the UI renders; `App.tsx`
+  keeps the session list and opened transcripts current from `session` events, refetching after
+  a gap or a reconnect.
 - `src/` — React frontend styled with Tailwind v4 and shadcn/ui (Base UI primitives, `base-nova`
   style; components live in `src/components/ui`, add more with `pnpm dlx shadcn@latest add <name>`).
   Theme tokens are in `src/index.css` and follow the system light/dark setting.
@@ -109,8 +117,8 @@ Bach shows an approval card, and the run waits for your answer.
 - Only the rule itself is ever granted. The agent also offers to widen directory access or switch to
   accept-edits mode; those suggestions are dropped. A request that reaches outside the project
   folder says so on the card.
-- Sessions waiting on you show a shield in the sidebar and the tab title changes. Stopping a run, or
-  a reload, closes any open request.
+- Sessions waiting on you show a shield in the sidebar and the tab title changes. A reload, or another
+  client, can still answer an open request; stopping the run (or restarting the backend) closes it.
 - Hover one of your messages for a **Retry** button (resends it as a new message; the agent still
   remembers the earlier one). Error messages have a Retry too.
 

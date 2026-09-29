@@ -10,6 +10,7 @@ mod agent;
 pub mod commands;
 mod error;
 mod events;
+mod session;
 mod typescript;
 mod workspace;
 
@@ -17,6 +18,7 @@ pub use agent::*;
 pub use commands::{Handler, Request};
 pub use error::*;
 pub use events::*;
+pub use session::*;
 pub use typescript::typescript;
 pub use workspace::*;
 
@@ -65,7 +67,7 @@ mod tests {
         );
         let e = Request::parse("nope", json!({})).unwrap_err();
         assert_eq!(e.code, ErrorCode::Invalid);
-        let e = Request::parse("start_run", json!({"agent": "claude"})).unwrap_err();
+        let e = Request::parse("start_session", json!({"agent": "claude", "cwd": "/"})).unwrap_err();
         assert_eq!(e.code, ErrorCode::Invalid);
         assert!(e.message.contains("prompt"), "{e}");
     }
@@ -83,18 +85,27 @@ mod tests {
 
     #[test]
     fn events_use_camel_case_fields_and_snake_case_names() {
-        let ev = ServerEvent::Run(RunEvent {
-            run_id: "r".into(),
-            event: AgentEvent::ToolResult {
-                id: "t".into(),
-                output: "ok".into(),
-                is_error: false,
-                parent: None,
+        let ev = ServerEvent::Session(SessionEvent::Entry {
+            session_id: "s".into(),
+            entry: LogEntry {
+                seq: 4,
+                at: 5,
+                entry: Entry::Agent {
+                    run_id: "r".into(),
+                    event: AgentEvent::ToolResult {
+                        id: "t".into(),
+                        output: "ok".into(),
+                        is_error: false,
+                        parent: None,
+                    },
+                },
             },
         });
         assert_eq!(
             serde_json::to_value(&ev).unwrap(),
-            json!({"topic": "run", "data": {"runId": "r", "type": "tool_result", "id": "t", "output": "ok", "isError": false}})
+            json!({"topic": "session", "data": {"type": "entry", "sessionId": "s", "entry": {
+                "seq": 4, "at": 5, "entry": {"type": "agent", "runId": "r", "event":
+                    {"type": "tool_result", "id": "t", "output": "ok", "isError": false}}}}})
         );
         let err = ServerFrame::Error {
             id: 3,

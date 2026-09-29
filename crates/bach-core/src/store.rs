@@ -1,6 +1,7 @@
-//! SQLite persistence for chat sessions. Sessions are opaque JSON owned by the frontend
-//! (only `id` is read here), so the UI can evolve its shape without migrations.
-use rusqlite::{params, Connection};
+//! SQLite persistence for sessions: one row per [`Session`], and each session's transcript as
+//! numbered [`LogEntry`] rows.
+use bach_protocol::{AgentKind, Entry, LogEntry, Session};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
@@ -23,69 +24,169 @@ pub fn default_db_path() -> PathBuf {
     data.join("bach/bach.db")
 }
 
+pub fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
+fn err(e: impl std::fmt::Display) -> String {
+    e.to_string()
+}
+
+/// The schema this code writes (`PRAGMA user_version`). 0 was sessions as the frontend's own
+/// JSON, transcript included.
+const SCHEMA: i64 = 1;
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self, String> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(dir).map_err(err)?;
         }
-        Self::init(Connection::open(path).map_err(|e| e.to_string())?)
+        Self::init(Connection::open(path).map_err(err)?)
     }
 
     pub fn in_memory() -> Result<Self, String> {
-        Self::init(Connection::open_in_memory().map_err(|e| e.to_string())?)
+        Self::init(Connection::open_in_memory().map_err(err)?)
     }
 
-    fn init(conn: Connection) -> Result<Self, String> {
+    fn init(mut conn: Connection) -> Result<Self, String> {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              CREATE TABLE IF NOT EXISTS sessions (
                  id         TEXT PRIMARY KEY,
                  data       TEXT NOT NULL,
                  updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS entries (
+                 session_id TEXT NOT NULL,
+                 seq        INTEGER NOT NULL,
+                 at         INTEGER NOT NULL,
+                 data       TEXT NOT NULL,
+                 PRIMARY KEY (session_id, seq)
              );",
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(err)?;
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(err)?;
+        if version < 1 {
+            let tx = conn.transaction().map_err(err)?;
+            migrate_frontend_sessions(&tx)?;
+            tx.pragma_update(None, "user_version", SCHEMA).map_err(err)?;
+            tx.commit().map_err(err)?;
+        }
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
-    /// All sessions, most recently saved first.
-    pub fn list(&self) -> Result<Vec<Value>, String> {
+    /// All sessions, most recently active first.
+    pub fn list(&self) -> Result<Vec<Session>, String> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn
             .prepare("SELECT data FROM sessions ORDER BY updated_at DESC")
-            .map_err(|e| e.to_string())?;
+            .map_err(err)?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(err)?;
+        rows.map(|r| serde_json::from_str(&r.map_err(err)?).map_err(err))
+            .collect()
+    }
+
+    pub fn get(&self, id: &str) -> Result<Option<Session>, String> {
+        get(&self.0.lock().unwrap(), id)
+    }
+
+    /// Saves a new session (or replaces one).
+    pub fn put(&self, session: &Session) -> Result<(), String> {
+        put(&self.0.lock().unwrap(), session)
+    }
+
+    /// Changes a session in place. `f` can refuse the change by returning an error, which is
+    /// passed on; `Ok(None)` means there is no such session.
+    pub fn update<E: From<String>>(
+        &self,
+        id: &str,
+        f: impl FnOnce(&mut Session) -> Result<(), E>,
+    ) -> Result<Option<Session>, E> {
+        let conn = self.0.lock().unwrap();
+        let Some(mut s) = get(&conn, id)? else {
+            return Ok(None);
+        };
+        f(&mut s)?;
+        put(&conn, &s)?;
+        Ok(Some(s))
+    }
+
+    /// Adds an entry to a session's transcript, which also counts as activity. Returns the entry
+    /// and the session as it now stands; `None` if there is no such session.
+    pub fn append(&self, id: &str, entry: Entry) -> Result<Option<(LogEntry, Session)>, String> {
+        let mut conn = self.0.lock().unwrap();
+        let tx = conn.transaction().map_err(err)?;
+        let Some(mut s) = get(&tx, id)? else {
+            return Ok(None);
+        };
+        let log = LogEntry {
+            seq: s.last_seq + 1,
+            at: now_ms(),
+            entry,
+        };
+        tx.execute(
+            "INSERT INTO entries (session_id, seq, at, data) VALUES (?1, ?2, ?3, ?4)",
+            params![id, log.seq, log.at, serde_json::to_string(&log.entry).map_err(err)?],
+        )
+        .map_err(err)?;
+        s.last_seq = log.seq;
+        s.updated_at = s.updated_at.max(log.at);
+        put(&tx, &s)?;
+        tx.commit().map_err(err)?;
+        Ok(Some((log, s)))
+    }
+
+    /// A session's transcript after `after` (0 for all of it).
+    pub fn entries(&self, id: &str, after: u64) -> Result<Vec<LogEntry>, String> {
+        let conn = self.0.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT seq, at, data FROM entries WHERE session_id = ?1 AND seq > ?2 ORDER BY seq")
+            .map_err(err)?;
         let rows = stmt
-            .query_map([], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?;
+            .query_map(params![id, after], |r| {
+                Ok((r.get::<_, u64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+            })
+            .map_err(err)?;
         rows.map(|r| {
-            let text = r.map_err(|e| e.to_string())?;
-            serde_json::from_str(&text).map_err(|e| e.to_string())
+            let (seq, at, data) = r.map_err(err)?;
+            Ok(LogEntry {
+                seq,
+                at,
+                entry: serde_json::from_str(&data).map_err(err)?,
+            })
         })
         .collect()
     }
 
-    pub fn save(&self, session: &Value) -> Result<(), String> {
-        let id = session["id"].as_str().ok_or("session has no string `id`")?;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as i64);
-        let conn = self.0.lock().unwrap();
-        // Strictly increasing, so "most recently saved" is well defined within one millisecond.
-        let newest: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(updated_at), 0) FROM sessions",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        let updated_at = now.max(newest + 1);
-        conn.execute(
-            "INSERT INTO sessions (id, data, updated_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
-            params![id, session.to_string(), updated_at],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
+    pub fn delete(&self, id: &str) -> Result<(), String> {
+        let mut conn = self.0.lock().unwrap();
+        let tx = conn.transaction().map_err(err)?;
+        tx.execute("DELETE FROM entries WHERE session_id = ?1", params![id])
+            .map_err(err)?;
+        tx.execute("DELETE FROM sessions WHERE id = ?1", params![id])
+            .map_err(err)?;
+        tx.commit().map_err(err)
+    }
+
+    /// After a restart no run is live: forgets the runs sessions were in, and the approvals they
+    /// were waiting on. Returns the sessions that changed.
+    pub fn end_all_runs(&self) -> Result<Vec<Session>, String> {
+        let mut changed = vec![];
+        for s in self.list()? {
+            if s.run_id.is_some() || !s.open_approvals.is_empty() {
+                let updated = self.update::<String>(&s.id, |s| {
+                    s.run_id = None;
+                    s.open_approvals.clear();
+                    Ok(())
+                })?;
+                changed.extend(updated);
+            }
+        }
+        Ok(changed)
     }
 
     /// Background tasks from before Satie had its own database (the old `tasks` table), for
@@ -98,16 +199,14 @@ impl Store {
                 [],
                 |r| r.get(0),
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(err)?;
         if !exists {
             return Ok(vec![]);
         }
         let mut stmt = conn
             .prepare("SELECT data FROM tasks ORDER BY started_at ASC")
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?;
+            .map_err(err)?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(err)?;
         Ok(rows
             .filter_map(|r| serde_json::from_str(&r.ok()?).ok())
             .collect())
@@ -118,41 +217,211 @@ impl Store {
             .lock()
             .unwrap()
             .execute_batch("DROP TABLE IF EXISTS tasks")
-            .map_err(|e| e.to_string())
+            .map_err(err)
     }
+}
 
-    pub fn delete(&self, id: &str) -> Result<(), String> {
-        self.0
-            .lock()
-            .unwrap()
-            .execute("DELETE FROM sessions WHERE id = ?1", params![id])
-            .map_err(|e| e.to_string())?;
-        Ok(())
+fn get(conn: &Connection, id: &str) -> Result<Option<Session>, String> {
+    conn.query_row("SELECT data FROM sessions WHERE id = ?1", params![id], |r| {
+        r.get::<_, String>(0)
+    })
+    .optional()
+    .map_err(err)?
+    .map(|data| serde_json::from_str(&data).map_err(err))
+    .transpose()
+}
+
+fn put(conn: &Connection, s: &Session) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO sessions (id, data, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
+        params![s.id, serde_json::to_string(s).map_err(err)?, s.updated_at],
+    )
+    .map_err(err)?;
+    Ok(())
+}
+
+/// Sessions used to be the frontend's JSON, transcript included as rendered blocks. Each becomes
+/// a [`Session`] whose transcript is one `imported` entry holding those blocks.
+fn migrate_frontend_sessions(conn: &Connection) -> Result<(), String> {
+    let old: Vec<(String, i64)> = {
+        let mut stmt = conn
+            .prepare("SELECT data, updated_at FROM sessions")
+            .map_err(err)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(err)?;
+        rows.collect::<Result<_, _>>().map_err(err)?
+    };
+    for (data, updated_at) in old {
+        let Ok(v) = serde_json::from_str::<Value>(&data) else {
+            continue;
+        };
+        if v.get("createdAt").is_some() {
+            continue; // already a Session
+        }
+        let Some(s) = session_from_frontend(&v, updated_at) else {
+            continue;
+        };
+        let blocks = v.get("blocks").cloned().unwrap_or(Value::Array(vec![]));
+        if blocks.as_array().is_some_and(|b| !b.is_empty()) {
+            conn.execute(
+                "INSERT OR REPLACE INTO entries (session_id, seq, at, data) VALUES (?1, 1, ?2, ?3)",
+                params![s.id, updated_at, serde_json::to_string(&Entry::Imported { blocks }).map_err(err)?],
+            )
+            .map_err(err)?;
+        }
+        put(conn, &s)?;
     }
+    Ok(())
+}
+
+fn session_from_frontend(v: &Value, updated_at: i64) -> Option<Session> {
+    let text = |k: &str| v.get(k).and_then(Value::as_str).map(String::from);
+    let flag = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
+    let has_blocks = v["blocks"].as_array().is_some_and(|b| !b.is_empty());
+    Some(Session {
+        id: text("id")?,
+        title: text("title").unwrap_or_else(|| "Session".into()),
+        title_edited: flag("titleEdited"),
+        agent: serde_json::from_value(v["agent"].clone()).unwrap_or(AgentKind::Claude),
+        cwd: text("cwd").unwrap_or_default(),
+        branch: text("branch"),
+        worktree: flag("worktree"),
+        model_choice: text("modelChoice").filter(|m| m != "default"),
+        workdir: text("workdir"),
+        git_branch: text("gitBranch"),
+        workdir_removed: flag("workdirRemoved"),
+        agent_session_id: text("agentSessionId"),
+        allow_rules: serde_json::from_value(v["allowRules"].clone()).unwrap_or_default(),
+        model: text("model"),
+        run_id: None,
+        open_approvals: vec![],
+        created_at: updated_at,
+        updated_at,
+        last_seq: u64::from(has_blocks),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bach_protocol::AgentEvent;
     use serde_json::json;
 
+    fn session(id: &str) -> Session {
+        Session {
+            id: id.into(),
+            title: "t".into(),
+            title_edited: false,
+            agent: AgentKind::Claude,
+            cwd: "/p".into(),
+            branch: None,
+            worktree: false,
+            model_choice: None,
+            workdir: Some("/p".into()),
+            git_branch: None,
+            workdir_removed: false,
+            agent_session_id: None,
+            allow_rules: vec![],
+            model: None,
+            run_id: None,
+            open_approvals: vec![],
+            created_at: 1,
+            updated_at: 1,
+            last_seq: 0,
+        }
+    }
+
     #[test]
-    fn save_list_update_delete() {
+    fn sessions_and_their_transcripts() {
         let s = Store::in_memory().unwrap();
-        s.save(&json!({"id": "a", "title": "one"})).unwrap();
-        s.save(&json!({"id": "b", "title": "two"})).unwrap();
-        s.save(&json!({"id": "a", "title": "one v2"})).unwrap(); // upsert, becomes newest
-        let ids: Vec<_> = s
-            .list()
+        s.put(&session("a")).unwrap();
+        s.put(&session("b")).unwrap();
+        // Activity makes a session the most recent.
+        let (e1, a) = s.append("a", Entry::User { text: "hi".into() }).unwrap().unwrap();
+        let (e2, _) = s
+            .append(
+                "a",
+                Entry::Agent {
+                    run_id: "r".into(),
+                    event: AgentEvent::Text { text: "hello".into(), parent: None },
+                },
+            )
             .unwrap()
-            .iter()
-            .map(|v| v["id"].as_str().unwrap().to_string())
-            .collect();
+            .unwrap();
+        assert_eq!((e1.seq, e2.seq, a.last_seq), (1, 2, 1));
+        let ids: Vec<_> = s.list().unwrap().into_iter().map(|s| s.id).collect();
         assert_eq!(ids, ["a", "b"]);
-        assert_eq!(s.list().unwrap()[0]["title"], "one v2");
+        assert_eq!(s.entries("a", 0).unwrap().len(), 2);
+        assert_eq!(s.entries("a", 1).unwrap()[0].seq, 2);
+        assert!(s.append("nope", Entry::User { text: "x".into() }).unwrap().is_none());
+
+        // Updates can refuse.
+        let r = s.update("a", |s| {
+            if s.run_id.is_none() {
+                return Err("not running".to_string());
+            }
+            Ok(())
+        });
+        assert_eq!(r.unwrap_err(), "not running");
+        let r = s.update::<String>("a", |s| {
+            s.run_id = Some("r".into());
+            s.open_approvals.push("q".into());
+            Ok(())
+        });
+        assert_eq!(r.unwrap().unwrap().run_id.as_deref(), Some("r"));
+        assert_eq!(s.end_all_runs().unwrap().len(), 1);
+        let a = s.get("a").unwrap().unwrap();
+        assert!(a.run_id.is_none() && a.open_approvals.is_empty());
+
         s.delete("a").unwrap();
-        assert_eq!(s.list().unwrap().len(), 1);
-        assert!(s.save(&json!({"title": "no id"})).is_err());
+        assert!(s.get("a").unwrap().is_none() && s.entries("a", 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn turns_frontend_sessions_into_sessions_with_an_imported_transcript() {
+        let dir = std::env::temp_dir().join(format!("bach-store-migrate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bach.db");
+        {
+            // A database written by the previous version.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at INTEGER NOT NULL);",
+            )
+            .unwrap();
+            let old = json!({
+                "id": "s1", "title": "Fix it", "agent": "claude", "cwd": "/p", "worktree": true,
+                "workdir": "/w", "gitBranch": "bach/fix", "agentSessionId": "cs", "modelChoice": "default",
+                "allowRules": ["Bash(ls)"], "runId": "stale",
+                "blocks": [{"kind": "user", "text": "fix it"}, {"kind": "text", "text": "done"}],
+            });
+            conn.execute(
+                "INSERT INTO sessions VALUES ('s1', ?1, 42)",
+                params![old.to_string()],
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        let got = s.get("s1").unwrap().unwrap();
+        assert_eq!(
+            (got.title.as_str(), got.worktree, got.git_branch.as_deref(), got.agent_session_id.as_deref()),
+            ("Fix it", true, Some("bach/fix"), Some("cs"))
+        );
+        assert_eq!(got.allow_rules, ["Bash(ls)"]);
+        assert_eq!((got.model_choice, got.run_id, got.last_seq, got.updated_at), (None, None, 1, 42));
+        let entries = s.entries("s1", 0).unwrap();
+        assert!(
+            matches!(&entries[0].entry, Entry::Imported { blocks } if blocks[1]["text"] == "done"),
+            "{entries:?}"
+        );
+        // Opening again changes nothing.
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.entries("s1", 0).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -169,20 +438,5 @@ mod tests {
         assert_eq!(s.legacy_tasks().unwrap()[0]["runId"], "r");
         s.drop_legacy_tasks().unwrap();
         assert!(s.legacy_tasks().unwrap().is_empty());
-    }
-
-    #[test]
-    fn persists_across_reopen() {
-        let dir = std::env::temp_dir().join(format!("bach-test-{}", std::process::id()));
-        let path = dir.join("nested/bach.db");
-        Store::open(&path)
-            .unwrap()
-            .save(&json!({"id": "x", "blocks": [1, 2]}))
-            .unwrap();
-        assert_eq!(
-            Store::open(&path).unwrap().list().unwrap()[0]["blocks"],
-            json!([1, 2])
-        );
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

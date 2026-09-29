@@ -1,6 +1,6 @@
 import { AgentInfo, AgentKind } from "@/api";
 import { Button } from "@/components/ui/button";
-import { Session, projectName } from "@/session";
+import { NewSession as Session, projectName } from "@/session";
 import { BlockView } from "./Transcript";
 import { BranchControls, BranchHint, useGitInfo } from "./GitControls";
 import { Composer } from "./Composer";
@@ -50,7 +50,7 @@ export function NewSessionPage({ session, agents, draft, onDraft, onSend, starti
           agent={session.agent}
           agentLocked={false}
           onAgent={(agent: AgentKind) => onChange({ agent })}
-          modelChoice={session.modelChoice}
+          modelChoice={session.modelChoice ?? undefined}
           onModel={(modelChoice) => onChange({ modelChoice })}
           left={
             <>

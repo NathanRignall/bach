@@ -1,4 +1,7 @@
-import type { AgentKind, Decision, RunEvent } from "./api";
+// Sessions are kept by the backend: `Session` (generated) says what a session is and where it
+// stands, and its transcript is a list of entries. This folds those entries into the blocks the
+// transcript renders.
+import type { AgentEvent, AgentKind, Decision, Entry, LogEntry, Session } from "./api";
 
 export type Block =
   | { kind: "user"; text: string }
@@ -29,7 +32,7 @@ export interface ToolBlock {
   input: unknown;
   output?: string;
   isError?: boolean;
-  /** When the call started (client clock), to show how long it has been running. */
+  /** When the call started, to show how long it has been running. */
   startedAt?: number;
   task?: TaskInfo;
   /** What a sub-agent did while this call ran. */
@@ -51,71 +54,32 @@ export interface ApprovalBlock {
   answers?: Record<string, string>;
 }
 
-export const isSubagent = (b: ToolBlock) => !!b.task || b.name === "Agent" || b.name === "Task";
+/** A session's transcript as far as it has been loaded: its blocks, and the last entry folded in. */
+export interface Transcript {
+  blocks: Block[];
+  seq: number;
+}
 
-export interface Session {
-  id: string;
-  title: string;
-  /** The user named it, so the first prompt shouldn't. */
-  titleEdited?: boolean;
+/** What the create page sets up before the first message makes it a session. */
+export interface NewSession {
   agent: AgentKind;
-  /** The project folder; sessions are grouped by it. */
   cwd: string;
-  /** Git branch to run on (or, with `worktree`, to branch from). Defaults to the current one. */
-  branch?: string;
-  /** Run in an isolated git worktree on a new branch. */
+  branch?: string | null;
   worktree?: boolean;
-  /** Where the agent actually runs once started (a worktree path, or `cwd`). */
-  workdir?: string;
-  /** The worktree was cleaned up, so the session can be read but not continued. */
-  workdirRemoved?: boolean;
-  /** The branch the session runs on once started. */
-  gitBranch?: string;
-  agentSessionId?: string;
-  /** Permission rules the user approved "for this session"; passed to every later run. */
-  allowRules?: string[];
-  /** Model choice for Claude Code: "default" or an alias like "opus". */
-  modelChoice?: string;
-  /** The model the agent reported using on its latest run. */
-  model?: string;
-  runId?: string;
+  modelChoice?: string | null;
+  /** Why the last attempt to start it failed. */
   blocks: Block[];
 }
 
+export const isSubagent = (b: ToolBlock) => !!b.task || b.name === "Agent" || b.name === "Task";
+
 // crypto.randomUUID needs a secure context, which a page opened over plain http from another host isn't.
-const newId = () => crypto.randomUUID?.() ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+export const newId = () => crypto.randomUUID?.() ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 
-export const newSession = (agent: AgentKind, cwd = ""): Session => ({
-  id: newId(),
-  title: "New session",
-  agent,
-  cwd,
-  blocks: [],
-});
-
-/** Git settings and the project folder can't change once the session has started. */
-export const isStarted = (s: Session) => !!s.agentSessionId || !!s.workdir;
-
-/** e.g. "Fix the login bug!" -> "bach/fix-the-login-bug-a3f1" */
-export function branchNameFor(prompt: string): string {
-  const slug = prompt
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .split("-")
-    .slice(0, 5)
-    .join("-");
-  return `bach/${slug || "session"}-${Math.random().toString(16).slice(2, 6)}`;
-}
+export const newSession = (agent: AgentKind, cwd = ""): NewSession => ({ agent, cwd, blocks: [] });
 
 // Sessions saved before folders were mandatory may have none but can still be resumed.
 export const canRun = (s: Session) => !s.workdirRemoved && (!!s.cwd.trim() || !!s.agentSessionId);
-
-/**
- * A draft has nothing sent yet. It lives on the create page and isn't listed in the sidebar,
- * so opening the app or pressing "New session" never adds an empty entry.
- */
-export const isDraft = (s: Session) => !isStarted(s) && !s.blocks.some((b) => b.kind === "user");
 
 /** A session's project is its working directory. */
 export const projectKey = (cwd: string) => cwd.trim().replace(/\/+$/, "");
@@ -131,28 +95,14 @@ export function groupByProject(sessions: Session[]): [string, Session[]][] {
   return [...groups];
 }
 
-export const awaitingApproval = (s: Session) => s.blocks.some((b) => b.kind === "approval" && !b.decision);
+export const awaitingApproval = (s: Session) => s.openApprovals.length > 0;
 
-/** Approvals still open when a run ends (or after a reload) can no longer be answered. */
+/** Most recently active first, like the backend lists them. */
+export const byActivity = (a: Session, b: Session) => b.updatedAt - a.updatedAt;
+
+/** Approvals still open when a run ends (or after a restart) can no longer be answered. */
 export const expireApprovals = (blocks: Block[]): Block[] =>
   blocks.map((b) => (b.kind === "approval" && !b.decision ? { ...b, decision: "expired" } : b));
-
-export function decideApproval(
-  s: Session,
-  requestId: string,
-  decision: Decision,
-  answers?: Record<string, string>,
-): Session {
-  let rules: string[] = [];
-  const blocks = s.blocks.map((b) => {
-    if (b.kind !== "approval" || b.requestId !== requestId) return b;
-    rules = b.rules;
-    return { ...b, decision, answers };
-  });
-  // "For this session" outlasts the run: later runs are started with these rules pre-approved.
-  const allowRules = decision === "allow_session" ? [...new Set([...(s.allowRules ?? []), ...rules])] : s.allowRules;
-  return { ...s, blocks, allowRules };
-}
 
 function mapTool(blocks: Block[], id: string, f: (t: ToolBlock) => ToolBlock): Block[] {
   return blocks.map((b) => (b.kind === "tool" && b.id === id ? f(b) : b));
@@ -164,31 +114,19 @@ function place(blocks: Block[], parent: string | undefined, add: (list: Block[])
   return mapTool(blocks, parent, (t) => ({ ...t, children: add(t.children ?? []) }));
 }
 
-export function applyEvent(s: Session, e: RunEvent): Session {
-  const blocks = s.blocks;
+function applyAgentEvent(blocks: Block[], e: AgentEvent, at: number): Block[] {
   switch (e.type) {
     case "session":
-      return { ...s, agentSessionId: e.id, model: e.model ?? s.model };
+      return blocks;
     case "text":
-      return { ...s, blocks: place(blocks, e.parent, (l) => [...l, { kind: "text", text: e.text }]) };
+      return place(blocks, e.parent, (l) => [...l, { kind: "text", text: e.text }]);
     case "thinking":
-      return { ...s, blocks: [...blocks, { kind: "thinking", text: e.text }] };
+      return [...blocks, { kind: "thinking", text: e.text }];
     case "tool_use":
-      return {
-        ...s,
-        blocks: place(blocks, e.parent, (l) => [
-          ...l,
-          { kind: "tool", id: e.id, name: e.name, input: e.input, startedAt: Date.now() },
-        ]),
-      };
+      return place(blocks, e.parent, (l) => [...l, { kind: "tool", id: e.id, name: e.name, input: e.input, startedAt: at }]);
     case "tool_result": {
       const done = (t: ToolBlock): ToolBlock => ({ ...t, output: e.output, isError: e.isError });
-      return {
-        ...s,
-        blocks: e.parent
-          ? place(blocks, e.parent, (l) => mapTool(l, e.id, done))
-          : mapTool(blocks, e.id, done),
-      };
+      return e.parent ? place(blocks, e.parent, (l) => mapTool(l, e.id, done)) : mapTool(blocks, e.id, done);
     }
     case "task": {
       const patch: TaskInfo = {
@@ -204,37 +142,63 @@ export function applyEvent(s: Session, e: RunEvent): Session {
       };
       // Keep only what changed so later events don't blank earlier fields.
       const changed = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
-      return { ...s, blocks: mapTool(blocks, e.id, (t) => ({ ...t, task: { ...t.task, ...changed } })) };
+      return mapTool(blocks, e.id, (t) => ({ ...t, task: { ...t.task, ...changed } }));
     }
     case "approval":
-      return {
-        ...s,
-        blocks: [
-          ...blocks,
-          {
-            kind: "approval",
-            requestId: e.requestId,
-            toolName: e.toolName,
-            input: e.input,
-            description: e.description ?? undefined,
-            reason: e.reason ?? undefined,
-            rules: e.rules,
-            directories: e.directories ?? [],
-          },
-        ],
-      };
+      return [
+        ...blocks,
+        {
+          kind: "approval",
+          requestId: e.requestId,
+          toolName: e.toolName,
+          input: e.input,
+          description: e.description ?? undefined,
+          reason: e.reason ?? undefined,
+          rules: e.rules,
+          directories: e.directories ?? [],
+        },
+      ];
     case "approval_cancelled":
-      return {
-        ...s,
-        blocks: blocks.map((b) => (b.kind === "approval" && b.requestId === e.requestId && !b.decision ? { ...b, decision: "expired" } : b)),
-      };
+      return blocks.map((b) => (b.kind === "approval" && b.requestId === e.requestId && !b.decision ? { ...b, decision: "expired" } : b));
     case "error":
-      return { ...s, blocks: [...blocks, { kind: "error", text: e.message }] };
+      return [...blocks, { kind: "error", text: e.message }];
     case "raw":
-      return { ...s, blocks: [...blocks, { kind: "text", text: e.line }] };
+      return [...blocks, { kind: "text", text: e.line }];
     case "cancelled":
-      return { ...s, runId: undefined, blocks: [...expireApprovals(blocks), { kind: "note", text: "Stopped" }] };
+      return [...expireApprovals(blocks), { kind: "note", text: "Stopped" }];
     case "done":
-      return { ...s, runId: undefined, blocks: expireApprovals(blocks) };
+      return expireApprovals(blocks);
   }
 }
+
+function applyEntry(blocks: Block[], entry: Entry, at: number): Block[] {
+  switch (entry.type) {
+    case "user":
+      return [...blocks, { kind: "user", text: entry.text }];
+    case "agent":
+      return applyAgentEvent(blocks, entry.event, at);
+    case "decision":
+      return blocks.map((b) =>
+        b.kind === "approval" && b.requestId === entry.requestId && !b.decision
+          ? { ...b, decision: entry.decision, answers: entry.answers }
+          : b,
+      );
+    case "failed":
+      return [...blocks, { kind: "error", text: entry.message, retryText: entry.retryText }];
+    case "imported":
+      return [...blocks, ...expireApprovals(entry.blocks as unknown as Block[])];
+  }
+}
+
+/** Folds entries into a transcript. Entries it already has are skipped; a gap means it's stale. */
+export function applyEntries(t: Transcript, entries: LogEntry[]): Transcript {
+  let { blocks, seq } = t;
+  for (const e of entries) {
+    if (e.seq <= seq) continue;
+    blocks = applyEntry(blocks, e.entry, e.at);
+    seq = e.seq;
+  }
+  return { blocks, seq };
+}
+
+export const emptyTranscript: Transcript = { blocks: [], seq: 0 };

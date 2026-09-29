@@ -1,5 +1,5 @@
 import { Cpu, GitBranch, GitFork } from "lucide-react";
-import { Session } from "@/session";
+import { Session } from "@/api";
 
 /** Read-only summary of where a started session runs. */
 export function SessionHeader({ session }: { session: Session }) {
@@ -9,7 +9,7 @@ export function SessionHeader({ session }: { session: Session }) {
         {session.cwd || "No project folder"}
       </span>
       {session.gitBranch && (
-        <span className="flex shrink-0 items-center gap-1.5" title={session.workdir}>
+        <span className="flex shrink-0 items-center gap-1.5" title={session.workdir ?? undefined}>
           {session.worktree ? <GitFork className="size-3.5" /> : <GitBranch className="size-3.5" />}
           <span className="font-mono">{session.gitBranch}</span>
           {session.worktree && <span>· worktree{session.workdirRemoved ? " (removed)" : ""}</span>}

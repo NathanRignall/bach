@@ -1,20 +1,23 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { ArrowDown, ShieldAlert } from "lucide-react";
 import {
   AgentInfo,
   AgentKind,
   ApiError,
   Decision,
-  RunEvent,
-  cancelRun,
+  LogEntry,
+  Session,
+  answerApproval,
   deleteSession,
+  getSession,
   listAgents,
   listSessions,
-  onRunEvent,
-  prepareWorkspace,
-  respondApproval,
-  saveSession,
-  startRun,
+  onReconnect,
+  onSessionEvent,
+  sendMessage,
+  startSession as startSessionCall,
+  stopSession,
+  updateSession,
 } from "@/api";
 import { BlockView, TranscriptContext } from "@/components/Transcript";
 import { WorktreeCleanup } from "@/components/WorktreeCleanup";
@@ -26,16 +29,15 @@ import { Sidebar } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import {
-  Session,
-  applyEvent,
+  NewSession,
+  Transcript,
+  applyEntries,
   awaitingApproval,
-  branchNameFor,
+  byActivity,
   canRun,
-  decideApproval,
+  emptyTranscript,
   expireApprovals,
   groupByProject,
-  isDraft,
-  isStarted,
   newSession,
 } from "@/session";
 
@@ -48,10 +50,18 @@ const loadCollapsed = (): Set<string> => {
   }
 };
 
+const message = (e: unknown) => ApiError.from(e).message;
+
+/** Adds or replaces a session, keeping the list most recently active first. */
+const upsert = (all: Session[], s: Session) => [...all.filter((x) => x.id !== s.id), s].sort(byActivity);
+
 export function App() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
+  /** The open session; none means the create page. */
   const [activeId, setActiveId] = useState<string>();
+  /** What the create page is setting up. */
+  const [newDraft, setNewDraft] = useState<NewSession>(() => newSession("claude"));
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
@@ -60,57 +70,99 @@ export function App() {
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
   const tasks = useTasks();
-  // Events can arrive before startRun resolves and the session learns its run id.
-  const early = useRef(new Map<string, RunEvent[]>());
-  // What the backend already has, so unchanged sessions aren't re-saved (a save reorders history).
-  const saved = useRef(new Map<string, Session>());
+  // Transcripts of the sessions opened so far. Kept in a ref so event handlers see the latest
+  // `seq` (to spot gaps); `rerender` shows changes.
+  const transcripts = useRef(new Map<string, Transcript>());
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
+  // Transcripts being fetched, with the entries that arrived meanwhile.
+  const fetching = useRef(new Map<string, LogEntry[]>());
   // Follow new output only while the reader is at the bottom; scrolling up pins the view.
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const [showJump, setShowJump] = useState(false);
 
-  useEffect(() => {
-    Promise.all([listAgents(), listSessions()])
-      .then(([a, stored]) => {
-        setAgents(a);
-        const old = (stored as unknown as Session[]).map((s) => ({ ...s, runId: undefined, blocks: expireApprovals(s.blocks) }));
-        old.forEach((s) => saved.current.set(s.id, s));
-        // Open on a fresh session; it is only saved once it has content.
-        const fresh = newSession(old[0]?.agent ?? a.find((x) => x.installed)?.kind ?? "claude", old[0]?.cwd);
-        setSessions([fresh, ...old]);
-        setActiveId(fresh.id);
+  /** Fetches a session's transcript, or the part of it after what's already here. */
+  async function fetchTranscript(id: string) {
+    if (fetching.current.has(id)) return;
+    fetching.current.set(id, []);
+    const have = transcripts.current.get(id) ?? emptyTranscript;
+    try {
+      const log = await getSession(id, have.seq || undefined);
+      const arrived = (fetching.current.get(id) ?? []).sort((a, b) => a.seq - b.seq);
+      const current = transcripts.current.get(id) ?? emptyTranscript;
+      transcripts.current.set(id, applyEntries(applyEntries(current, log.entries), arrived));
+      setSessions((all) => upsert(all, log.session));
+      rerender();
+    } catch (e) {
+      if (ApiError.from(e).code === "not_found") setSessions((all) => all.filter((s) => s.id !== id));
+      else setConnectionError(message(e));
+    } finally {
+      fetching.current.delete(id);
+    }
+  }
+
+  function addEntry(id: string, entry: LogEntry) {
+    setSessions((all) => all.map((s) => (s.id === id ? { ...s, updatedAt: entry.at, lastSeq: entry.seq } : s)).sort(byActivity));
+    const buffer = fetching.current.get(id);
+    if (buffer) return void buffer.push(entry);
+    const t = transcripts.current.get(id);
+    if (!t) return; // not opened yet: fetched in full when it is
+    if (entry.seq > t.seq + 1) return void fetchTranscript(id); // missed some
+    transcripts.current.set(id, applyEntries(t, [entry]));
+    rerender();
+  }
+
+  const loadSessions = () =>
+    listSessions()
+      .then((list) => {
+        setSessions(list.sort(byActivity));
+        setConnectionError(undefined);
+        return list;
       })
-      .catch((e) => setConnectionError(String(e.message ?? e)))
+      .catch((e) => {
+        setConnectionError(message(e));
+        return [] as Session[];
+      });
+
+  useEffect(() => {
+    Promise.all([listAgents(), loadSessions()])
+      .then(([a, list]) => {
+        setAgents(a);
+        // Open on the create page, set up like the latest session.
+        setNewDraft(newSession(list[0]?.agent ?? a.find((x) => x.installed)?.kind ?? "claude", list[0]?.cwd));
+      })
+      .catch((e) => setConnectionError(message(e)))
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(
-    () =>
-      onRunEvent((e) =>
-        setSessions((all) => {
-          if (!all.some((s) => s.runId === e.runId)) {
-            early.current.set(e.runId, [...(early.current.get(e.runId) ?? []), e]);
-            return all;
-          }
-          return all.map((s) => (s.runId === e.runId ? applyEvent(s, e) : s));
-        }),
-      ),
-    [],
-  );
+  useEffect(() => {
+    const unEvents = onSessionEvent((e) => {
+      switch (e.type) {
+        case "changed":
+          return setSessions((all) => upsert(all, e.session));
+        case "entry":
+          return addEntry(e.sessionId, e.entry);
+        case "deleted":
+          transcripts.current.delete(e.sessionId);
+          setSessions((all) => all.filter((s) => s.id !== e.sessionId));
+          setActiveId((id) => (id === e.sessionId ? undefined : id));
+      }
+    });
+    // Whatever happened while disconnected: catch up.
+    const unReconnect = onReconnect(() => {
+      void loadSessions();
+      for (const id of transcripts.current.keys()) void fetchTranscript(id);
+    });
+    return () => (unEvents(), unReconnect());
+  }, []);
 
   const active = sessions.find((s) => s.id === activeId);
+  const transcript = activeId ? transcripts.current.get(activeId) : undefined;
 
   useEffect(() => {
-    const t = setTimeout(() => {
-      for (const s of sessions) {
-        if (!s.blocks.length || saved.current.get(s.id) === s) continue;
-        saved.current.set(s.id, s);
-        saveSession({ ...s, runId: undefined }).catch((e) => setConnectionError(String(e.message ?? e)));
-      }
-    }, 400);
-    return () => clearTimeout(t);
-  }, [sessions]);
+    if (activeId && !transcripts.current.has(activeId)) void fetchTranscript(activeId);
+  }, [activeId]);
 
   const scrollToBottom = () => {
     const el = scrollRef.current;
@@ -141,7 +193,7 @@ export function App() {
 
   // Re-pin to the bottom when switching sessions, then follow growth of the content (new
   // blocks, sub-agent steps, an expanded card) for as long as the reader hasn't scrolled up.
-  const chatShown = !!active && (isStarted(active) || !!active.workdirRemoved);
+  const chatShown = !!active;
   useEffect(() => {
     const content = contentRef.current;
     if (!content) return;
@@ -159,9 +211,6 @@ export function App() {
     document.title = anyWaiting ? "● Waiting for you — Bach" : "Bach";
   }, [anyWaiting]);
 
-  const patch = (id: string, f: (s: Session) => Session) =>
-    setSessions((all) => all.map((s) => (s.id === id ? f(s) : s)));
-
   function toggleProject(key: string) {
     const next = new Set(collapsed);
     next.has(key) ? next.delete(key) : next.add(key);
@@ -171,110 +220,76 @@ export function App() {
     } catch {}
   }
 
-  /** Opens the create page, reusing the one draft rather than piling up new ones. */
+  /** Opens the create page for a new session in `cwd`. */
   function startSession(cwd: string, agent: AgentKind) {
-    const draft = sessions.find(isDraft);
-    if (draft) {
-      patch(draft.id, (s) => ({ ...s, cwd, agent, branch: undefined, worktree: false, blocks: [] }));
-      setActiveId(draft.id);
-      return;
-    }
-    const s = newSession(agent, cwd);
-    setSessions((a) => [s, ...a]);
-    setActiveId(s.id);
+    setNewDraft(newSession(agent, cwd));
+    setActiveId(undefined);
   }
 
   async function remove(id: string) {
-    const s = sessions.find((x) => x.id === id);
-    if (s?.runId) await cancelRun(s.runId).catch(() => {});
-    saved.current.delete(id);
-    const rest = sessions.filter((x) => x.id !== id);
-    const draft = rest.find(isDraft) ?? newSession(s?.agent ?? "claude", s?.cwd);
-    setSessions(rest.includes(draft) ? rest : [draft, ...rest]);
-    if (activeId === id) setActiveId(draft.id);
-    await deleteSession(id).catch((e) => setConnectionError(String(e.message ?? e)));
+    if (activeId === id) startSession(active?.cwd ?? "", active?.agent ?? "claude");
+    await deleteSession(id).catch((e) => setConnectionError(message(e)));
   }
 
-  /** Sends the draft, or `again` (a retry) as a new message in this session. */
+  /** Sends the draft, or `again` (a retry) as a new message. On the create page, this starts the session. */
   async function send(again?: string) {
     const prompt = (again ?? draft).trim();
-    if (!active || !prompt || active.runId || starting || !canRun(active)) return;
+    if (!prompt || starting) return;
+    if (active && (active.runId || !canRun(active))) return;
     // A retry of what's sitting in the composer (a failed start puts it back) consumes it.
     if (again === undefined || draft.trim() === prompt) setDraft("");
     setStarting(true);
     followLatest();
-    // A retry from the create page shouldn't stack up errors from earlier attempts.
-    if (!isStarted(active)) patch(active.id, (s) => ({ ...s, blocks: s.blocks.filter((b) => b.kind !== "error") }));
-    const fail = (err: unknown) => {
-      if (again === undefined) setDraft(prompt);
-      const message = String((err as Error).message ?? err);
-      patch(active.id, (s) => ({ ...s, blocks: [...s.blocks, { kind: "error", text: message, retryText: prompt }] }));
-    };
     try {
-      // First message: settle where the agent runs (branch switch or a fresh worktree).
-      let workdir = active.workdir;
-      if (!isStarted(active) && active.cwd.trim()) {
-        const ws = await prepareWorkspace({
-          cwd: active.cwd.trim(),
-          branch: active.branch,
-          worktree: !!active.worktree,
-          newBranch: active.worktree ? branchNameFor(prompt) : undefined,
-        }).catch((e) => void fail(e));
-        if (!ws) return;
-        workdir = ws.workdir;
-        patch(active.id, (s) => ({ ...s, workdir: ws.workdir, gitBranch: ws.branch ?? undefined, worktree: ws.worktree }));
+      if (active) {
+        const s = await sendMessage(active.id, prompt);
+        setSessions((all) => upsert(all, s));
+      } else {
+        // A retry from the create page shouldn't stack up errors from earlier attempts.
+        setNewDraft((d) => ({ ...d, blocks: [] }));
+        const s = await startSessionCall({
+          agent: newDraft.agent,
+          cwd: newDraft.cwd.trim(),
+          branch: newDraft.branch ?? undefined,
+          worktree: !!newDraft.worktree,
+          modelChoice: newDraft.modelChoice ?? undefined,
+          prompt,
+        });
+        setSessions((all) => upsert(all, s));
+        setActiveId(s.id);
+        setNewDraft(newSession(s.agent, s.cwd));
       }
-
-      const runId = await startRun({
-        agent: active.agent,
-        prompt,
-        cwd: (workdir ?? active.cwd).trim() || undefined,
-        sessionId: active.agentSessionId,
-        model: active.agent === "claude" && active.modelChoice !== "default" ? active.modelChoice : undefined,
-        allowedTools: active.allowRules,
-        sessionKey: active.id,
-      });
-      const buffered = early.current.get(runId) ?? [];
-      early.current.delete(runId);
-      patch(active.id, (s) =>
-        buffered.reduce(applyEvent, {
-          ...s,
-          runId,
-          title: s.blocks.length || s.titleEdited ? s.title : prompt.slice(0, 40),
-          blocks: [...s.blocks, { kind: "user", text: prompt }],
-        }),
-      );
-    } catch (err) {
-      fail(err);
+    } catch (e) {
+      if (again === undefined) setDraft(prompt);
+      const err = ApiError.from(e);
+      if (!active) setNewDraft((d) => ({ ...d, blocks: [{ kind: "error", text: err.message, retryText: prompt }] }));
+      // A message the agent couldn't take is in the transcript already, with a Retry.
+      else if (err.code !== "failed") setConnectionError(err.message);
     } finally {
       setStarting(false);
     }
   }
 
   async function decide(requestId: string, decision: Decision, answers?: Record<string, string>) {
-    const s = active;
-    if (!s?.runId) return;
+    if (!active) return;
     try {
-      await respondApproval({ runId: s.runId, requestId, decision, answers });
-      patch(s.id, (x) => decideApproval(x, requestId, decision, answers));
+      await answerApproval({ sessionId: active.id, requestId, decision, answers });
     } catch (e) {
       const err = ApiError.from(e);
-      if (err.code !== "not_found") {
-        // Rejected (e.g. an incomplete answer): the agent is still waiting, so leave it open.
-        setConnectionError(err.message);
-        return;
-      }
-      // The run moved on without it (finished, stopped, or the agent withdrew the request).
-      patch(s.id, (x) => ({
-        ...x,
-        blocks: x.blocks.map((b) => (b.kind === "approval" && b.requestId === requestId && !b.decision ? { ...b, decision: "expired" } : b)),
-      }));
+      // Gone (the run ended, or the agent withdrew it) is shown by the transcript; anything
+      // else was refused (e.g. an incomplete answer), and the agent is still waiting.
+      if (err.code !== "not_found") setConnectionError(err.message);
     }
   }
 
+  const update = (args: Parameters<typeof updateSession>[0]) =>
+    updateSession(args)
+      .then((s) => setSessions((all) => upsert(all, s)))
+      .catch((e) => setConnectionError(message(e)));
+
   /** Sends a message again as a new turn (the agent still remembers the earlier one). */
   function retry(text?: string) {
-    const last = [...(active?.blocks ?? [])].reverse().find((b) => b.kind === "user");
+    const last = [...(transcript?.blocks ?? [])].reverse().find((b) => b.kind === "user");
     const prompt = text ?? (last?.kind === "user" ? last.text : undefined);
     if (prompt) void send(prompt);
   }
@@ -288,56 +303,50 @@ export function App() {
   }
 
   const running = !!active?.runId;
-  // A session is set up on the create page until it has started (also after a failed start).
-  const isNew = !!active && !isStarted(active) && !active.workdirRemoved;
-  const recentProjects = groupByProject(sessions.filter((s) => !isDraft(s)))
+  // Approvals left open by a run that is over (e.g. the backend restarted) can't be answered.
+  const blocks = running ? (transcript?.blocks ?? []) : expireApprovals(transcript?.blocks ?? []);
+  const recentProjects = groupByProject(sessions)
     .map(([key]) => key)
-    .filter((k) => k && k !== active?.cwd.trim())
+    .filter((k) => k && k !== newDraft.cwd.trim())
     .slice(0, 5);
 
   return (
     <div className="flex h-dvh bg-background text-foreground">
       <Sidebar
-        sessions={sessions.filter((s) => !isDraft(s))}
+        sessions={sessions}
         activeId={activeId}
         collapsed={collapsed}
         onSelect={setActiveId}
-        onNew={() => startSession(active?.cwd ?? "", active?.agent ?? "claude")}
+        onNew={() => startSession(active?.cwd ?? newDraft.cwd, active?.agent ?? newDraft.agent)}
         onNewInProject={startSession}
         onToggleProject={toggleProject}
         onDelete={(id) => void remove(id)}
-        onRename={(id, title) => patch(id, (s) => ({ ...s, title, titleEdited: true }))}
+        onRename={(id, title) => void update({ sessionId: id, title })}
         onOpenCleanup={() => setCleanupOpen(true)}
         runningTasks={tasks.tasks.filter((t) => t.status === "running").length}
         onToggleTasks={() => setTasksOpen((v) => !v)}
       />
 
       {cleanupOpen && (
-        <WorktreeCleanup
-          sessions={sessions}
-          onClose={() => setCleanupOpen(false)}
-          // Their folder is gone: keep the transcript readable, but they can't be continued.
-          onRemoved={(path) => setSessions((all) => all.map((s) => (s.workdir === path ? { ...s, workdirRemoved: true } : s)))}
-        />
+        <WorktreeCleanup sessions={sessions} onClose={() => setCleanupOpen(false)} />
       )}
 
       <main className="flex min-w-0 flex-1 flex-col">
         {!active && connectionError && <p className="p-6 text-sm text-destructive">{connectionError}</p>}
-        {active && isNew && (
+        {!active && (
           <NewSessionPage
-            key={active.id}
-            session={active}
+            session={newDraft}
             agents={agents}
             draft={draft}
             onDraft={setDraft}
             onSend={() => void send()}
             starting={starting}
             recentProjects={recentProjects}
-            onChange={(p) => patch(active.id, (s) => ({ ...s, ...p }))}
+            onChange={(p) => setNewDraft((d) => ({ ...d, ...p }))}
             error={connectionError}
           />
         )}
-        {active && !isNew && (
+        {active && (
           <>
             <SessionHeader session={active} />
 
@@ -350,14 +359,14 @@ export function App() {
                       {connectionError}
                     </p>
                   )}
-                  {active.blocks.map((b, i) => (
+                  {blocks.map((b, i) => (
                     <BlockView key={i} block={b} live={running} />
                   ))}
                   {(running || starting) &&
                     (awaitingApproval(active) ? (
                       <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
                         <ShieldAlert className="size-4 animate-pulse text-primary" />{" "}
-                        {active.blocks.some((b) => b.kind === "approval" && !b.decision && b.toolName === "AskUserQuestion")
+                        {blocks.some((b) => b.kind === "approval" && !b.decision && b.toolName === "AskUserQuestion")
                           ? "Waiting for your answer"
                           : "Waiting for your approval"}
                       </div>
@@ -387,7 +396,7 @@ export function App() {
                 draft={draft}
                 onDraft={setDraft}
                 onSend={() => void send()}
-                onStop={() => void cancelRun(active.runId!)}
+                onStop={() => void stopSession(active.id).catch((e) => setConnectionError(message(e)))}
                 running={running}
                 starting={starting}
                 blockedReason={canRun(active) ? undefined : "This session can't be continued"}
@@ -396,8 +405,8 @@ export function App() {
                 agent={active.agent}
                 agentLocked
                 onAgent={() => {}}
-                modelChoice={active.modelChoice}
-                onModel={(modelChoice) => patch(active.id, (s) => ({ ...s, modelChoice }))}
+                modelChoice={active.modelChoice ?? undefined}
+                onModel={(modelChoice) => void update({ sessionId: active.id, modelChoice })}
               />
             </div>
           </>
@@ -409,7 +418,7 @@ export function App() {
           tasks={tasks.tasks}
           error={tasks.error}
           refresh={() => void tasks.refresh()}
-          defaultCwd={(active?.workdir ?? active?.cwd ?? "").trim()}
+          defaultCwd={(active?.workdir ?? active?.cwd ?? newDraft.cwd).trim()}
           onClose={() => setTasksOpen(false)}
         />
       )}

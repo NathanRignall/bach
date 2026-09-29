@@ -8,7 +8,8 @@
 //! arguments are a struct named after it with an `Args` suffix; its doc comment documents the
 //! command.
 use crate::{
-    AgentInfo, AgentKind, ApiError, Decision, DirListing, GitInfo, Workspace, WorktreeEntry,
+    AgentInfo, AgentKind, ApiError, Decision, DirListing, GitInfo, Session, SessionLog,
+    WorktreeEntry,
 };
 use satie_protocol::{
     ListTasksArgs, LogChunk, RemoveTaskArgs, StartTaskArgs, StopTaskArgs, Task, TaskLogChunkArgs,
@@ -88,13 +89,18 @@ fn parse_args<T: DeserializeOwned>(cmd: &str, args: Value) -> Result<T, ApiError
 
 commands! {
     list_agents(ListAgentsArgs) -> Vec<AgentInfo>;
-    start_run(StartRunArgs) -> String;
-    cancel_run(CancelRunArgs) -> ();
-    respond_approval(RespondApprovalArgs) -> ();
+
+    list_sessions(ListSessionsArgs) -> Vec<Session>;
+    get_session(GetSessionArgs) -> SessionLog;
+    start_session(StartSessionArgs) -> Session;
+    send_message(SendMessageArgs) -> Session;
+    stop_session(StopSessionArgs) -> ();
+    answer_approval(AnswerApprovalArgs) -> ();
+    update_session(UpdateSessionArgs) -> Session;
+    delete_session(DeleteSessionArgs) -> ();
 
     list_dir(ListDirArgs) -> DirListing;
     git_info(GitInfoArgs) -> GitInfo;
-    prepare_workspace(PrepareWorkspaceArgs) -> Workspace;
     list_worktrees(ListWorktreesArgs) -> Vec<WorktreeEntry>;
     remove_worktree(RemoveWorktreeArgs) -> ();
 
@@ -104,55 +110,87 @@ commands! {
     stop_task(StopTaskArgs) -> Task;
     remove_task(RemoveTaskArgs) -> ();
     start_task(StartTaskArgs) -> Task;
-
-    list_sessions(ListSessionsArgs) -> Vec<Value>;
-    save_session(SaveSessionArgs) -> ();
-    delete_session(DeleteSessionArgs) -> ();
 }
 
 // ---------------------------------------------------------------------------------------------
-// Agents and runs
+// Agents and sessions
 // ---------------------------------------------------------------------------------------------
 
 /// The agent CLIs Bach knows, and which are installed on the backend host.
 #[derive(Debug, Default, Deserialize, TS)]
 pub struct ListAgentsArgs {}
 
-/// Starts one turn of an agent and returns its run id. Its events arrive as `run` events.
+/// Every session, most recently active first (without transcripts).
+#[derive(Debug, Default, Deserialize, TS)]
+pub struct ListSessionsArgs {}
+
+/// A session and its transcript, or only the entries after `afterSeq`.
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(optional_fields)]
-pub struct StartRunArgs {
+pub struct GetSessionArgs {
+    pub session_id: String,
+    pub after_seq: Option<u64>,
+}
+
+/// Creates a session and sends its first message. Readies where it runs first: switches `cwd` to
+/// `branch`, or (with `worktree`) creates a new branch from it in an isolated worktree. Nothing is
+/// saved if that, or starting the agent, fails.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(optional_fields)]
+pub struct StartSessionArgs {
     pub agent: AgentKind,
+    pub cwd: String,
+    pub branch: Option<String>,
+    pub worktree: Option<bool>,
+    pub model_choice: Option<String>,
     pub prompt: String,
-    pub cwd: Option<String>,
-    /// The agent's own session id, to continue an earlier conversation.
-    pub session_id: Option<String>,
-    pub model: Option<String>,
-    /// Permission rules approved earlier in the session.
-    pub allowed_tools: Option<Vec<String>>,
-    /// The UI session this run belongs to, so deleting it stops the run.
-    pub session_key: Option<String>,
 }
 
-/// Stops a run. Stopping one that already ended does nothing.
+/// Sends a message to a session's agent. The session must not be running.
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct CancelRunArgs {
-    pub run_id: String,
+pub struct SendMessageArgs {
+    pub session_id: String,
+    pub prompt: String,
 }
 
-/// Answers an approval request (or a question) a run is waiting on.
+/// Stops the session's agent run, if one is going.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StopSessionArgs {
+    pub session_id: String,
+}
+
+/// Answers an approval request (or a question) the session's agent is waiting on.
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(optional_fields)]
-pub struct RespondApprovalArgs {
-    pub run_id: String,
+pub struct AnswerApprovalArgs {
+    pub session_id: String,
     pub request_id: String,
     pub decision: Decision,
     pub message: Option<String>,
     /// For a question from the agent: the chosen answer per question text.
     pub answers: Option<HashMap<String, String>>,
+}
+
+/// Renames a session, or changes the model its next messages use (`""` for the default).
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(optional_fields)]
+pub struct UpdateSessionArgs {
+    pub session_id: String,
+    pub title: Option<String>,
+    pub model_choice: Option<String>,
+}
+
+/// Deletes a session and stops its run (its background tasks keep going).
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteSessionArgs {
+    pub session_id: String,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -175,23 +213,11 @@ pub struct GitInfoArgs {
     pub path: String,
 }
 
-/// Readies where a new session runs: switches `cwd` to `branch`, or (with `worktree`) creates
-/// `newBranch` from `branch` in an isolated worktree.
-#[derive(Debug, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(optional_fields)]
-pub struct PrepareWorkspaceArgs {
-    pub cwd: String,
-    pub branch: Option<String>,
-    pub worktree: Option<bool>,
-    pub new_branch: Option<String>,
-}
-
 /// Worktrees Bach created on the backend host.
 #[derive(Debug, Default, Deserialize, TS)]
 pub struct ListWorktreesArgs {}
 
-/// Removes a worktree Bach created.
+/// Removes a worktree Bach created. Sessions that ran in it can still be read, not continued.
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(optional_fields)]
@@ -201,25 +227,4 @@ pub struct RemoveWorktreeArgs {
     pub discard: Option<bool>,
     /// Also delete its branch.
     pub delete_branch: Option<bool>,
-}
-
-// ---------------------------------------------------------------------------------------------
-// Sessions
-// ---------------------------------------------------------------------------------------------
-
-/// Saved sessions, most recently saved first.
-#[derive(Debug, Default, Deserialize, TS)]
-pub struct ListSessionsArgs {}
-
-/// Saves (inserts or replaces) a session. Sessions are the frontend's JSON; only `id` is read.
-#[derive(Debug, Deserialize, TS)]
-pub struct SaveSessionArgs {
-    pub session: Value,
-}
-
-/// Deletes a session and stops its runs (its background tasks keep going).
-#[derive(Debug, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct DeleteSessionArgs {
-    pub session_id: String,
 }

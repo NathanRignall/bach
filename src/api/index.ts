@@ -1,7 +1,7 @@
 // The typed client for Bach's backend. Commands, their arguments and results, and every type they
 // use are generated from Rust (crates/bach-protocol) into ./generated/protocol.ts.
 import { remoteUrl } from "./backend";
-import type { Commands, RunEvent, ServerEvent, TaskEvent } from "./generated/protocol";
+import type { Commands, ServerEvent, SessionEvent, TaskEvent } from "./generated/protocol";
 import { SocketTransport, TauriTransport, type Transport } from "./transport";
 
 export * from "./generated/protocol";
@@ -34,21 +34,26 @@ export const onTaskEvent = (cb: (e: TaskEvent) => void) =>
     if (e.topic === "task") cb(e.data);
   });
 
-/** Events from agent runs. */
-export const onRunEvent = (cb: (e: RunEvent) => void) =>
+/** Changes to sessions and their transcripts. */
+export const onSessionEvent = (cb: (e: SessionEvent) => void) =>
   onEvent((e) => {
-    if (e.topic === "run") cb(e.data);
+    if (e.topic === "session") cb(e.data);
   });
 
 // Shorthands for the commands the UI uses most.
 export const listAgents = () => call("list_agents");
-export const startRun = (args: Args<"start_run">) => call("start_run", args);
-export const respondApproval = (args: Args<"respond_approval">) => call("respond_approval", args);
-export const cancelRun = (runId: string) => call("cancel_run", { runId });
+
+export const listSessions = () => call("list_sessions");
+export const getSession = (sessionId: string, afterSeq?: number) => call("get_session", { sessionId, afterSeq });
+export const startSession = (args: Args<"start_session">) => call("start_session", args);
+export const sendMessage = (sessionId: string, prompt: string) => call("send_message", { sessionId, prompt });
+export const stopSession = (sessionId: string) => call("stop_session", { sessionId });
+export const answerApproval = (args: Args<"answer_approval">) => call("answer_approval", args);
+export const updateSession = (args: Args<"update_session">) => call("update_session", args);
+export const deleteSession = (sessionId: string) => call("delete_session", { sessionId });
 
 export const listDir = (path?: string, showHidden = false) => call("list_dir", { path, showHidden });
 export const gitInfo = (path: string) => call("git_info", { path });
-export const prepareWorkspace = (args: Args<"prepare_workspace">) => call("prepare_workspace", args);
 export const listWorktrees = () => call("list_worktrees");
 export const removeWorktree = (args: Args<"remove_worktree">) => call("remove_worktree", args);
 
@@ -59,8 +64,3 @@ export const taskLogChunk = (taskId: string, from?: number, maxBytes?: number) =
 export const stopTask = (taskId: string) => call("stop_task", { taskId });
 export const removeTask = (taskId: string) => call("remove_task", { taskId });
 export const startTask = (args: Args<"start_task">) => call("start_task", args);
-
-/** Sessions are saved by whichever backend is in use (local app data, or the bach-server host). */
-export const listSessions = () => call("list_sessions");
-export const saveSession = (session: object) => call("save_session", { session: session as Args<"save_session">["session"] });
-export const deleteSession = (sessionId: string) => call("delete_session", { sessionId });

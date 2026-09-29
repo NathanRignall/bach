@@ -40,6 +40,7 @@ async fn cancel_kills_the_agent_and_ends_the_run() {
                 model: None,
                 allowed_tools: vec![],
                 session_key: None,
+                run_id: None,
             },
         )
         .await
@@ -79,6 +80,7 @@ async fn cancel_kills_the_agent_and_ends_the_run() {
             model: None,
             allowed_tools: vec![],
             session_key: Some(key.to_string()),
+            run_id: None,
         };
         let runs = &runs;
         async move {

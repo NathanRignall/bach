@@ -32,6 +32,7 @@ async fn run(dir: &std::path::Path, mode: &str) -> Vec<Value> {
                 model: None,
                 allowed_tools: vec![],
                 session_key: None,
+                run_id: None,
             },
         )
         .await

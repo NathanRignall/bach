@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { Session, awaitingApproval, groupByProject, projectName } from "@/session";
+import { Session } from "@/api";
+import { awaitingApproval, groupByProject, projectName } from "@/session";
 import { BackendPicker } from "./BackendPicker";
 
 interface Props {

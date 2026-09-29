@@ -1,8 +1,9 @@
 use crate::{
     adapters::{AgentCli, AgentEvent, AgentKind},
 };
-pub use bach_protocol::{Decision, RunEvent};
+pub use bach_protocol::Decision;
 use bach_protocol::ApiError;
+use serde::Serialize;
 use satie::{Satie, Scope};
 use serde_json::{json, Value};
 use std::{collections::HashMap, os::unix::process::ExitStatusExt, process::Stdio, sync::Arc};
@@ -12,8 +13,17 @@ use tokio::{
     sync::{oneshot, Mutex},
 };
 
-/// Delivers events to whichever transport (Tauri window, WebSocket) is listening.
+/// Where a run's events go (the session it belongs to).
 pub type Emit = Arc<dyn Fn(RunEvent) + Send + Sync>;
+
+/// One event from an agent run.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunEvent {
+    pub run_id: String,
+    #[serde(flatten)]
+    pub event: AgentEvent,
+}
 
 /// Everything needed to start one turn of an agent.
 pub struct RunRequest {
@@ -25,12 +35,15 @@ pub struct RunRequest {
     pub model: Option<String>,
     /// Permission rules approved earlier in this session.
     pub allowed_tools: Vec<String>,
-    /// The UI session this run belongs to, so deleting that session can stop it even if the
-    /// page has forgotten the run (after a reload, say).
+    /// The session this run belongs to, so deleting the session stops it.
     pub session_key: Option<String>,
+    /// The id to give the run (a new one if not set).
+    pub run_id: Option<String>,
 }
 
 struct PendingApproval {
+    /// The rules an "allow for this session / always" answer grants.
+    rules: Vec<String>,
     tool_name: String,
     input: Value,
     suggestions: Value,
@@ -139,6 +152,7 @@ impl Runs {
             model,
             allowed_tools,
             session_key,
+            run_id,
         } = req;
 
         // Passed straight to the CLI, so keep to plausible model names (aliases like `opus`,
@@ -183,7 +197,7 @@ impl Runs {
 
         // Claude Code gets Satie as an MCP server, with a token scoped to this project. The grant
         // is revoked when the run ends (or if launching fails below).
-        let run_id = uuid::Uuid::new_v4().to_string();
+        let run_id = run_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let grant = match (&self.satie, agent) {
             (Some(satie), AgentKind::Claude) => Some(satie.grant(Scope {
                 project: project.as_ref().map(|p| p.to_string_lossy().into_owned()),
@@ -285,10 +299,11 @@ impl Runs {
                                     });
                                 }
                                 match &ev {
-                                    AgentEvent::Approval { request_id, tool_name, input, suggestions, .. } => {
+                                    AgentEvent::Approval { request_id, tool_name, input, suggestions, rules, .. } => {
                                         pending.lock().unwrap().insert(
                                             request_id.clone(),
                                             PendingApproval {
+                                                rules: rules.clone(),
                                                 tool_name: tool_name.clone(),
                                                 input: input.clone(),
                                                 suggestions: suggestions.clone(),
@@ -358,6 +373,10 @@ impl Runs {
         Ok(run_id)
     }
 
+    pub async fn is_live(&self, run_id: &str) -> bool {
+        self.live.lock().await.contains_key(run_id)
+    }
+
     pub async fn cancel(&self, run_id: &str) {
         let live = self.live.lock().await.remove(run_id);
         if let Some(tx) = live.and_then(|l| l.cancel) {
@@ -381,7 +400,8 @@ impl Runs {
         ids.len()
     }
 
-    /// Answers an approval request the agent is waiting on.
+    /// Answers an approval request the agent is waiting on. Returns the rules the request
+    /// offered (what an "allow for this session" answer grants).
     pub async fn respond_approval(
         &self,
         run_id: &str,
@@ -389,7 +409,7 @@ impl Runs {
         decision: Decision,
         message: Option<String>,
         answers: Option<HashMap<String, String>>,
-    ) -> Result<(), ApiError> {
+    ) -> Result<Vec<String>, ApiError> {
         let finished = || ApiError::not_found("That run has already finished.");
         let (stdin, pending) = {
             let runs = self.live.lock().await;
@@ -405,9 +425,10 @@ impl Runs {
                 .ok_or_else(|| ApiError::not_found("That approval is no longer pending."))?;
             let response =
                 build_response(approval, decision, message, answers).map_err(ApiError::invalid)?;
-            list.remove(request_id);
-            response
+            let rules = list.remove(request_id).map(|a| a.rules).unwrap_or_default();
+            (response, rules)
         };
+        let (response, rules) = response;
         let line = json!({
             "type": "control_response",
             "response": { "subtype": "success", "request_id": request_id, "response": response },
@@ -419,7 +440,8 @@ impl Runs {
         w.write_all(format!("{line}\n").as_bytes())
             .await
             .map_err(failed)?;
-        w.flush().await.map_err(failed)
+        w.flush().await.map_err(failed)?;
+        Ok(rules)
     }
 }
 
@@ -440,6 +462,7 @@ mod tests {
             model: model.map(String::from),
             allowed_tools: rules.iter().map(|r| r.to_string()).collect(),
             session_key: None,
+            run_id: None,
         }
     }
 

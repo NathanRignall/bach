@@ -7,16 +7,15 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
-import { Session } from "@/session";
+import { Session } from "@/api";
 
 interface Props {
   sessions: Session[];
-  onRemoved: (path: string) => void;
   onClose: () => void;
 }
 
 /** Lists worktrees Bach created on the backend host and removes them, guarding unsaved work. */
-export function WorktreeCleanup({ sessions, onRemoved, onClose }: Props) {
+export function WorktreeCleanup({ sessions, onClose }: Props) {
   const [entries, setEntries] = useState<WorktreeEntry[]>();
   const [error, setError] = useState<string>();
   const [deleteBranch, setDeleteBranch] = useState(true);
@@ -36,8 +35,8 @@ export function WorktreeCleanup({ sessions, onRemoved, onClose }: Props) {
     setConfirming(undefined);
     setRemoving(w.path);
     try {
+      // The backend marks sessions that ran there as no longer continuable.
       await removeWorktree({ path: w.path, discard: unsafe, deleteBranch });
-      onRemoved(w.path);
       setError(undefined);
     } catch (e) {
       setError(String((e as Error).message ?? e));
