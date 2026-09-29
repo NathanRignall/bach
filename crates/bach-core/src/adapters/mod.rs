@@ -23,9 +23,13 @@ pub trait AgentCli: Copy {
     ///
     /// `allowed_tools` are permission rules (e.g. `Bash(tmux ls *)`) approved earlier in the
     /// session; only Claude Code takes them.
+    ///
+    /// `image_files` are paths of images to attach, for agents that take them as files (see
+    /// [`AgentCli::images_as_files`]).
     fn args(
         self,
         prompt: &str,
+        image_files: &[String],
         session_id: Option<&str>,
         model: Option<&str>,
         permission_mode: Option<&str>,
@@ -34,8 +38,13 @@ pub trait AgentCli: Copy {
     ) -> Vec<String>;
 
     /// For agents driven over stdin (Claude Code, so it can ask for approvals): the first
-    /// line to send. Those agents stay open for control messages until the run ends.
-    fn stdin_prompt(self, prompt: &str) -> Option<String>;
+    /// line to send, with `images` (`data:` URLs) alongside the text. Those agents stay open
+    /// for control messages until the run ends.
+    fn stdin_prompt(self, prompt: &str, images: &[String]) -> Option<String>;
+
+    /// Whether images must be written to files and passed by path (Codex, opencode) rather
+    /// than sent inline with the prompt (Claude Code).
+    fn images_as_files(self) -> bool;
 
     fn parse_line(self, line: &str) -> Vec<AgentEvent>;
 }
@@ -52,6 +61,7 @@ impl AgentCli for AgentKind {
     fn args(
         self,
         prompt: &str,
+        image_files: &[String],
         session_id: Option<&str>,
         model: Option<&str>,
         permission_mode: Option<&str>,
@@ -62,16 +72,20 @@ impl AgentCli for AgentKind {
             AgentKind::Claude => {
                 claude::args(session_id, model, permission_mode, allowed_tools, satie)
             }
-            AgentKind::Codex => codex::args(prompt, session_id, model),
-            AgentKind::Opencode => opencode::args(prompt, session_id, model),
+            AgentKind::Codex => codex::args(prompt, image_files, session_id, model),
+            AgentKind::Opencode => opencode::args(prompt, image_files, session_id, model),
         }
     }
 
-    fn stdin_prompt(self, prompt: &str) -> Option<String> {
+    fn stdin_prompt(self, prompt: &str, images: &[String]) -> Option<String> {
         match self {
-            AgentKind::Claude => Some(claude::user_message(prompt)),
+            AgentKind::Claude => Some(claude::user_message(prompt, images)),
             _ => None,
         }
+    }
+
+    fn images_as_files(self) -> bool {
+        self != AgentKind::Claude
     }
 
     fn parse_line(self, line: &str) -> Vec<AgentEvent> {
@@ -121,6 +135,76 @@ mod tests {
         assert!(matches!(&events[2], AgentEvent::ToolUse { name, .. } if name == "Bash"));
         assert!(matches!(&events[3], AgentEvent::ToolResult { output, .. } if output == "ok"));
         assert!(matches!(&events[4], AgentEvent::Done { .. }));
+    }
+
+    #[test]
+    fn claude_prompt_images_become_image_blocks() {
+        let plain: Value =
+            serde_json::from_str(&AgentKind::Claude.stdin_prompt("hi", &[]).unwrap()).unwrap();
+        assert_eq!(plain["message"]["content"], "hi");
+
+        let images = ["data:image/png;base64,AAAA".to_string()];
+        let line = AgentKind::Claude.stdin_prompt("look", &images).unwrap();
+        let v: Value = serde_json::from_str(&line).unwrap();
+        let content = &v["message"]["content"];
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[0]["source"]["media_type"], "image/png");
+        assert_eq!(content[0]["source"]["data"], "AAAA");
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "look");
+
+        // Images alone need no empty text block.
+        let line = AgentKind::Claude.stdin_prompt("", &images).unwrap();
+        let v: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["message"]["content"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn codex_and_opencode_take_images_as_files_before_the_prompt() {
+        let files = ["/tmp/a.png".to_string(), "/tmp/b.jpg".to_string()];
+        let codex = AgentKind::Codex.args("-look", &files, None, None, None, &[], None);
+        assert_eq!(
+            codex,
+            [
+                "exec",
+                "--json",
+                "--image=/tmp/a.png",
+                "--image=/tmp/b.jpg",
+                "--",
+                "-look"
+            ]
+        );
+        let resumed = AgentKind::Codex.args("hi", &files[..1], Some("t1"), None, None, &[], None);
+        assert_eq!(
+            resumed,
+            [
+                "exec",
+                "resume",
+                "--json",
+                "--image=/tmp/a.png",
+                "--",
+                "t1",
+                "hi"
+            ]
+        );
+
+        let opencode = AgentKind::Opencode.args("hi", &files, Some("s1"), None, None, &[], None);
+        assert_eq!(
+            opencode,
+            [
+                "run",
+                "--format",
+                "json",
+                "--session",
+                "s1",
+                "--file=/tmp/a.png",
+                "--file=/tmp/b.jpg",
+                "--",
+                "hi"
+            ]
+        );
+        assert!(AgentKind::Codex.images_as_files() && AgentKind::Opencode.images_as_files());
+        assert!(!AgentKind::Claude.images_as_files());
     }
 
     #[test]

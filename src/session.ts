@@ -4,7 +4,7 @@
 import type { AgentEvent, AgentKind, Decision, Entry, LogEntry, Session } from "./api";
 
 export type Block =
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; /** Sent with it, as `data:` URLs. */ images?: string[] }
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
   | ToolBlock
@@ -184,7 +184,7 @@ function applyAgentEvent(blocks: Block[], e: AgentEvent, at: number): Block[] {
 function applyEntry(blocks: Block[], entry: Entry, at: number): Block[] {
   switch (entry.type) {
     case "user":
-      return [...blocks, { kind: "user", text: entry.text }];
+      return [...blocks, { kind: "user", text: entry.text, images: entry.images }];
     case "agent":
       return applyAgentEvent(blocks, entry.event, at);
     case "decision":

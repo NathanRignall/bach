@@ -376,7 +376,7 @@ mod tests {
         s.put(&session("a")).unwrap();
         s.put(&session("b")).unwrap();
         // Activity makes a session the most recent.
-        let (e1, a) = s.append("a", Entry::User { text: "hi".into() }).unwrap().unwrap();
+        let (e1, a) = s.append("a", Entry::User { text: "hi".into(), images: vec![] }).unwrap().unwrap();
         let (e2, _) = s
             .append(
                 "a",
@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(ids, ["a", "b"]);
         assert_eq!(s.entries("a", 0).unwrap().len(), 2);
         assert_eq!(s.entries("a", 1).unwrap()[0].seq, 2);
-        assert!(s.append("nope", Entry::User { text: "x".into() }).unwrap().is_none());
+        assert!(s.append("nope", Entry::User { text: "x".into(), images: vec![] }).unwrap().is_none());
 
         // Updates can refuse.
         let r = s.update("a", |s| {

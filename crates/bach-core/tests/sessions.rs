@@ -172,10 +172,14 @@ async fn a_session_from_first_message_to_deletion() {
     assert!(second.contains("Bash(tmux ls *)"), "{second}");
 
     // A message queued meanwhile goes as soon as the run finishes, without the session ever
-    // looking idle in between.
-    api.call("send_message", json!({ "sessionId": id, "prompt": "queued" }))
-        .await
-        .unwrap();
+    // looking idle in between, images and all.
+    let image = "data:image/png;base64,AAAA";
+    api.call(
+        "send_message",
+        json!({ "sessionId": id, "prompt": "queued", "images": [image] }),
+    )
+    .await
+    .unwrap();
     drain(&mut events);
     api.call(
         "answer_approval",
@@ -191,7 +195,9 @@ async fn a_session_from_first_message_to_deletion() {
         if session.run_id.is_none() && !session.queued.is_empty())));
     assert_eq!(args().lines().count(), 3);
     let (_, entries) = session(&api, &id).await;
-    assert!(entries.iter().any(|e| e["entry"]["text"] == "queued"));
+    assert!(entries
+        .iter()
+        .any(|e| e["entry"]["text"] == "queued" && e["entry"]["images"] == json!([image])));
 
     // Stopping a run leaves the queue waiting, to be sent by hand.
     let s: Session = serde_json::from_value(
@@ -250,13 +256,14 @@ async fn a_session_from_first_message_to_deletion() {
 
     // A first message that can't reach an agent leaves nothing behind.
     let before = api.call("list_sessions", Value::Null).await.unwrap();
-    let e = api
-        .call(
-            "start_session",
-            json!({ "agent": "codex", "cwd": proj, "prompt": "hi", "modelChoice": "x" }),
-        )
-        .await;
+    // (Only without Codex installed: with it, this would start a real run.)
     if which_codex_missing() {
+        let e = api
+            .call(
+                "start_session",
+                json!({ "agent": "codex", "cwd": proj, "prompt": "hi", "modelChoice": "x" }),
+            )
+            .await;
         assert!(e.is_err());
         assert_eq!(api.call("list_sessions", Value::Null).await.unwrap(), before);
     }

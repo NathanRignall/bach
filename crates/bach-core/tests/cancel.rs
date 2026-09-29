@@ -35,6 +35,7 @@ async fn cancel_kills_the_agent_and_ends_the_run() {
             RunRequest {
                 agent: AgentKind::Claude,
                 prompt: "hi".into(),
+                images: vec![],
                 cwd: Some(dir.to_string_lossy().into()),
                 session_id: None,
                 model: None,
@@ -76,6 +77,7 @@ async fn cancel_kills_the_agent_and_ends_the_run() {
         let req = RunRequest {
             agent: AgentKind::Claude,
             prompt: "hi".into(),
+            images: vec![],
             cwd: Some(dir.to_string_lossy().into()),
             session_id: None,
             model: None,

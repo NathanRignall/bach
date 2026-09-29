@@ -59,6 +59,8 @@ export const forwardPort = (port: number) => invoke<PortForward>("forward_port",
 export const stopForward = (port: number) => invoke<void>("stop_forward", { port });
 /** Opens the port in the default browser, forwarding it first when agents run elsewhere. */
 export const openPort = (port: number) => invoke<void>("open_port", { port });
+/** Opens a web or mail link in the default browser. */
+export const openUrl = (url: string) => invoke<void>("open_url", { url });
 export const setAutoForward = (auto: boolean) => invoke<void>("set_auto_forward", { auto });
 
 export function onForwarding(cb: (f: Forwarding) => void): () => void {

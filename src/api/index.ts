@@ -15,6 +15,7 @@ export {
   onConnection,
   onForwarding,
   openPort,
+  openUrl,
   relaunchApp,
   remoteUrl,
   restartServer,
@@ -75,7 +76,8 @@ export const getUsage = () => call("get_usage");
 export const listSessions = () => call("list_sessions");
 export const getSession = (sessionId: string, afterSeq?: number) => call("get_session", { sessionId, afterSeq });
 export const startSession = (args: Args<"start_session">) => call("start_session", args);
-export const sendMessage = (sessionId: string, prompt: string) => call("send_message", { sessionId, prompt });
+export const sendMessage = (sessionId: string, prompt: string, images: string[] = []) =>
+  call("send_message", { sessionId, prompt, images });
 export const sendQueued = (sessionId: string, messageId: string) => call("send_queued", { sessionId, messageId });
 export const removeQueued = (sessionId: string, messageId: string) => call("remove_queued", { sessionId, messageId });
 export const stopSession = (sessionId: string) => call("stop_session", { sessionId });

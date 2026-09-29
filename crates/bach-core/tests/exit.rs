@@ -27,6 +27,7 @@ async fn run(dir: &std::path::Path, mode: &str) -> Vec<Value> {
             RunRequest {
                 agent: AgentKind::Claude,
                 prompt: "hi".into(),
+                images: vec![],
                 cwd: Some(dir.to_string_lossy().into()),
                 session_id: None,
                 model: None,

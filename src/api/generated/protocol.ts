@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "2b42d7e2bff05897";
+export const PROTOCOL = "60a7ed8edabe2c83";
 
 /**
  * Agent-independent events the UI renders.
@@ -152,7 +152,11 @@ export type DirListing = { path: string, parent: string | null, home: string, en
 /**
  * One step of a session's transcript.
  */
-export type Entry = { "type": "user", text: string, } | { "type": "agent", runId: string, event: AgentEvent, } | { "type": "decision", requestId: string, decision: Decision, answers?: { [key in string]: string }, } | { "type": "failed", message: string, retryText?: string, } | { "type": "imported", blocks: JsonValue, };
+export type Entry = { "type": "user", text: string, 
+/**
+ * Images sent with it, as `data:` URLs.
+ */
+images?: Array<string>, } | { "type": "agent", runId: string, event: AgentEvent, } | { "type": "decision", requestId: string, decision: Decision, answers?: { [key in string]: string }, } | { "type": "failed", message: string, retryText?: string, } | { "type": "imported", blocks: JsonValue, };
 
 /**
  * What kind of failure an [`ApiError`] is, for code that reacts to it. People read `message`.
@@ -338,7 +342,11 @@ export type ProcessAction = "start" | "stop" | "restart";
 /**
  * A message waiting for the agent to finish its current run.
  */
-export type QueuedMessage = { id: string, text: string, };
+export type QueuedMessage = { id: string, text: string, 
+/**
+ * Images sent with it, as `data:` URLs.
+ */
+images?: Array<string>, };
 
 /**
  * Takes a message out of the queue without sending it.
@@ -368,7 +376,11 @@ export type ResizeTerminalArgs = { terminalId: string, cols: number, rows: numbe
 /**
  * Sends a message to a session's agent; while it is busy, the message is queued instead.
  */
-export type SendMessageArgs = { sessionId: string, prompt: string, };
+export type SendMessageArgs = { sessionId: string, prompt: string, 
+/**
+ * Images sent with the prompt, as `data:` URLs.
+ */
+images?: Array<string>, };
 
 /**
  * Sends a queued message now. The session must not be running.
@@ -485,7 +497,11 @@ export type StartSessionArgs = { agent: AgentKind, cwd: string, branch?: string,
 /**
  * The worktree's branch name; made up from the prompt when not given.
  */
-newBranch?: string, modelChoice?: string, permissionMode?: string, prompt: string, };
+newBranch?: string, modelChoice?: string, permissionMode?: string, prompt: string, 
+/**
+ * Images sent with the prompt, as `data:` URLs.
+ */
+images?: Array<string>, };
 
 /**
  * Starts a command by hand, as a task of the project in `cwd`.

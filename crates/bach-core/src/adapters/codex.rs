@@ -2,17 +2,24 @@
 use super::AgentEvent;
 use serde_json::Value;
 
-pub fn args(prompt: &str, session_id: Option<&str>, _model: Option<&str>) -> Vec<String> {
-    match session_id {
-        Some(id) => vec![
-            "exec".into(),
-            "resume".into(),
-            id.into(),
-            "--json".into(),
-            prompt.into(),
-        ],
-        None => vec!["exec".into(), "--json".into(), prompt.into()],
+/// `images` are files to attach. `--image` takes several values, so `--` ends the options before
+/// the positionals (which also keeps a prompt starting with `-` from reading as a flag).
+pub fn args(
+    prompt: &str,
+    images: &[String],
+    session_id: Option<&str>,
+    _model: Option<&str>,
+) -> Vec<String> {
+    let mut a: Vec<String> = vec!["exec".into()];
+    if session_id.is_some() {
+        a.push("resume".into());
     }
+    a.push("--json".into());
+    a.extend(images.iter().map(|f| format!("--image={f}")));
+    a.push("--".into());
+    a.extend(session_id.map(String::from));
+    a.push(prompt.into());
+    a
 }
 
 pub fn parse(v: &Value) -> Vec<AgentEvent> {

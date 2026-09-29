@@ -88,6 +88,7 @@ async fn begin(dir: &Path, request: &str, rules: &[&str]) -> Waiting {
             RunRequest {
                 agent: AgentKind::Claude,
                 prompt: "list tmux".into(),
+                images: vec![],
                 cwd: Some(dir.to_string_lossy().into()),
                 session_id: None,
                 model: None,

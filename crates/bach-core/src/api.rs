@@ -131,7 +131,23 @@ fn branch_name_for(prompt: &str) -> String {
 }
 
 fn title_for(prompt: &str) -> String {
-    prompt.trim().chars().take(40).collect()
+    let title: String = prompt.trim().chars().take(40).collect();
+    if title.is_empty() {
+        "Image".into()
+    } else {
+        title
+    }
+}
+
+/// A message needs text or images.
+fn check_message(prompt: &str, images: &[String]) -> Result<(), ApiError> {
+    if prompt.is_empty() && images.is_empty() {
+        return Err(ApiError::invalid("Write a message first."));
+    }
+    if images.iter().any(|i| !i.starts_with("data:image/")) {
+        return Err(ApiError::invalid("Images must be sent as `data:image/…` URLs."));
+    }
+    Ok(())
 }
 
 /// No choice, "", and "default" all mean the agent's default model.
@@ -147,14 +163,12 @@ fn permission_mode(m: Option<String>) -> Option<String> {
 }
 
 impl Api {
-    /// Sends `prompt` to session `id`'s agent: records it, marks the session running and starts
-    /// the run. A run that can't start is recorded as failed. While the agent is busy, the
-    /// message is queued instead.
-    async fn send(&self, id: &str, prompt: String) -> Result<Session, ApiError> {
+    /// Sends `prompt` (and `images`) to session `id`'s agent: records it, marks the session
+    /// running and starts the run. A run that can't start is recorded as failed. While the agent
+    /// is busy, the message is queued instead.
+    async fn send(&self, id: &str, prompt: String, images: Vec<String>) -> Result<Session, ApiError> {
         let prompt = prompt.trim().to_string();
-        if prompt.is_empty() {
-            return Err(ApiError::invalid("Write a message first."));
-        }
+        check_message(&prompt, &images)?;
         let run_id = uuid::Uuid::new_v4().to_string();
         let mut queued = false;
         let s = self.sessions.update(id, |s| {
@@ -167,6 +181,7 @@ impl Api {
                 s.queued.push(QueuedMessage {
                     id: uuid::Uuid::new_v4().to_string(),
                     text: prompt.clone(),
+                    images: images.clone(),
                 });
                 queued = true;
                 return Ok(());
@@ -179,7 +194,7 @@ impl Api {
         if queued {
             return Ok(s);
         }
-        self.launcher.launch(id, s, run_id, prompt).await
+        self.launcher.launch(id, s, run_id, prompt, images).await
     }
 }
 
@@ -198,6 +213,7 @@ struct Next {
     session_id: String,
     run_id: String,
     prompt: String,
+    images: Vec<String>,
     after: String,
 }
 
@@ -227,10 +243,11 @@ impl Launcher {
                         .sessions
                         .update(&id, |s| {
                             let id = uuid::Uuid::new_v4().to_string();
-                            s.queued.insert(0, QueuedMessage { id, text: n.prompt });
+                            let (text, images) = (n.prompt, n.images);
+                            s.queued.insert(0, QueuedMessage { id, text, images });
                             Ok(())
                         }),
-                    Ok(s) => worker.launch(&id, s, n.run_id, n.prompt).await,
+                    Ok(s) => worker.launch(&id, s, n.run_id, n.prompt, n.images).await,
                     Err(e) => Err(e),
                 };
                 if let Err(e) = launched {
@@ -244,7 +261,7 @@ impl Launcher {
     /// Sends queued message `message_id` now. The session must be idle.
     async fn send_queued(&self, id: &str, message_id: &str) -> Result<Session, ApiError> {
         let run_id = uuid::Uuid::new_v4().to_string();
-        let mut prompt = String::new();
+        let mut message = None;
         let s = self.sessions.update(id, |s| {
             if s.workdir_removed {
                 return Err(ApiError::invalid(
@@ -261,31 +278,36 @@ impl Launcher {
                 .iter()
                 .position(|q| q.id == message_id)
                 .ok_or_else(|| ApiError::not_found("That message isn't queued any more."))?;
-            prompt = s.queued.remove(i).text;
+            message = Some(s.queued.remove(i));
             s.run_id = Some(run_id.clone());
             s.archived = false;
             Ok(())
         })?;
-        self.launch(id, s, run_id, prompt).await
+        let QueuedMessage { text, images, .. } = message.expect("taken above");
+        self.launch(id, s, run_id, text, images).await
     }
 
-    /// Records `prompt` and starts run `run_id` of session `s`, which is already marked running.
+    /// Records `prompt` (and `images`) and starts run `run_id` of session `s`, which is already
+    /// marked running.
     async fn launch(
         &self,
         id: &str,
         s: Session,
         run_id: String,
         prompt: String,
+        images: Vec<String>,
     ) -> Result<Session, ApiError> {
         self.sessions.append(
             id,
             Entry::User {
                 text: prompt.clone(),
+                images: images.clone(),
             },
         )?;
         let req = RunRequest {
             agent: s.agent,
             prompt: prompt.clone(),
+            images,
             cwd: s.workdir.clone().or(Some(s.cwd.clone())),
             session_id: s.agent_session_id.clone(),
             model: s
@@ -330,12 +352,13 @@ impl Launcher {
             if s.queued.is_empty() || s.workdir_removed {
                 return;
             }
-            let (run_id, prompt) = (uuid::Uuid::new_v4().to_string(), s.queued.remove(0).text);
+            let (run_id, message) = (uuid::Uuid::new_v4().to_string(), s.queued.remove(0));
             s.run_id = Some(run_id.clone());
             let _ = next.send(Next {
                 session_id: s.id.clone(),
                 run_id,
-                prompt,
+                prompt: message.text,
+                images: message.images,
                 after: finished.to_string(),
             });
         });
@@ -375,9 +398,7 @@ impl Handler for Api {
 
     async fn start_session(&self, a: StartSessionArgs) -> Result<Session, ApiError> {
         let prompt = a.prompt.trim().to_string();
-        if prompt.is_empty() {
-            return Err(ApiError::invalid("Write a message first."));
-        }
+        check_message(&prompt, &a.images)?;
         let cwd = a.cwd.trim().to_string();
         if cwd.is_empty() {
             return Err(ApiError::invalid("Choose a project folder first."));
@@ -426,7 +447,7 @@ impl Handler for Api {
             last_seq: 0,
         };
         self.sessions.put_quietly(&session)?;
-        match self.send(&session.id, prompt).await {
+        match self.send(&session.id, prompt, a.images).await {
             Ok(s) => Ok(s),
             Err(e) => {
                 // A session is only kept once its first message reached the agent.
@@ -437,7 +458,7 @@ impl Handler for Api {
     }
 
     async fn send_message(&self, a: SendMessageArgs) -> Result<Session, ApiError> {
-        self.send(&a.session_id, a.prompt).await
+        self.send(&a.session_id, a.prompt, a.images).await
     }
 
     async fn send_queued(&self, a: SendQueuedArgs) -> Result<Session, ApiError> {
