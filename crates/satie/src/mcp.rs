@@ -123,7 +123,7 @@ impl Satie {
             .map(|t| (t.pid, (t.id.clone(), t.name.clone())))
             .collect();
         let line = |l: &probe::Listener| {
-            let owner = match l.pgid.and_then(|g| tasks.get(&g)) {
+            let owner = match l.sid.and_then(|s| tasks.get(&s)) {
                 Some((id, name)) => format!("Satie task {id} \"{name}\""),
                 None => "not a Satie task".to_string(),
             };

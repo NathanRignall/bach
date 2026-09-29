@@ -1,6 +1,6 @@
 //! Satie's tests: real processes, real ports, a real MCP client over HTTP.
     use super::*;
-    use crate::process::{proc_stat, process_group_of, signal_group, task_alive};
+    use crate::process::{proc_stat, session_of, signal_session, task_alive};
     use serde_json::{json, Value};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -103,11 +103,11 @@
         // It ran in its own session, not ours.
         let pid = satie.start_task(req("sleep 4701", &dir)).unwrap();
         let (sid_of_task, sid_ours) = (
-            process_group_of(pid.pid).unwrap(),
-            process_group_of(std::process::id()).unwrap(),
+            session_of(pid.pid).unwrap(),
+            session_of(std::process::id()).unwrap(),
         );
         assert_ne!(sid_of_task, sid_ours);
-        assert_eq!(sid_of_task, pid.pid, "it leads its own process group");
+        assert_eq!(sid_of_task, pid.pid, "it leads its own session");
         satie.stop_task(&pid.id).await.unwrap();
 
         assert!(satie.start_task(req("", &dir)).is_err());
@@ -159,7 +159,7 @@
         // Simulate a restart: nothing of `before` is consulted from here on.
         let running_pids = (long.pid, gone.pid);
         drop(before);
-        signal_group(running_pids.1, libc::SIGKILL);
+        signal_session(running_pids.1, libc::SIGKILL);
         std::fs::remove_file(dir.join("tasks").join(format!("{}.exit", gone.id))).ok();
         tokio::time::sleep(Duration::from_millis(600)).await;
 
@@ -227,7 +227,7 @@
         let t = satie.start_task(req("python3 two.py", &dir)).unwrap();
 
         // The process really has three listeners...
-        until("three listeners", || ports_of_group(t.pid).len() == 3).await;
+        until("three listeners", || ports_of_session(t.pid).len() == 3).await;
         // ...but only the recognisable one is presented, in the view and in what the agent is told.
         let view = satie.view(&t.id).unwrap();
         assert_eq!(view.ports, vec![named], "{view:?}");
@@ -244,7 +244,7 @@
         // A task that only has random ports keeps them: they are the point of it.
         std::fs::write(dir.join("rand.py"), "import socket,time\nb=socket.socket(); b.bind(('127.0.0.1',0)); b.listen()\ntime.sleep(60)\n").unwrap();
         let r = satie.start_task(req("python3 rand.py", &dir)).unwrap();
-        until("random listener", || ports_of_group(r.pid).len() == 1).await;
+        until("random listener", || ports_of_session(r.pid).len() == 1).await;
         assert_eq!(satie.view(&r.id).unwrap().ports.len(), 1);
         satie.stop_task(&r.id).await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
@@ -544,6 +544,68 @@
             let _ = satie.stop_task(&t.task.id).await;
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Supervisors like process-compose (or a shell with job control) put each child in a process
+    /// group of its own. The child is still the task's: its ports, its processes, and stopped with it.
+    #[tokio::test]
+    async fn children_in_their_own_process_group_belong_to_the_task() {
+        let dir = tmp("pgroup");
+        let satie = satie_in(&dir).await;
+        let port = free_port();
+        let t = satie
+            .start_task(StartTask {
+                ports: vec![port],
+                // `set -m`: background jobs get their own process group.
+                ..req(
+                    &format!("set -m; python3 -m http.server {port} --bind 127.0.0.1 & wait"),
+                    &dir,
+                )
+            })
+            .unwrap();
+        satie
+            .wait_ready(&t.id, &[port], None, Duration::from_secs(10))
+            .await;
+        // The python process, not the `sh -c` wrappers whose command lines mention it.
+        let server = || {
+            procs_matching(&format!("http.server {port}"))
+                .into_iter()
+                .filter(|pid| {
+                    std::fs::read(format!("/proc/{pid}/cmdline"))
+                        .is_ok_and(|c| c.starts_with(b"python3"))
+                })
+                .collect::<Vec<u32>>()
+        };
+        let server_pids = server();
+        assert_eq!(server_pids.len(), 1, "{server_pids:?}");
+        assert_ne!(
+            proc_group(server_pids[0]),
+            t.pid,
+            "the server moved to its own group (else this test proves nothing)"
+        );
+
+        let view = satie.view(&t.id).unwrap();
+        assert_eq!(view.up_ports, vec![port], "{view:?}");
+        assert!(
+            view.missing_ports.is_empty() && view.problems.is_empty(),
+            "{view:?}"
+        );
+        assert!(
+            view.processes.iter().any(|p| p.starts_with("python3")),
+            "{view:?}"
+        );
+        let report = satie.port_report(&[port]);
+        assert!(report.contains(&format!("Satie task {}", t.id)), "{report}");
+
+        satie.stop_task(&t.id).await.unwrap();
+        until("server gone", || server().is_empty()).await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn proc_group(pid: u32) -> u32 {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let rest = &stat[stat.rfind(')').unwrap() + 2..];
+        rest.split(' ').nth(2).unwrap().parse().unwrap()
     }
 
     #[tokio::test]

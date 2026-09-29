@@ -12,9 +12,9 @@ pub(crate) const SETTLE_MS: i64 = 10_000;
 /// Who holds a port, in words an agent (or a person) can act on.
 pub(crate) fn holder_text(
     holder: &Listener,
-    tasks_by_group: &HashMap<u32, (String, String)>,
+    tasks_by_session: &HashMap<u32, (String, String)>,
 ) -> String {
-    if let Some((id, name)) = holder.pgid.and_then(|g| tasks_by_group.get(&g)) {
+    if let Some((id, name)) = holder.sid.and_then(|s| tasks_by_session.get(&s)) {
         return format!("Satie task {id} \"{name}\"");
     }
     let Some(pid) = holder.pid else {
@@ -36,13 +36,13 @@ pub(crate) fn diagnose(
     task: &Task,
     own: &[u16],
     listening: &[Listener],
-    tasks_by_group: &HashMap<u32, (String, String)>,
+    tasks_by_session: &HashMap<u32, (String, String)>,
     settle_ms: i64,
 ) -> (Vec<String>, Vec<u16>) {
     let foreign = |port: u16| {
         listening
             .iter()
-            .find(|l| l.port == port && l.pgid != Some(task.pid))
+            .find(|l| l.port == port && l.sid != Some(task.pid))
     };
     let mut problems = vec![];
     let mut explained: Vec<u16> = vec![];
@@ -53,7 +53,7 @@ pub(crate) fn diagnose(
         if let Some(holder) = foreign(port) {
             problems.push(format!(
                 "Port {port} is already in use by {}.",
-                holder_text(holder, tasks_by_group)
+                holder_text(holder, tasks_by_session)
             ));
             explained.push(port);
         }
@@ -83,7 +83,7 @@ pub(crate) fn diagnose(
         problems.push(match foreign(*p) {
             Some(holder) => format!(
                 "Port {p} is already in use by {}.",
-                holder_text(holder, tasks_by_group)
+                holder_text(holder, tasks_by_session)
             ),
             None => format!("Expected port {p} is not listening; check the task's logs."),
         });

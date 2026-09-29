@@ -176,6 +176,18 @@ Bach shows an approval card, and the run waits for your answer.
 - Hover one of your messages for a **Retry** button (resends it as a new message; the agent still
   remembers the earlier one). Error messages have a Retry too.
 
+## Terminal
+
+**Terminal** in the sidebar (or Ctrl+`) opens a panel of terminals under the chat: your login shell
+on the machine the agents run on (so direnv and dev shells load as usual), starting in the current
+session's folder. Tabs hold several; drag the top edge to resize.
+
+Terminals belong to the backend (`crates/bach-core/src/terminals.rs`, a PTY each), not the window:
+hiding the panel, reloading, or the Mac reconnecting leaves them running, and any client can pick
+them up. The backend keeps each one's recent output (512 KB) to redraw from, and streams the rest
+as numbered `terminal` events; a client that missed some redraws from that snapshot. Closing a tab
+ends its shell. The terminal font (JetBrains Mono) is bundled, so it looks the same everywhere.
+
 ## Background tasks (Satie)
 
 Anything an agent starts in the background with its own tools dies when the turn ends, because Bach

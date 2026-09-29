@@ -9,7 +9,7 @@
 //! command.
 use crate::{
     AgentInfo, AgentKind, ApiError, Decision, DirListing, GitInfo, PlanUsage, Session,
-    SessionLog, WorktreeEntry,
+    SessionLog, TerminalInfo, TerminalSnapshot, WorktreeEntry,
 };
 use satie_protocol::{
     ListTasksArgs, LogChunk, RemoveTaskArgs, StartTaskArgs, StopTaskArgs, Task, TaskLogChunkArgs,
@@ -111,6 +111,13 @@ commands! {
     stop_task(StopTaskArgs) -> Task;
     remove_task(RemoveTaskArgs) -> ();
     start_task(StartTaskArgs) -> Task;
+
+    list_terminals(ListTerminalsArgs) -> Vec<TerminalInfo>;
+    open_terminal(OpenTerminalArgs) -> TerminalInfo;
+    terminal_snapshot(TerminalSnapshotArgs) -> TerminalSnapshot;
+    terminal_input(TerminalInputArgs) -> ();
+    resize_terminal(ResizeTerminalArgs) -> ();
+    close_terminal(CloseTerminalArgs) -> ();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -232,4 +239,53 @@ pub struct RemoveWorktreeArgs {
     pub discard: Option<bool>,
     /// Also delete its branch.
     pub delete_branch: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Terminals
+// ---------------------------------------------------------------------------------------------
+
+/// Terminals the backend keeps, oldest first (including ones whose shell has ended).
+#[derive(Debug, Default, Deserialize, TS)]
+pub struct ListTerminalsArgs {}
+
+/// Starts your shell in a terminal on the backend host.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(optional_fields)]
+pub struct OpenTerminalArgs {
+    /// Defaults to the home directory.
+    pub cwd: Option<String>,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// A terminal and its recent output.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSnapshotArgs {
+    pub terminal_id: String,
+}
+
+/// Typed (or pasted) text for the terminal.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalInputArgs {
+    pub terminal_id: String,
+    pub data: String,
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResizeTerminalArgs {
+    pub terminal_id: String,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Ends the terminal's shell (and what runs in it) and forgets the terminal.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseTerminalArgs {
+    pub terminal_id: String,
 }

@@ -23,6 +23,7 @@ import {
 import { BlockView, TranscriptContext } from "@/components/Transcript";
 import { WorktreeCleanup } from "@/components/WorktreeCleanup";
 import { TasksPanel, useTasks } from "@/components/TasksPanel";
+import { TerminalPanel } from "@/components/TerminalPanel";
 import { UsageIndicator, usePlanUsage } from "@/components/UsageIndicator";
 import { Composer } from "@/components/Composer";
 import { NewSessionPage } from "@/components/NewSessionPage";
@@ -71,6 +72,7 @@ export function App() {
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const tasks = useTasks();
   const planUsage = usePlanUsage();
   // Transcripts of the sessions opened so far. Kept in a ref so event handlers see the latest
@@ -210,6 +212,18 @@ export function App() {
     return () => ro.disconnect();
   }, [activeId, chatShown]);
 
+  // Ctrl+` shows and hides the terminal, as in VS Code.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === "`") {
+        e.preventDefault();
+        setTerminalOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
   // Something is waiting on the user: say so in the tab, in case it's in the background.
   const anyWaiting = sessions.some(awaitingApproval);
   useEffect(() => {
@@ -330,6 +344,7 @@ export function App() {
         onOpenCleanup={() => setCleanupOpen(true)}
         runningTasks={tasks.tasks.filter((t) => t.status === "running").length}
         onToggleTasks={() => setTasksOpen((v) => !v)}
+        onToggleTerminal={() => setTerminalOpen((v) => !v)}
       />
 
       {cleanupOpen && (
@@ -419,6 +434,11 @@ export function App() {
             </div>
           </>
         )}
+        <TerminalPanel
+          open={terminalOpen}
+          onClose={() => setTerminalOpen(false)}
+          cwd={(active?.workdir ?? active?.cwd ?? newDraft.cwd).trim()}
+        />
       </main>
 
       {tasksOpen && (

@@ -1,4 +1,4 @@
-use crate::{PlanUsage, SessionEvent};
+use crate::{PlanUsage, SessionEvent, TerminalEvent};
 use satie_protocol::TaskEvent;
 use serde::Serialize;
 use ts_rs::TS;
@@ -12,4 +12,5 @@ pub enum ServerEvent {
     Task(TaskEvent),
     /// New readings of the account's usage limits.
     Usage(PlanUsage),
+    Terminal(TerminalEvent),
 }

@@ -6,6 +6,8 @@ description = "Agent adapters, runs, git, storage and Satie behind Bach (no UI o
 
 [dependencies]
 bach-protocol = { path = "../bach-protocol" }
+base64 = "0.23"
+portable-pty = "0.9"
 rusqlite = { version = "0.37", features = ["bundled"] }
 satie = { path = "../satie" }
 satie-protocol = { path = "../satie-protocol" }
@@ -17,3 +19,4 @@ which = "8"
 
 [dev-dependencies]
 rusqlite = { version = "0.37", features = ["bundled"] }
+base64 = "0.23"

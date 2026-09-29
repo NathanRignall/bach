@@ -5,5 +5,6 @@ pub mod git;
 pub mod runs;
 pub mod sessions;
 pub mod store;
+pub mod terminals;
 
 pub use api::Api;

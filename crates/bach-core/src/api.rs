@@ -6,6 +6,7 @@ use crate::{
     git::Git,
     runs::{RunRequest, Runs},
     sessions::Sessions,
+    terminals::Terminals,
     store::{now_ms, Store},
 };
 use bach_protocol::{commands::*, *};
@@ -23,6 +24,7 @@ pub struct Api {
     runs: Runs,
     git: Git,
     sessions: Sessions,
+    terminals: Terminals,
     satie: Satie,
     events: broadcast::Sender<ServerEvent>,
     /// Passes Satie's task events on while anyone is subscribed.
@@ -56,6 +58,7 @@ impl Api {
             runs: Runs::with_satie(Some(satie.clone())),
             git,
             sessions: Sessions::new(store, events.clone()),
+            terminals: Terminals::new(events.clone()),
             satie,
             events,
             task_events: Mutex::default(),
@@ -417,5 +420,29 @@ impl Handler for Api {
                 ports: vec![],
             })
             .map_err(satie_error)
+    }
+
+    async fn list_terminals(&self, _: ListTerminalsArgs) -> Result<Vec<TerminalInfo>, ApiError> {
+        Ok(self.terminals.list())
+    }
+
+    async fn open_terminal(&self, a: OpenTerminalArgs) -> Result<TerminalInfo, ApiError> {
+        self.terminals.open(a.cwd, a.cols, a.rows)
+    }
+
+    async fn terminal_snapshot(&self, a: TerminalSnapshotArgs) -> Result<TerminalSnapshot, ApiError> {
+        self.terminals.snapshot(&a.terminal_id)
+    }
+
+    async fn terminal_input(&self, a: TerminalInputArgs) -> Result<(), ApiError> {
+        self.terminals.input(&a.terminal_id, &a.data)
+    }
+
+    async fn resize_terminal(&self, a: ResizeTerminalArgs) -> Result<(), ApiError> {
+        self.terminals.resize(&a.terminal_id, a.cols, a.rows)
+    }
+
+    async fn close_terminal(&self, a: CloseTerminalArgs) -> Result<(), ApiError> {
+        self.terminals.close(&a.terminal_id)
     }
 }

@@ -2,7 +2,7 @@
 //! processes are, whether a local URL answers, and reading log files in chunks.
 //!
 //! Linux (`/proc`); everything degrades to "nothing found" elsewhere.
-use crate::process::{proc_stat, process_group_of};
+use crate::process::{pids_in_session, proc_stat, session_of};
 use satie_protocol::LogChunk;
 use serde::Serialize;
 use std::{
@@ -26,8 +26,8 @@ use tokio::{
 pub struct Listener {
     pub port: u16,
     pub pid: Option<u32>,
-    /// The owner's process group; a Satie task leads its own group.
-    pub pgid: Option<u32>,
+    /// The owner's session; a Satie task leads its own session.
+    pub sid: Option<u32>,
     pub command: String,
     pub cwd: Option<String>,
     /// Seconds since the owner started.
@@ -138,17 +138,17 @@ pub fn listeners() -> Vec<Listener> {
         .into_iter()
         .map(|(port, pid)| match pid {
             Some(pid) => {
-                let (command, cwd, up_secs, pgid) = cache
+                let (command, cwd, up_secs, sid) = cache
                     .entry(pid)
                     .or_insert_with(|| {
                         let (c, cwd, up) = describe_process(pid);
-                        (c, cwd, up, process_group_of(pid))
+                        (c, cwd, up, session_of(pid))
                     })
                     .clone();
                 Listener {
                     port,
                     pid: Some(pid),
-                    pgid,
+                    sid,
                     command,
                     cwd,
                     up_secs,
@@ -157,7 +157,7 @@ pub fn listeners() -> Vec<Listener> {
             None => Listener {
                 port,
                 pid: None,
-                pgid: None,
+                sid: None,
                 command: "(a process we can't inspect)".into(),
                 cwd: None,
                 up_secs: None,
@@ -176,42 +176,31 @@ pub fn age(secs: u64) -> String {
     }
 }
 
-/// Names of the processes in a group, with counts ("workerd ×8"), most numerous first. The
+/// Names of the processes in a session, with counts ("workerd ×8"), most numerous first. The
 /// wrapper shells Satie itself adds are left out.
-pub fn process_summary(pgid: u32) -> Vec<String> {
+pub fn process_summary(sid: u32) -> Vec<String> {
     let mut counts: HashMap<String, usize> = HashMap::new();
-    if let Ok(procs) = std::fs::read_dir("/proc") {
-        for p in procs.filter_map(Result::ok) {
-            let Some(pid) = p.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
-                continue;
-            };
-            if process_group_of(pid) != Some(pgid) {
-                continue;
-            }
-            if proc_stat(pid).is_some_and(|(state, _)| state == 'Z') {
-                continue;
-            }
-            // The command as started ("node", "workerd"), not the kernel's 15-character thread name
-            // (Node reports its threads as "MainThread"). Fall back to that when there's no command line.
-            let raw = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-            let first = String::from_utf8_lossy(&raw)
-                .split('\0')
-                .next()
-                .and_then(|a| a.split_whitespace().next())
-                .and_then(|a| a.rsplit('/').next())
+    for pid in pids_in_session(sid) {
+        // The command as started ("node", "workerd"), not the kernel's 15-character thread name
+        // (Node reports its threads as "MainThread"). Fall back to that when there's no command line.
+        let raw = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+        let first = String::from_utf8_lossy(&raw)
+            .split('\0')
+            .next()
+            .and_then(|a| a.split_whitespace().next())
+            .and_then(|a| a.rsplit('/').next())
+            .unwrap_or_default()
+            .to_string();
+        let comm = if first.is_empty() {
+            std::fs::read_to_string(format!("/proc/{pid}/comm"))
                 .unwrap_or_default()
-                .to_string();
-            let comm = if first.is_empty() {
-                std::fs::read_to_string(format!("/proc/{pid}/comm"))
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string()
-            } else {
-                first
-            };
-            if !comm.is_empty() && comm != "sh" {
-                *counts.entry(comm).or_default() += 1;
-            }
+                .trim()
+                .to_string()
+        } else {
+            first
+        };
+        if !comm.is_empty() && comm != "sh" {
+            *counts.entry(comm).or_default() += 1;
         }
     }
     let mut v: Vec<(String, usize)> = counts.into_iter().collect();
@@ -471,7 +460,7 @@ mod tests {
             "{found:?}"
         );
         assert!(found.cwd.is_some() && found.up_secs.is_some(), "{found:?}");
-        assert_eq!(found.pgid, process_group_of(std::process::id()));
+        assert_eq!(found.sid, session_of(std::process::id()));
         assert!(!listeners()
             .iter()
             .any(|x| x.port == port && x.pid != Some(std::process::id())));
@@ -491,9 +480,9 @@ mod tests {
     }
 
     #[test]
-    fn summarises_a_process_group() {
+    fn summarises_a_session() {
         let dir = tmp("summary");
-        // Leader of its own group, running two `sleep`s.
+        // Leader of its own session, running two `sleep`s.
         let mut child = {
             use std::os::unix::process::CommandExt;
             let mut c = Command::new("sh");

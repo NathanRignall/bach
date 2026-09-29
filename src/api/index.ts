@@ -1,7 +1,7 @@
 // The typed client for Bach's backend. Commands, their arguments and results, and every type they
 // use are generated from Rust (crates/bach-protocol) into ./generated/protocol.ts.
 import { remoteUrl } from "./backend";
-import type { Commands, PlanUsage, ServerEvent, SessionEvent, TaskEvent } from "./generated/protocol";
+import type { Commands, PlanUsage, ServerEvent, SessionEvent, TaskEvent, TerminalEvent } from "./generated/protocol";
 import { SocketTransport, TauriTransport, type Transport } from "./transport";
 
 export * from "./generated/protocol";
@@ -48,6 +48,12 @@ export const onUsage = (cb: (u: PlanUsage) => void) =>
     if (e.topic === "usage") cb(e.data);
   });
 
+/** Terminals opening, closing, and their output. */
+export const onTerminalEvent = (cb: (e: TerminalEvent) => void) =>
+  onEvent((e) => {
+    if (e.topic === "terminal") cb(e.data);
+  });
+
 /** Changes to background tasks. */
 export const onTaskEvent = (cb: (e: TaskEvent) => void) =>
   onEvent((e) => {
@@ -85,3 +91,10 @@ export const taskLogChunk = (taskId: string, from?: number, maxBytes?: number) =
 export const stopTask = (taskId: string) => call("stop_task", { taskId });
 export const removeTask = (taskId: string) => call("remove_task", { taskId });
 export const startTask = (args: Args<"start_task">) => call("start_task", args);
+
+export const listTerminals = () => call("list_terminals");
+export const openTerminal = (args: Args<"open_terminal">) => call("open_terminal", args);
+export const terminalSnapshot = (terminalId: string) => call("terminal_snapshot", { terminalId });
+export const terminalInput = (terminalId: string, data: string) => call("terminal_input", { terminalId, data });
+export const resizeTerminal = (terminalId: string, cols: number, rows: number) => call("resize_terminal", { terminalId, cols, rows });
+export const closeTerminal = (terminalId: string) => call("close_terminal", { terminalId });

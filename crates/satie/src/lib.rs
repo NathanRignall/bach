@@ -25,7 +25,7 @@ pub use store::parse_task;
 pub use satie_protocol::{LogChunk, Task, TaskEvent, TaskStatus, TaskView};
 
 use diagnose::{diagnose, SETTLE_MS};
-use process::{now_ms, ports_of_group, proc_stat, signal_group, task_alive};
+use process::{now_ms, pids_in_session, ports_of_session, proc_stat, signal_session, task_alive};
 use std::{
     collections::HashMap,
     fmt,
@@ -335,7 +335,7 @@ impl Satie {
 
         // One look at the machine serves every task.
         let listening = probe::listeners();
-        let by_group: HashMap<u32, (String, String)> = all
+        let by_session: HashMap<u32, (String, String)> = all
             .iter()
             .map(|t| (t.pid, (t.id.clone(), t.name.clone())))
             .collect();
@@ -345,14 +345,14 @@ impl Satie {
                 let running = task.status == TaskStatus::Running;
                 let mut own: Vec<u16> = listening
                     .iter()
-                    .filter(|l| l.pgid == Some(task.pid))
+                    .filter(|l| l.sid == Some(task.pid))
                     .map(|l| l.port)
                     .collect();
                 own.sort_unstable();
                 own.dedup();
                 let (problems, missing_ports) =
                     if matches!(task.status, TaskStatus::Running | TaskStatus::Failed) {
-                        diagnose(&task, &own, &listening, &by_group, settle_ms)
+                        diagnose(&task, &own, &listening, &by_session, settle_ms)
                     } else {
                         (vec![], vec![])
                     };
@@ -479,17 +479,26 @@ impl Satie {
                 t.ended_at = Some(now_ms());
             })
             .ok_or_else(no_such_task)?;
-        signal_group(task.pid, libc::SIGTERM);
+        // The kernel won't reuse a pid that still names a live session, so the session is this
+        // task's even if its leader is gone, unless that pid now belongs to a different process.
+        let reused = proc_stat(task.pid)
+            .is_some_and(|(_, ticks)| task.start_ticks.is_some_and(|want| want != ticks));
+        if reused {
+            self.publish();
+            return Ok(stopped);
+        }
+        signal_session(task.pid, libc::SIGTERM);
         let mut gone = false;
         for _ in 0..60 {
-            if !task_alive(task.pid, task.start_ticks) {
+            // The leader going isn't enough: what it started may still be shutting down.
+            if pids_in_session(task.pid).is_empty() {
                 gone = true;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         if !gone {
-            signal_group(task.pid, libc::SIGKILL);
+            signal_session(task.pid, libc::SIGKILL);
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         self.publish();
@@ -544,7 +553,7 @@ impl Satie {
             if t.status != TaskStatus::Running {
                 return last;
             }
-            let listening = ports_of_group(t.pid);
+            let listening = ports_of_session(t.pid);
             let ports_ok = ports.iter().all(|p| listening.contains(p));
             let mut http_ok = true;
             if let Some(r) = ready {
@@ -569,7 +578,7 @@ impl Satie {
             {
                 last_check = std::time::Instant::now();
                 let now = probe::listeners();
-                let held = |p: &u16| now.iter().any(|l| l.port == *p && l.pgid != Some(t.pid));
+                let held = |p: &u16| now.iter().any(|l| l.port == *p && l.sid != Some(t.pid));
                 if ports.iter().filter(|p| !listening.contains(p)).all(held) {
                     return last;
                 }

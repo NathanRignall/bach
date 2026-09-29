@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "e3145bf143b79c41";
+export const PROTOCOL = "df9863dc9e58d26a";
 
 /**
  * Agent-independent events the UI renders.
@@ -50,6 +50,11 @@ message: string, };
  * A command sent over the WebSocket bridge. `id` is echoed back in the reply.
  */
 export type ClientFrame = { id: number, cmd: string, args?: JsonValue, };
+
+/**
+ * Ends the terminal's shell (and what runs in it) and forgets the terminal.
+ */
+export type CloseTerminalArgs = { terminalId: string, };
 
 /**
  * Where the desktop app's agents run.
@@ -123,6 +128,8 @@ export type Entry = { "type": "user", text: string, } | { "type": "agent", runId
  * What kind of failure an [`ApiError`] is, for code that reacts to it. People read `message`.
  */
 export type ErrorCode = "invalid" | "not_found" | "unavailable" | "failed";
+
+export type ExitStatus = { code: number | null, };
 
 /**
  * Port forwarding in the desktop app. Sent on the `bach-forwards` channel as it changes.
@@ -210,6 +217,11 @@ export type ListSessionsArgs = Record<symbol, never>;
 export type ListTasksArgs = Record<symbol, never>;
 
 /**
+ * Terminals the backend keeps, oldest first (including ones whose shell has ended).
+ */
+export type ListTerminalsArgs = Record<symbol, never>;
+
+/**
  * Worktrees Bach created on the backend host.
  */
 export type ListWorktreesArgs = Record<symbol, never>;
@@ -244,6 +256,15 @@ seq: number,
  * When it was recorded (ms since the epoch).
  */
 at: number, entry: Entry, };
+
+/**
+ * Starts your shell in a terminal on the backend host.
+ */
+export type OpenTerminalArgs = { 
+/**
+ * Defaults to the home directory.
+ */
+cwd?: string, cols: number, rows: number, };
 
 /**
  * The account's usage limits as the agent last reported them. Only updated while agents run.
@@ -297,6 +318,8 @@ discard?: boolean,
  */
 deleteBranch?: boolean, };
 
+export type ResizeTerminalArgs = { terminalId: string, cols: number, rows: number, };
+
 /**
  * Sends a message to a session's agent. The session must not be running.
  */
@@ -305,7 +328,7 @@ export type SendMessageArgs = { sessionId: string, prompt: string, };
 /**
  * Everything the backend pushes to clients, whichever transport carries it.
  */
-export type ServerEvent = { "topic": "session", "data": SessionEvent } | { "topic": "task", "data": TaskEvent } | { "topic": "usage", "data": PlanUsage };
+export type ServerEvent = { "topic": "session", "data": SessionEvent } | { "topic": "task", "data": TaskEvent } | { "topic": "usage", "data": PlanUsage } | { "topic": "terminal", "data": TerminalEvent };
 
 /**
  * What the WebSocket bridge (and `bach-server attach`) sends: first a `hello`, then replies to
@@ -506,6 +529,45 @@ startTicks: number | null, startedAt: number, endedAt: number | null, status: Ta
  */
 expectedPorts: Array<number>, };
 
+export type TerminalEvent = { "type": "opened", terminal: TerminalInfo, } | { "type": "output", terminalId: string, seq: number, data: string, } | { "type": "exited", terminalId: string, status: ExitStatus, } | { "type": "closed", terminalId: string, };
+
+export type TerminalInfo = { id: string, 
+/**
+ * The folder it started in.
+ */
+cwd: string, 
+/**
+ * The shell it runs, e.g. `zsh`.
+ */
+shell: string, cols: number, rows: number, createdAt: number, 
+/**
+ * Set once the shell has ended (its exit code, if it had one). It stays listed until closed.
+ */
+exited: ExitStatus | null, };
+
+/**
+ * Typed (or pasted) text for the terminal.
+ */
+export type TerminalInputArgs = { terminalId: string, data: string, };
+
+/**
+ * A terminal and its recent output, to draw it from scratch.
+ */
+export type TerminalSnapshot = { terminal: TerminalInfo, 
+/**
+ * The scrollback kept by the backend, base64.
+ */
+data: string, 
+/**
+ * The `seq` of the last output included; later output events follow on from it.
+ */
+seq: number, };
+
+/**
+ * A terminal and its recent output.
+ */
+export type TerminalSnapshotArgs = { terminalId: string, };
+
 /**
  * Renames a session, or changes the model its next messages use (`""` for the default).
  */
@@ -611,4 +673,25 @@ export type Commands = {
    * Starts a command by hand, as a task of the project in `cwd`.
    */
   start_task: { args: StartTaskArgs; output: Task };
+  /**
+   * Terminals the backend keeps, oldest first (including ones whose shell has ended).
+   */
+  list_terminals: { args: ListTerminalsArgs; output: Array<TerminalInfo> };
+  /**
+   * Starts your shell in a terminal on the backend host.
+   */
+  open_terminal: { args: OpenTerminalArgs; output: TerminalInfo };
+  /**
+   * A terminal and its recent output.
+   */
+  terminal_snapshot: { args: TerminalSnapshotArgs; output: TerminalSnapshot };
+  /**
+   * Typed (or pasted) text for the terminal.
+   */
+  terminal_input: { args: TerminalInputArgs; output: null };
+  resize_terminal: { args: ResizeTerminalArgs; output: null };
+  /**
+   * Ends the terminal's shell (and what runs in it) and forgets the terminal.
+   */
+  close_terminal: { args: CloseTerminalArgs; output: null };
 };
