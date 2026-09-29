@@ -89,6 +89,8 @@ pub enum AgentEvent {
     Error {
         message: String,
     },
+    /// The user stopped the run. Ends the run like `Done` does.
+    Cancelled,
     /// A line we could not parse as JSON or don't understand yet.
     Raw {
         line: String,

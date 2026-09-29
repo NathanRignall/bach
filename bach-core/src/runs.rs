@@ -96,7 +96,7 @@ impl Runs {
                 tokio::select! {
                     _ = &mut cancel_rx => {
                         let _ = child.kill().await;
-                        emit(AgentEvent::Error { message: "cancelled".into() });
+                        emit(AgentEvent::Cancelled);
                         runs.lock().await.remove(&id);
                         return;
                     }

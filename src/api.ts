@@ -17,6 +17,7 @@ export type AgentEvent =
   | { type: "tool_result"; id: string; output: string; is_error: boolean }
   | { type: "done"; cost_usd: number | null; is_error: boolean }
   | { type: "error"; message: string }
+  | { type: "cancelled" }
   | { type: "raw"; line: string };
 
 export type RunEvent = AgentEvent & { run_id: string };

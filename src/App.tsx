@@ -1,67 +1,25 @@
 import { useEffect, useRef, useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { FolderPicker } from "./FolderPicker";
+import { Square, ArrowUp } from "lucide-react";
 import {
   AgentInfo,
   AgentKind,
   RunEvent,
-  canSwitchBackend,
   cancelRun,
   deleteSession,
   listAgents,
   listSessions,
   onAgentEvent,
-  remoteUrl,
   saveSession,
-  setBackend,
   startRun,
-} from "./api";
-
-type Block =
-  | { kind: "user"; text: string }
-  | { kind: "text"; text: string }
-  | { kind: "thinking"; text: string }
-  | { kind: "tool"; id: string; name: string; input: unknown; output?: string; isError?: boolean }
-  | { kind: "error"; text: string };
-
-interface Session {
-  id: string;
-  title: string;
-  agent: AgentKind;
-  cwd: string;
-  agentSessionId?: string;
-  runId?: string;
-  blocks: Block[];
-}
-
-// crypto.randomUUID needs a secure context, which a page opened over plain http from another host isn't.
-const newId = () => crypto.randomUUID?.() ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
-
-const newSession = (agent: AgentKind, cwd = ""): Session => ({
-  id: newId(),
-  title: "New session",
-  agent,
-  cwd,
-  blocks: [],
-});
-
-/** A session's project is its working directory. */
-// Sessions saved before folders were mandatory may have none but can still be resumed.
-const canRun = (s: Session) => !!s.cwd.trim() || !!s.agentSessionId;
-
-const projectKey = (cwd: string) => cwd.trim().replace(/\/+$/, "");
-const projectName = (key: string) => (key ? key.split("/").filter(Boolean).pop() ?? key : "No project");
-
-/** Groups keep the order of their first (most recent) session. */
-function groupByProject(sessions: Session[]): [string, Session[]][] {
-  const groups = new Map<string, Session[]>();
-  for (const s of sessions) {
-    const key = projectKey(s.cwd);
-    groups.set(key, [...(groups.get(key) ?? []), s]);
-  }
-  return [...groups];
-}
+} from "@/api";
+import { BlockView } from "@/components/Transcript";
+import { CwdInput } from "@/components/CwdInput";
+import { Sidebar } from "@/components/Sidebar";
+import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
+import { Textarea } from "@/components/ui/textarea";
+import { Session, applyEvent, canRun, isKept, newSession, projectKey } from "@/session";
 
 const COLLAPSED_KEY = "bach.collapsedProjects";
 const loadCollapsed = (): Set<string> => {
@@ -72,49 +30,19 @@ const loadCollapsed = (): Set<string> => {
   }
 };
 
-function applyEvent(s: Session, e: RunEvent): Session {
-  const blocks = [...s.blocks];
-  switch (e.type) {
-    case "session":
-      return { ...s, agentSessionId: e.id };
-    case "text":
-      blocks.push({ kind: "text", text: e.text });
-      break;
-    case "thinking":
-      blocks.push({ kind: "thinking", text: e.text });
-      break;
-    case "tool_use":
-      blocks.push({ kind: "tool", id: e.id, name: e.name, input: e.input });
-      break;
-    case "tool_result": {
-      const i = blocks.findIndex((b) => b.kind === "tool" && b.id === e.id);
-      if (i >= 0) blocks[i] = { ...(blocks[i] as Extract<Block, { kind: "tool" }>), output: e.output, isError: e.is_error };
-      break;
-    }
-    case "error":
-      blocks.push({ kind: "error", text: e.message });
-      break;
-    case "raw":
-      blocks.push({ kind: "text", text: e.line });
-      break;
-    case "done":
-      return { ...s, runId: undefined };
-  }
-  return { ...s, blocks };
-}
-
 export function App() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeId, setActiveId] = useState<string>();
   const [draft, setDraft] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [starting, setStarting] = useState(false);
   const [connectionError, setConnectionError] = useState<string>();
+  const [collapsed, setCollapsed] = useState(loadCollapsed);
   // Events can arrive before startRun resolves and the session learns its run id.
   const early = useRef(new Map<string, RunEvent[]>());
   // What the backend already has, so unchanged sessions aren't re-saved (a save reorders history).
   const saved = useRef(new Map<string, Session>());
-  const [confirmDelete, setConfirmDelete] = useState<string>();
-  const [collapsed, setCollapsed] = useState(loadCollapsed);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -128,7 +56,8 @@ export function App() {
         setSessions([fresh, ...old]);
         setActiveId(fresh.id);
       })
-      .catch((e) => setConnectionError(String(e.message ?? e)));
+      .catch((e) => setConnectionError(String(e.message ?? e)))
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
@@ -145,7 +74,7 @@ export function App() {
   }, []);
 
   const active = sessions.find((s) => s.id === activeId);
-  useEffect(() => endRef.current?.scrollIntoView({ block: "end" }), [active?.blocks.length]);
+  useEffect(() => endRef.current?.scrollIntoView({ block: "end" }), [active?.blocks.length, active?.runId]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -158,8 +87,8 @@ export function App() {
     return () => clearTimeout(t);
   }, [sessions]);
 
-  // Empty sessions were never saved; don't let them pile up as the user moves around.
-  const isKept = (x: Session) => x.blocks.length > 0 || !!x.runId;
+  const patch = (id: string, f: (s: Session) => Session) =>
+    setSessions((all) => all.map((s) => (s.id === id ? f(s) : s)));
 
   function select(id: string) {
     setSessions((a) => a.filter((x) => x.id === id || isKept(x)));
@@ -187,7 +116,6 @@ export function App() {
     const s = sessions.find((x) => x.id === id);
     if (s?.runId) await cancelRun(s.runId).catch(() => {});
     saved.current.delete(id);
-    setConfirmDelete(undefined);
     const rest = sessions.filter((x) => x.id !== id);
     const next = rest.length ? rest : [newSession(s?.agent ?? "claude", s?.cwd)];
     setSessions(next);
@@ -195,13 +123,11 @@ export function App() {
     await deleteSession(id).catch((e) => setConnectionError(String(e.message ?? e)));
   }
 
-  const patch = (id: string, f: (s: Session) => Session) =>
-    setSessions((all) => all.map((s) => (s.id === id ? f(s) : s)));
-
   async function send() {
-    if (!active || !draft.trim() || active.runId || !canRun(active)) return;
+    if (!active || !draft.trim() || active.runId || starting || !canRun(active)) return;
     const prompt = draft.trim();
     setDraft("");
+    setStarting(true);
     try {
       const runId = await startRun({
         agent: active.agent,
@@ -220,61 +146,43 @@ export function App() {
         }),
       );
     } catch (err) {
-      patch(active.id, (s) => ({ ...s, blocks: [...s.blocks, { kind: "error", text: String(err) }] }));
+      setDraft(prompt);
+      const message = String((err as Error).message ?? err);
+      patch(active.id, (s) => ({ ...s, blocks: [...s.blocks, { kind: "error", text: message }] }));
+    } finally {
+      setStarting(false);
     }
   }
 
-  return (
-    <div className="app">
-      <aside className="sidebar">
-        <button className="new" onClick={() => startSession(active?.cwd ?? "", active?.agent ?? "claude")}>
-          + New session
-        </button>
-        <div className="list">
-          {groupByProject(sessions).map(([key, group]) => {
-            const open = !collapsed.has(key) || group.some((x) => x.id === activeId);
-            return (
-              <div key={key} className="project">
-                <div className="project-head" title={key || "Sessions without a working directory"}>
-                  <button className="toggle" onClick={() => toggleProject(key)}>
-                    <span className="chev">{open ? "▾" : "▸"}</span>
-                    <span className="name">{projectName(key)}</span>
-                    <span className="count">{group.length}</span>
-                  </button>
-                  <button className="add" title="New session in this project" onClick={() => startSession(key, group[0].agent)}>
-                    +
-                  </button>
-                </div>
-                {open &&
-                  group.map((s) => (
-                    <div key={s.id} className={s.id === activeId ? "item active" : "item"}>
-                      <button className="open" onClick={() => select(s.id)}>
-                        <span className={s.runId ? "dot live" : "dot"} />
-                        <span className="title">{s.title}</span>
-                        <span className="agent">{s.agent}</span>
-                      </button>
-                      <button
-                        className={confirmDelete === s.id ? "del confirm" : "del"}
-                        title="Delete session"
-                        onClick={() => (confirmDelete === s.id ? void remove(s.id) : setConfirmDelete(s.id))}
-                        onBlur={() => setConfirmDelete(undefined)}
-                      >
-                        {confirmDelete === s.id ? "Delete?" : "×"}
-                      </button>
-                    </div>
-                  ))}
-              </div>
-            );
-          })}
-        </div>
-        <BackendPicker />
-      </aside>
+  if (loading) {
+    return (
+      <div className="flex h-dvh items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Spinner className="size-5" /> Connecting…
+      </div>
+    );
+  }
 
-      <main className="main">
-        {!active && connectionError && <div className="msg error" style={{ padding: 24 }}>{connectionError}</div>}
+  const running = !!active?.runId;
+  const agentItems = agents.map((a) => ({ value: a.kind, label: a.installed ? a.name : `${a.name} (not installed)` }));
+
+  return (
+    <div className="flex h-dvh bg-background text-foreground">
+      <Sidebar
+        sessions={sessions}
+        activeId={activeId}
+        collapsed={collapsed}
+        onSelect={select}
+        onNew={() => startSession(active?.cwd ?? "", active?.agent ?? "claude")}
+        onNewInProject={startSession}
+        onToggleProject={toggleProject}
+        onDelete={(id) => void remove(id)}
+      />
+
+      <main className="flex min-w-0 flex-1 flex-col">
+        {!active && connectionError && <p className="p-6 text-sm text-destructive">{connectionError}</p>}
         {active && (
           <>
-            <header className="bar">
+            <header className="flex items-center gap-2 border-b px-5 py-2.5">
               <CwdInput
                 key={active.id}
                 value={active.cwd}
@@ -282,139 +190,82 @@ export function App() {
                 onCommit={(cwd) => patch(active.id, (s) => ({ ...s, cwd }))}
               />
             </header>
-            <div className="transcript">
-              {connectionError && <div className="msg error">{connectionError}</div>}
-              {active.blocks.length === 0 && (
-                <div className="empty">{canRun(active) ? "What should we work on?" : "Choose a project folder to get started"}</div>
-              )}
-              {active.blocks.map((b, i) => (
-                <BlockView key={i} block={b} />
-              ))}
-              <div ref={endRef} />
-            </div>
-            <div className="composer">
-              <textarea
-                value={draft}
-                disabled={!canRun(active)}
-                placeholder={canRun(active) ? "Message the agent…" : "Choose a project folder first"}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    void send();
-                  }
-                }}
-              />
-              <div className="row">
-                <select
-                  value={active.agent}
-                  disabled={!!active.agentSessionId}
-                  onChange={(e) => patch(active.id, (s) => ({ ...s, agent: e.target.value as AgentKind }))}
-                >
-                  {agents.map((a) => (
-                    <option key={a.kind} value={a.kind} disabled={!a.installed}>
-                      {a.name}
-                      {a.installed ? "" : " (not installed)"}
-                    </option>
-                  ))}
-                </select>
-                {active.runId ? (
-                  <button onClick={() => void cancelRun(active.runId!)}>Stop</button>
-                ) : (
-                  <button className="primary" onClick={() => void send()} disabled={!draft.trim() || !canRun(active)}>
-                    Send
-                  </button>
+
+            <div className="flex-1 overflow-y-auto">
+              <div className="mx-auto flex max-w-3xl flex-col gap-4 px-5 py-6">
+                {connectionError && (
+                  <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                    {connectionError}
+                  </p>
                 )}
+                {active.blocks.length === 0 && (
+                  <p className="mt-[18vh] text-center text-xl text-muted-foreground">
+                    {canRun(active) ? "What should we work on?" : "Choose a project folder to get started"}
+                  </p>
+                )}
+                {active.blocks.map((b, i) => (
+                  <BlockView key={i} block={b} />
+                ))}
+                {(running || starting) && (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+                    <Spinner className="text-primary" /> Working…
+                  </div>
+                )}
+                <div ref={endRef} />
+              </div>
+            </div>
+
+            <div className="mx-auto w-full max-w-3xl px-5 pb-5">
+              <div className="rounded-2xl border bg-card p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/30">
+                <Textarea
+                  value={draft}
+                  disabled={!canRun(active)}
+                  placeholder={canRun(active) ? "Message the agent…" : "Choose a project folder first"}
+                  className="min-h-14 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent"
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void send();
+                    }
+                  }}
+                />
+                <div className="flex items-center justify-between gap-2 px-1 pt-1">
+                  <Select
+                    items={agentItems}
+                    value={active.agent}
+                    disabled={!!active.agentSessionId}
+                    onValueChange={(v) => v && patch(active.id, (s) => ({ ...s, agent: v as AgentKind }))}
+                  >
+                    <SelectTrigger size="sm" aria-label="Agent">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {agents.map((a) => (
+                        <SelectItem key={a.kind} value={a.kind} disabled={!a.installed}>
+                          {a.installed ? a.name : `${a.name} (not installed)`}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+
+                  {running ? (
+                    <Button variant="outline" size="sm" onClick={() => void cancelRun(active.runId!)}>
+                      <Square data-icon="inline-start" className="fill-current" />
+                      Stop
+                    </Button>
+                  ) : (
+                    <Button size="sm" onClick={() => void send()} disabled={!draft.trim() || !canRun(active) || starting}>
+                      {starting ? <Spinner data-icon="inline-start" /> : <ArrowUp data-icon="inline-start" />}
+                      Send
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
           </>
         )}
       </main>
-    </div>
-  );
-}
-
-/** Edits apply on blur/Enter so the session doesn't hop between project groups while typing. */
-function CwdInput({ value, locked, onCommit }: { value: string; locked: boolean; onCommit: (v: string) => void }) {
-  const [draft, setDraft] = useState(value);
-  const [picking, setPicking] = useState(false);
-  return (
-    <>
-      <input
-        className="cwd"
-        placeholder="Project folder — required"
-        value={draft}
-        disabled={locked}
-        title={locked ? "The project can't change once the agent session has started" : undefined}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => onCommit(draft.trim())}
-        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-        spellCheck={false}
-      />
-      <button className="browse" disabled={locked} onClick={() => setPicking(true)}>
-        Browse…
-      </button>
-      {picking && (
-        <FolderPicker
-          start={draft}
-          onClose={() => setPicking(false)}
-          onPick={(path) => {
-            setDraft(path);
-            onCommit(path);
-            setPicking(false);
-          }}
-        />
-      )}
-    </>
-  );
-}
-
-function BlockView({ block }: { block: Block }) {
-  switch (block.kind) {
-    case "user":
-      return <div className="msg user">{block.text}</div>;
-    case "text":
-      return (
-        <div className="msg assistant md">
-          <Markdown remarkPlugins={[remarkGfm]} components={{ a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}>
-            {block.text}
-          </Markdown>
-        </div>
-      );
-    case "thinking":
-      return <details className="thinking"><summary>Thinking</summary>{block.text}</details>;
-    case "error":
-      return <div className="msg error">{block.text}</div>;
-    case "tool":
-      return (
-        <details className={block.isError ? "tool err" : "tool"}>
-          <summary>
-            <b>{block.name}</b> <code>{JSON.stringify(block.input).slice(0, 100)}</code>
-            {block.output === undefined && <span className="spin"> …</span>}
-          </summary>
-          <pre>{JSON.stringify(block.input, null, 2)}</pre>
-          {block.output !== undefined && <pre>{block.output}</pre>}
-        </details>
-      );
-  }
-}
-
-function BackendPicker() {
-  const [url, setUrl] = useState(remoteUrl ?? "ws://localhost:3421");
-  const [mode, setMode] = useState(remoteUrl ? "remote" : "local");
-  if (!canSwitchBackend) return <div className="backend">Agents on {remoteUrl}</div>;
-  const changed = mode === "local" ? remoteUrl !== null : url !== remoteUrl;
-  return (
-    <div className="backend">
-      <label>
-        Agents run
-        <select value={mode} onChange={(e) => setMode(e.target.value)}>
-          <option value="local">on this machine</option>
-          <option value="remote">on a remote bach-server</option>
-        </select>
-      </label>
-      {mode === "remote" && <input value={url} onChange={(e) => setUrl(e.target.value)} spellCheck={false} />}
-      {changed && <button onClick={() => setBackend(mode === "local" ? null : url.trim())}>Apply</button>}
     </div>
   );
 }

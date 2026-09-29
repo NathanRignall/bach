@@ -14,7 +14,9 @@ CLI in headless JSON-streaming mode and normalizing their output into one event 
     are saved by whichever backend is in use: the Tauri app's data dir, or the bach-server host.
   - `server.rs`, `bin/bach-server.rs` — WebSocket bridge for browser use (see below).
 - `src-tauri/` — Tauri shell exposing the same commands to the window.
-- `src/` — React frontend (sessions sidebar, transcript, composer). Uses Tauri IPC inside the
+- `src/` — React frontend styled with Tailwind v4 and shadcn/ui (Base UI primitives, `base-nova`
+  style; components live in `src/components/ui`, add more with `pnpm dlx shadcn@latest add <name>`).
+  Theme tokens are in `src/index.css` and follow the system light/dark setting. Uses Tauri IPC inside the
   app and the WebSocket bridge in a plain browser (`src/api.ts`).
 
 ## Develop
