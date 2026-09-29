@@ -92,11 +92,6 @@ export function App() {
   const patch = (id: string, f: (s: Session) => Session) =>
     setSessions((all) => all.map((s) => (s.id === id ? f(s) : s)));
 
-  function select(id: string) {
-    setSessions((a) => a.filter((x) => x.id === id || isKept(x)));
-    setActiveId(id);
-  }
-
   function toggleProject(key: string) {
     const next = new Set(collapsed);
     next.has(key) ? next.delete(key) : next.add(key);
@@ -162,7 +157,7 @@ export function App() {
         buffered.reduce(applyEvent, {
           ...s,
           runId,
-          title: s.blocks.length ? s.title : prompt.slice(0, 40),
+          title: s.blocks.length || s.titleEdited ? s.title : prompt.slice(0, 40),
           blocks: [...s.blocks, { kind: "user", text: prompt }],
         }),
       );
@@ -190,11 +185,12 @@ export function App() {
         sessions={sessions}
         activeId={activeId}
         collapsed={collapsed}
-        onSelect={select}
+        onSelect={setActiveId}
         onNew={() => startSession(active?.cwd ?? "", active?.agent ?? "claude")}
         onNewInProject={startSession}
         onToggleProject={toggleProject}
         onDelete={(id) => void remove(id)}
+        onRename={(id, title) => patch(id, (s) => ({ ...s, title, titleEdited: true }))}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">

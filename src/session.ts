@@ -11,6 +11,8 @@ export type Block =
 export interface Session {
   id: string;
   title: string;
+  /** The user named it, so the first prompt shouldn't. */
+  titleEdited?: boolean;
   agent: AgentKind;
   /** The project folder; sessions are grouped by it. */
   cwd: string;

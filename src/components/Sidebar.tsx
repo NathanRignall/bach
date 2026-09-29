@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -16,10 +17,23 @@ interface Props {
   onNewInProject: (cwd: string, agent: Session["agent"]) => void;
   onToggleProject: (key: string) => void;
   onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => void;
 }
 
-export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onDelete }: Props) {
+export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onDelete, onRename }: Props) {
   const [confirmDelete, setConfirmDelete] = useState<string>();
+  const [editing, setEditing] = useState<{ id: string; draft: string }>();
+  const cancelled = useRef(false);
+
+  function finishRename() {
+    if (editing && !cancelled.current) {
+      const title = editing.draft.trim();
+      const current = sessions.find((s) => s.id === editing.id)?.title;
+      if (title && title !== current) onRename(editing.id, title);
+    }
+    cancelled.current = false;
+    setEditing(undefined);
+  }
   return (
     <aside className="flex w-64 shrink-0 flex-col gap-3 border-r bg-sidebar p-3 text-sidebar-foreground">
       <Button variant="outline" onClick={onNew}>
@@ -64,15 +78,42 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
                           s.id === activeId ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60",
                         )}
                       >
-                        <button onClick={() => onSelect(s.id)} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm">
-                          {s.runId ? (
-                            <Spinner className="size-3.5 shrink-0 text-primary" aria-label="Running" />
-                          ) : (
-                            <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground/30" />
-                          )}
-                          <span className="min-w-0 flex-1 truncate">{s.title}</span>
-                          <span className="text-[11px] text-muted-foreground">{s.agent}</span>
-                        </button>
+                        {editing?.id === s.id ? (
+                          <div className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1">
+                            <Input
+                              autoFocus
+                              aria-label="Session name"
+                              value={editing.draft}
+                              maxLength={80}
+                              className="h-6 px-1.5 text-sm"
+                              onFocus={(e) => e.currentTarget.select()}
+                              onChange={(e) => setEditing({ id: s.id, draft: e.target.value })}
+                              onBlur={finishRename}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") e.currentTarget.blur();
+                                if (e.key === "Escape") {
+                                  cancelled.current = true;
+                                  e.currentTarget.blur();
+                                }
+                              }}
+                            />
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => onSelect(s.id)}
+                            onDoubleClick={() => setEditing({ id: s.id, draft: s.title })}
+                            title="Double-click to rename"
+                            className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm"
+                          >
+                            {s.runId ? (
+                              <Spinner className="size-3.5 shrink-0 text-primary" aria-label="Running" />
+                            ) : (
+                              <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground/30" />
+                            )}
+                            <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                            <span className="text-[11px] text-muted-foreground">{s.agent}</span>
+                          </button>
+                        )}
                         <Button
                           variant={confirming ? "destructive" : "ghost"}
                           size="xs"
