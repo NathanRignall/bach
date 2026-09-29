@@ -1,7 +1,9 @@
 //! Branch info and per-session workspaces (plain checkout or an isolated git worktree).
 //! Shells out to `git`, which must be on the backend host's PATH.
 use crate::fs::expand_home;
-pub use bach_protocol::{GitInfo, Workspace, WorktreeEntry};
+pub use bach_protocol::{
+    DiffHunk, DiffLine, FileDiff, FileStatus, GitDiff, GitInfo, LineKind, Workspace, WorktreeEntry,
+};
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
@@ -77,6 +79,12 @@ impl Git {
 
     pub async fn info(&self, path: String) -> Result<GitInfo, String> {
         tokio::task::spawn_blocking(move || info_sync(&path))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    pub async fn diff(&self, path: String, base_branch: Option<String>) -> Result<GitDiff, String> {
+        tokio::task::spawn_blocking(move || diff_sync(&path, base_branch.as_deref()))
             .await
             .map_err(|e| e.to_string())?
     }
@@ -309,6 +317,237 @@ fn prepare_sync(
     })
 }
 
+/// A file with more changed lines than this is listed without its lines.
+const MAX_FILE_LINES: usize = 5_000;
+/// Once the diff holds this many lines, the remaining files are listed without theirs.
+const MAX_TOTAL_LINES: usize = 40_000;
+/// Untracked files beyond this many aren't shown (a missing `.gitignore` can mean thousands).
+const MAX_UNTRACKED: usize = 500;
+
+/// Like [`run`], but for commands that exit with 1 to say "there were differences".
+fn run_diff(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        // Whatever the user's config says: plain output, `a/` `b/` prefixes, unquoted paths.
+        .args(["-c", "core.quotePath=false", "-c", "diff.noprefix=false"])
+        .args(args)
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+    match out.status.code() {
+        Some(0 | 1) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        _ => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+    }
+}
+
+const DIFF_OPTS: [&str; 6] = [
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--find-renames",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+];
+
+fn diff_sync(path: &str, base_branch: Option<&str>) -> Result<GitDiff, String> {
+    let dir = folder(path)?;
+    let info = info_sync(path)?;
+    if !info.is_repo {
+        return Err(format!("{} is not a git repository.", dir.display()));
+    }
+    let head = run(&dir, &["rev-parse", "--verify", "--quiet", "HEAD"]).ok();
+    let base = match base_branch {
+        // Only known branches, which also keeps option-like names away from git.
+        Some(b) if !info.branches.iter().any(|x| x == b) => {
+            return Err(format!("Unknown branch `{b}`."))
+        }
+        Some(b) if head.is_some() => Some(run(&dir, &["merge-base", b, "HEAD"])?),
+        _ => head,
+    };
+    // Before the first commit, everything is compared with the empty tree.
+    let against = match &base {
+        Some(c) => c.clone(),
+        None => run(&dir, &["hash-object", "-t", "tree", "/dev/null"])?,
+    };
+
+    let mut args = vec!["diff"];
+    args.extend(DIFF_OPTS);
+    args.extend([against.as_str(), "--"]);
+    let mut files = parse_diff(&run_diff(&dir, &args)?);
+
+    let untracked = run(&dir, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    for name in untracked
+        .split('\0')
+        .filter(|n| !n.is_empty())
+        .take(MAX_UNTRACKED)
+    {
+        let mut args = vec!["diff", "--no-index"];
+        args.extend(DIFF_OPTS);
+        args.extend(["--", "/dev/null", name]);
+        for mut f in parse_diff(&run_diff(&dir, &args)?) {
+            f.path = name.to_string();
+            f.untracked = true;
+            files.push(f);
+        }
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let mut total = 0;
+    let mut truncated = false;
+    for f in &mut files {
+        let lines: usize = f.hunks.iter().map(|h| h.lines.len()).sum();
+        if lines > MAX_FILE_LINES || total + lines > MAX_TOTAL_LINES {
+            f.hunks.clear();
+            f.omitted = true;
+            truncated = true;
+        } else {
+            total += lines;
+        }
+    }
+
+    let base = match base {
+        Some(c) => Some(run(&dir, &["rev-parse", "--short", &c])?),
+        None => None,
+    };
+    Ok(GitDiff {
+        base,
+        files,
+        truncated,
+    })
+}
+
+/// A path from a `--- a/x` / `+++ b/x` line; None for `/dev/null`.
+fn diff_path(s: &str) -> Option<String> {
+    // Git appends a tab to names containing spaces.
+    let s = s.strip_suffix('\t').unwrap_or(s);
+    if s == "/dev/null" {
+        return None;
+    }
+    let s = s
+        .strip_prefix("a/")
+        .or_else(|| s.strip_prefix("b/"))
+        .unwrap_or(s);
+    Some(s.to_string())
+}
+
+/// `@@ -12,3 +14,5 @@` → (12, 14)
+fn hunk_starts(header: &str) -> (u32, u32) {
+    let mut parts = header.split_whitespace().skip(1);
+    let mut start = |sign: char| {
+        parts
+            .next()
+            .and_then(|p| p.strip_prefix(sign))
+            .and_then(|p| p.split(',').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(1)
+    };
+    let old = start('-');
+    (old, start('+'))
+}
+
+/// Parses `git diff` output (unified, with `a/` and `b/` prefixes and unquoted paths).
+fn parse_diff(text: &str) -> Vec<FileDiff> {
+    let mut files: Vec<FileDiff> = vec![];
+    let (mut old_no, mut new_no) = (0, 0);
+    let mut in_header = false;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            // `a/x b/x`: both halves are the same length unless renamed (then `rename to`
+            // or `+++` says which is which).
+            let half = rest.len().saturating_sub(1) / 2;
+            let guess = rest.get(half + 1..).and_then(diff_path).unwrap_or_default();
+            files.push(FileDiff {
+                path: guess,
+                old_path: None,
+                status: FileStatus::Modified,
+                untracked: false,
+                binary: false,
+                additions: 0,
+                deletions: 0,
+                hunks: vec![],
+                omitted: false,
+            });
+            in_header = true;
+            continue;
+        }
+        let Some(f) = files.last_mut() else { continue };
+        if in_header {
+            if line.starts_with("new file mode") {
+                f.status = FileStatus::Added;
+            } else if line.starts_with("deleted file mode") {
+                f.status = FileStatus::Deleted;
+            } else if let Some(p) = line.strip_prefix("rename from ") {
+                f.status = FileStatus::Renamed;
+                f.old_path = Some(p.to_string());
+            } else if let Some(p) = line.strip_prefix("rename to ") {
+                f.path = p.to_string();
+            } else if line.starts_with("Binary files ") {
+                f.binary = true;
+            } else if let Some(p) = line.strip_prefix("--- ") {
+                if let (Some(p), FileStatus::Deleted) = (diff_path(p), f.status) {
+                    f.path = p;
+                }
+            } else if let Some(p) = line.strip_prefix("+++ ") {
+                if let Some(p) = diff_path(p) {
+                    f.path = p;
+                }
+            }
+        }
+        if line.starts_with("@@") {
+            in_header = false;
+            (old_no, new_no) = hunk_starts(line);
+            f.hunks.push(DiffHunk {
+                header: line.to_string(),
+                lines: vec![],
+            });
+            continue;
+        }
+        if in_header {
+            continue;
+        }
+        let Some(h) = f.hunks.last_mut() else {
+            continue;
+        };
+        let (kind, text) = match line.split_at_checked(1) {
+            Some(("+", t)) => (LineKind::Add, t),
+            Some(("-", t)) => (LineKind::Delete, t),
+            Some((" ", t)) => (LineKind::Context, t),
+            Some(("\\", _)) => {
+                if let Some(l) = h.lines.last_mut() {
+                    l.no_newline = true;
+                }
+                continue;
+            }
+            // An empty context line (some tools strip the trailing space).
+            _ => (LineKind::Context, ""),
+        };
+        let (old, new) = match kind {
+            LineKind::Add => (None, Some(new_no)),
+            LineKind::Delete => (Some(old_no), None),
+            LineKind::Context => (Some(old_no), Some(new_no)),
+        };
+        if old.is_some() {
+            old_no += 1;
+        }
+        if new.is_some() {
+            new_no += 1;
+        }
+        match kind {
+            LineKind::Add => f.additions += 1,
+            LineKind::Delete => f.deletions += 1,
+            LineKind::Context => {}
+        }
+        h.lines.push(DiffLine {
+            kind,
+            text: text.to_string(),
+            old,
+            new,
+            no_newline: false,
+        });
+    }
+    files
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,6 +747,67 @@ mod tests {
     }
 
     #[test]
+    fn diffs_uncommitted_and_branch_changes() {
+        let (base, repo) = repo("diff");
+        let path = repo.to_str().unwrap();
+        assert!(diff_sync(path, None).unwrap().files.is_empty());
+
+        std::fs::write(repo.join("a.txt"), "a\nb\n").unwrap();
+        std::fs::write(repo.join("gone.txt"), "x\n").unwrap();
+        sh(&repo, &["add", "."]);
+        sh(&repo, &["commit", "-q", "-m", "two"]);
+        sh(&repo, &["switch", "-q", "-c", "feature"]);
+        std::fs::write(repo.join("c.txt"), "committed\n").unwrap();
+        sh(&repo, &["add", "."]);
+        sh(&repo, &["commit", "-q", "-m", "three"]);
+        std::fs::write(repo.join("a.txt"), "a\nB\nc").unwrap();
+        std::fs::remove_file(repo.join("gone.txt")).unwrap();
+        std::fs::write(repo.join("new file.txt"), "n\n").unwrap();
+
+        let d = diff_sync(path, None).unwrap();
+        let by = |p: &str| d.files.iter().find(|f| f.path == p).unwrap();
+        assert_eq!(d.files.len(), 3, "{:?}", d.files);
+        let a = by("a.txt");
+        assert_eq!(
+            (a.status, a.additions, a.deletions),
+            (FileStatus::Modified, 2, 1)
+        );
+        let lines = &a.hunks[0].lines;
+        assert_eq!(lines[0].kind, LineKind::Context);
+        assert_eq!(
+            (lines[1].kind, lines[1].old, lines[1].text.as_str()),
+            (LineKind::Delete, Some(2), "b")
+        );
+        assert_eq!((lines[2].kind, lines[2].new), (LineKind::Add, Some(2)));
+        assert!(lines[3].no_newline && lines[3].new == Some(3));
+        assert_eq!(by("gone.txt").status, FileStatus::Deleted);
+        let n = by("new file.txt");
+        assert!(n.untracked && n.status == FileStatus::Added && n.additions == 1);
+
+        // Against the branch it came from: the committed file shows up too.
+        let d = diff_sync(path, Some("main")).unwrap();
+        assert_eq!(d.files.len(), 4);
+        assert!(d
+            .files
+            .iter()
+            .any(|f| f.path == "c.txt" && f.status == FileStatus::Added));
+        assert!(diff_sync(path, Some("--all")).is_err());
+        assert!(diff_sync(path, Some("nope")).is_err());
+
+        sh(&repo, &["add", "-A"]);
+        sh(&repo, &["commit", "-q", "-m", "four"]);
+        sh(&repo, &["mv", "c.txt", "d.txt"]);
+        let d = diff_sync(path, None).unwrap();
+        assert_eq!(d.files.len(), 1);
+        assert_eq!(d.files[0].status, FileStatus::Renamed);
+        assert_eq!(
+            (d.files[0].path.as_str(), d.files[0].old_path.as_deref()),
+            ("d.txt", Some("c.txt"))
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn works_in_a_repo_with_no_commits() {
         let base = std::env::temp_dir().join(format!("bach-git-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -524,6 +824,11 @@ mod tests {
         assert_eq!(ws.workdir, path);
         // An unrelated unknown branch is still refused.
         assert!(prepare_sync(&base.join("wt"), path, Some("nope".into()), false, None).is_err());
+
+        // Its diff is everything there, against nothing.
+        std::fs::write(base.join("a.txt"), "a\n").unwrap();
+        let d = diff_sync(path, None).unwrap();
+        assert!(d.base.is_none() && d.files.len() == 1 && d.files[0].untracked);
         let _ = std::fs::remove_dir_all(base);
     }
 }
