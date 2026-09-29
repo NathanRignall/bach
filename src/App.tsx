@@ -31,7 +31,8 @@ import { TerminalPanel } from "@/components/TerminalPanel";
 import { UsageIndicator, usePlanUsage } from "@/components/UsageIndicator";
 import { Composer } from "@/components/Composer";
 import { NewSessionPage } from "@/components/NewSessionPage";
-import { SessionHeader } from "@/components/SessionHeader";
+import { SessionHeader, SessionView } from "@/components/SessionHeader";
+import { DiffMode, DiffView, diffBase, useDiff } from "@/components/DiffView";
 import { SIDEBAR_WIDTH, Sidebar } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -96,6 +97,8 @@ export function App() {
   const contentRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const [showJump, setShowJump] = useState(false);
+  const [view, setView] = useState<SessionView>("chat");
+  const [diffMode, setDiffMode] = useState<DiffMode>("uncommitted");
 
   /** Fetches a session's transcript, or the part of it after what's already here. */
   async function fetchTranscript(id: string) {
@@ -176,6 +179,14 @@ export function App() {
 
   const active = sessions.find((s) => s.id === activeId);
   const transcript = activeId ? transcripts.current.get(activeId) : undefined;
+  const showChanges = !!active && view === "changes";
+  const diff = useDiff(active, diffMode, showChanges);
+
+  // Each session opens on its chat; a worktree's changes are compared with where it branched from.
+  useEffect(() => {
+    setView("chat");
+    setDiffMode(active && diffBase(active) ? "branch" : "uncommitted");
+  }, [activeId]);
 
   useEffect(() => {
     if (activeId && !transcripts.current.has(activeId)) void fetchTranscript(activeId);
@@ -210,7 +221,7 @@ export function App() {
 
   // Re-pin to the bottom when switching sessions, then follow growth of the content (new
   // blocks, sub-agent steps, an expanded card) for as long as the reader hasn't scrolled up.
-  const chatShown = !!active;
+  const chatShown = !!active && !showChanges;
   useEffect(() => {
     const content = contentRef.current;
     if (!content) return;
@@ -222,12 +233,17 @@ export function App() {
     return () => ro.disconnect();
   }, [activeId, chatShown]);
 
-  // Cmd/Ctrl+B hides and shows the sidebar.
+  // Cmd/Ctrl+B hides and shows the sidebar; Cmd/Ctrl+Shift+D switches between chat and changes.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "b") {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      const key = e.key.toLowerCase();
+      if (!e.shiftKey && key === "b") {
         e.preventDefault();
         setSidebarOpen(!sidebarOpen);
+      } else if (e.shiftKey && key === "d") {
+        e.preventDefault();
+        setView((v) => (v === "chat" ? "changes" : "chat"));
       }
     };
     window.addEventListener("keydown", onKey);
@@ -435,7 +451,10 @@ export function App() {
         )}
         {active && (
           <>
-            <SessionHeader session={active} inset={!sidebarOpen} />
+            <SessionHeader session={active} inset={!sidebarOpen} view={view} onView={setView} changedFiles={diff.diff?.files.length} />
+            {showChanges && <DiffView session={active} state={diff} mode={diffMode} onMode={setDiffMode} />}
+            {!showChanges && (
+            <>
 
             <TranscriptContext.Provider value={{ decide, retry: running || starting ? undefined : retry }}>
             <div className="relative min-h-0 flex-1">
@@ -519,6 +538,8 @@ export function App() {
                 onPermissionMode={(permissionMode) => void update({ sessionId: active.id, permissionMode })}
               />
             </div>
+            </>
+            )}
           </>
         )}
         <TerminalPanel project={projectKey(active?.cwd ?? newDraft.cwd)} cwd={(active?.workdir ?? active?.cwd ?? newDraft.cwd).trim()} />

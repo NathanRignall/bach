@@ -8,7 +8,7 @@
 //! arguments are a struct named after it with an `Args` suffix; its doc comment documents the
 //! command.
 use crate::{
-    AgentInfo, AgentKind, ApiError, Decision, DirListing, GitInfo, PlanUsage, Session,
+    AgentInfo, AgentKind, ApiError, Decision, DirListing, GitDiff, GitInfo, PlanUsage, Session,
     SessionLog, TerminalInfo, TerminalSnapshot, WorktreeEntry,
 };
 use satie_protocol::{
@@ -104,6 +104,7 @@ commands! {
 
     list_dir(ListDirArgs) -> DirListing;
     git_info(GitInfoArgs) -> GitInfo;
+    git_diff(GitDiffArgs) -> GitDiff;
     list_worktrees(ListWorktreesArgs) -> Vec<WorktreeEntry>;
     remove_worktree(RemoveWorktreeArgs) -> ();
 
@@ -257,6 +258,16 @@ pub struct ListDirArgs {
 #[derive(Debug, Deserialize, TS)]
 pub struct GitInfoArgs {
     pub path: String,
+}
+
+/// The changes in the checkout at `path`: uncommitted ones (including untracked files), or with
+/// `baseBranch`, everything since the branch left it (committed or not).
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(optional_fields)]
+pub struct GitDiffArgs {
+    pub path: String,
+    pub base_branch: Option<String>,
 }
 
 /// Worktrees Bach created on the backend host.
