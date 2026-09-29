@@ -164,7 +164,7 @@ pub struct StartSessionArgs {
     pub model_choice: Option<String>,
     pub permission_mode: Option<String>,
     pub prompt: String,
-    /// Images sent with the prompt, as `data:` URLs (Claude Code only).
+    /// Images sent with the prompt, as `data:` URLs.
     #[serde(default)]
     #[ts(as = "Option<Vec<String>>")]
     pub images: Vec<String>,
@@ -177,7 +177,7 @@ pub struct StartSessionArgs {
 pub struct SendMessageArgs {
     pub session_id: String,
     pub prompt: String,
-    /// Images sent with the prompt, as `data:` URLs (Claude Code only).
+    /// Images sent with the prompt, as `data:` URLs.
     #[serde(default)]
     #[ts(as = "Option<Vec<String>>")]
     pub images: Vec<String>,

@@ -250,13 +250,14 @@ async fn a_session_from_first_message_to_deletion() {
 
     // A first message that can't reach an agent leaves nothing behind.
     let before = api.call("list_sessions", Value::Null).await.unwrap();
-    let e = api
-        .call(
-            "start_session",
-            json!({ "agent": "codex", "cwd": proj, "prompt": "hi", "modelChoice": "x" }),
-        )
-        .await;
+    // (Only without Codex installed: with it, this would start a real run.)
     if which_codex_missing() {
+        let e = api
+            .call(
+                "start_session",
+                json!({ "agent": "codex", "cwd": proj, "prompt": "hi", "modelChoice": "x" }),
+            )
+            .await;
         assert!(e.is_err());
         assert_eq!(api.call("list_sessions", Value::Null).await.unwrap(), before);
     }

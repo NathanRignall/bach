@@ -139,13 +139,10 @@ fn title_for(prompt: &str) -> String {
     }
 }
 
-/// A message needs text or images, and only Claude Code takes images.
-fn check_message(prompt: &str, images: &[String], agent: AgentKind) -> Result<(), ApiError> {
+/// A message needs text or images.
+fn check_message(prompt: &str, images: &[String]) -> Result<(), ApiError> {
     if prompt.is_empty() && images.is_empty() {
         return Err(ApiError::invalid("Write a message first."));
-    }
-    if !images.is_empty() && agent != AgentKind::Claude {
-        return Err(ApiError::invalid("Only Claude Code can be sent images so far."));
     }
     if images.iter().any(|i| !i.starts_with("data:image/")) {
         return Err(ApiError::invalid("Images must be sent as `data:image/…` URLs."));
@@ -171,7 +168,7 @@ impl Api {
     /// is busy, the message is queued instead.
     async fn send(&self, id: &str, prompt: String, images: Vec<String>) -> Result<Session, ApiError> {
         let prompt = prompt.trim().to_string();
-        check_message(&prompt, &images, self.sessions.get(id)?.agent)?;
+        check_message(&prompt, &images)?;
         let run_id = uuid::Uuid::new_v4().to_string();
         let mut queued = false;
         let s = self.sessions.update(id, |s| {
@@ -401,7 +398,7 @@ impl Handler for Api {
 
     async fn start_session(&self, a: StartSessionArgs) -> Result<Session, ApiError> {
         let prompt = a.prompt.trim().to_string();
-        check_message(&prompt, &a.images, a.agent)?;
+        check_message(&prompt, &a.images)?;
         let cwd = a.cwd.trim().to_string();
         if cwd.is_empty() {
             return Err(ApiError::invalid("Choose a project folder first."));

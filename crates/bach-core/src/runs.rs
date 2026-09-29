@@ -3,10 +3,17 @@ use crate::{
 };
 pub use bach_protocol::Decision;
 use bach_protocol::ApiError;
+use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Serialize;
 use satie::{Satie, Scope};
 use serde_json::{json, Value};
-use std::{collections::HashMap, os::unix::process::ExitStatusExt, process::Stdio, sync::Arc};
+use std::{
+    collections::HashMap,
+    os::unix::{fs::DirBuilderExt, process::ExitStatusExt},
+    path::PathBuf,
+    process::Stdio,
+    sync::Arc,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{ChildStdin, Command},
@@ -29,7 +36,7 @@ pub struct RunEvent {
 pub struct RunRequest {
     pub agent: AgentKind,
     pub prompt: String,
-    /// Images sent with the prompt, as `data:` URLs (Claude Code only).
+    /// Images sent with the prompt, as `data:` URLs.
     pub images: Vec<String>,
     pub cwd: Option<String>,
     /// The agent's own session id, to continue an earlier conversation.
@@ -69,6 +76,66 @@ pub struct Runs {
     live: Arc<Mutex<HashMap<String, Live>>>,
     /// Satie (background tasks), offered to Claude Code runs as an MCP server.
     satie: Option<Satie>,
+}
+
+/// A run's images written out for an agent that takes them as files, in a folder only this user
+/// can read. The folder is removed when this is dropped (the run is over).
+struct ImageFiles {
+    dir: Option<PathBuf>,
+    paths: Vec<String>,
+}
+
+impl ImageFiles {
+    const NONE: Self = Self {
+        dir: None,
+        paths: vec![],
+    };
+
+    /// Writes `images` (`data:image/…;base64,` URLs) to `<temp>/bach-images/<run_id>/`.
+    fn write(run_id: &str, images: &[String]) -> Result<Self, String> {
+        if images.is_empty() {
+            return Ok(Self::NONE);
+        }
+        let dir = std::env::temp_dir().join("bach-images").join(run_id);
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .map_err(|e| format!("couldn't save the images: {e}"))?;
+        // From here on, dropping `files` cleans up whatever was written.
+        let mut files = Self {
+            dir: Some(dir.clone()),
+            paths: vec![],
+        };
+        for (i, url) in images.iter().enumerate() {
+            let (ext, bytes) = decode_image(url).ok_or("One of the images couldn't be read.")?;
+            let path = dir.join(format!("image-{}.{ext}", i + 1));
+            std::fs::write(&path, bytes).map_err(|e| format!("couldn't save the images: {e}"))?;
+            files.paths.push(path.to_string_lossy().into_owned());
+        }
+        Ok(files)
+    }
+}
+
+impl Drop for ImageFiles {
+    fn drop(&mut self) {
+        if let Some(dir) = &self.dir {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+/// A `data:image/png;base64,…` URL as a file extension and the image's bytes.
+fn decode_image(url: &str) -> Option<(&'static str, Vec<u8>)> {
+    let (media_type, data) = url.strip_prefix("data:")?.split_once(";base64,")?;
+    let ext = match media_type {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => return None,
+    };
+    Some((ext, B64.decode(data).ok()?))
 }
 
 /// The permission modes Claude Code accepts (besides its default).
@@ -218,9 +285,16 @@ impl Runs {
 
         let stdin_prompt = agent.stdin_prompt(&prompt, &images);
 
+        let run_id = run_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        // Agents that take images by path get files that last as long as the run.
+        let image_files = if agent.images_as_files() {
+            ImageFiles::write(&run_id, &images)?
+        } else {
+            ImageFiles::NONE
+        };
+
         // Claude Code gets Satie as an MCP server, with a token scoped to this project. The grant
         // is revoked when the run ends (or if launching fails below).
-        let run_id = run_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let grant = match (&self.satie, agent) {
             (Some(satie), AgentKind::Claude) => Some(satie.grant(Scope {
                 project: project.as_ref().map(|p| p.to_string_lossy().into_owned()),
@@ -232,6 +306,7 @@ impl Runs {
         let mut cmd = Command::new(agent.binary());
         cmd.args(agent.args(
             &prompt,
+            &image_files.paths,
             session_id.as_deref(),
             model.as_deref(),
             permission_mode.as_deref(),
@@ -301,6 +376,7 @@ impl Runs {
 
         tokio::spawn(async move {
             let _grant = grant; // revoked when the run ends
+            let _image_files = image_files; // removed when the run ends
             let mut lines = BufReader::new(stdout).lines();
             let mut done = false;
             loop {
@@ -515,12 +591,37 @@ mod tests {
             let err = runs.start(noop(), r).await.unwrap_err();
             assert!(err.contains("isn't a permission mode"), "{m}: {err}");
         }
-        let a = AgentKind::Claude.args("hi", None, None, Some("auto"), &[], None);
+        let a = AgentKind::Claude.args("hi", &[], None, None, Some("auto"), &[], None);
         let at = a.iter().position(|x| x == "--permission-mode").unwrap();
         assert_eq!(a[at + 1], "auto");
         assert!(!AgentKind::Claude
-            .args("hi", None, None, None, &[], None)
+            .args("hi", &[], None, None, None, &[], None)
             .contains(&"--permission-mode".to_string()));
+    }
+
+    #[test]
+    fn image_files_last_as_long_as_the_run() {
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let files = ImageFiles::write(&run_id, &["data:image/png;base64,iVBORw0K".into()]).unwrap();
+        let path = PathBuf::from(&files.paths[0]);
+        assert!(path.ends_with(format!("bach-images/{run_id}/image-1.png")));
+        assert_eq!(std::fs::read(&path).unwrap(), b"\x89PNG\r\n");
+        drop(files);
+        assert!(!path.parent().unwrap().exists());
+
+        // Nothing is left behind when one can't be read.
+        let bad = ImageFiles::write(
+            &run_id,
+            &[
+                "data:image/png;base64,AAAA".into(),
+                "data:text/plain;base64,AAAA".into(),
+            ],
+        );
+        assert!(bad.is_err());
+        assert!(!std::env::temp_dir()
+            .join("bach-images")
+            .join(&run_id)
+            .exists());
     }
 
     #[tokio::test]

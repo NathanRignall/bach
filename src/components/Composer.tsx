@@ -135,10 +135,7 @@ export function Composer(p: Props) {
     description: AGENT_DESCRIPTIONS[a.kind],
     disabled: !a.installed,
   }));
-  // Only Claude Code takes images so far.
-  const takesImages = p.agent === "claude";
-  const blockedReason = p.blockedReason ?? (p.images.length && !takesImages ? "Only Claude Code can be sent images" : undefined);
-  const canSend = (!!p.draft.trim() || p.images.length > 0) && !blockedReason && !p.starting;
+  const canSend = (!!p.draft.trim() || p.images.length > 0) && !p.blockedReason && !p.starting;
   const [dragging, setDragging] = useState(false);
   const [imageError, setImageError] = useState<string>();
 
@@ -155,14 +152,14 @@ export function Composer(p: Props) {
   const onDragOver = (e: DragEvent) => {
     if (!hasFiles(e)) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = takesImages ? "copy" : "none";
-    setDragging(takesImages);
+    e.dataTransfer.dropEffect = "copy";
+    setDragging(true);
   };
   const onDrop = (e: DragEvent) => {
     if (!hasFiles(e)) return;
     e.preventDefault();
     setDragging(false);
-    if (takesImages) void attach(imageFiles(e.dataTransfer.files));
+    void attach(imageFiles(e.dataTransfer.files));
   };
 
   return (
@@ -216,7 +213,7 @@ export function Composer(p: Props) {
             onChange={(e) => p.onDraft(e.target.value)}
             onPaste={(e) => {
               const files = imageFiles(e.clipboardData.files);
-              if (!files.length || !takesImages) return;
+              if (!files.length) return;
               e.preventDefault();
               void attach(files);
             }}
@@ -241,7 +238,7 @@ export function Composer(p: Props) {
               </Button>
             </div>
           ) : (
-            <Button size="sm" onClick={p.onSend} disabled={!canSend} title={blockedReason}>
+            <Button size="sm" onClick={p.onSend} disabled={!canSend} title={p.blockedReason}>
               {p.starting ? <Spinner data-icon="inline-start" /> : <ArrowUp data-icon="inline-start" />}
               Send
             </Button>

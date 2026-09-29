@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "457e287fc12e5971";
+export const PROTOCOL = "60a7ed8edabe2c83";
 
 /**
  * Agent-independent events the UI renders.
@@ -378,7 +378,7 @@ export type ResizeTerminalArgs = { terminalId: string, cols: number, rows: numbe
  */
 export type SendMessageArgs = { sessionId: string, prompt: string, 
 /**
- * Images sent with the prompt, as `data:` URLs (Claude Code only).
+ * Images sent with the prompt, as `data:` URLs.
  */
 images?: Array<string>, };
 
@@ -499,7 +499,7 @@ export type StartSessionArgs = { agent: AgentKind, cwd: string, branch?: string,
  */
 newBranch?: string, modelChoice?: string, permissionMode?: string, prompt: string, 
 /**
- * Images sent with the prompt, as `data:` URLs (Claude Code only).
+ * Images sent with the prompt, as `data:` URLs.
  */
 images?: Array<string>, };
 
