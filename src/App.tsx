@@ -45,6 +45,29 @@ const newSession = (agent: AgentKind, cwd = ""): Session => ({
   blocks: [],
 });
 
+/** A session's project is its working directory. */
+const projectKey = (cwd: string) => cwd.trim().replace(/\/+$/, "");
+const projectName = (key: string) => (key ? key.split("/").filter(Boolean).pop() ?? key : "No project");
+
+/** Groups keep the order of their first (most recent) session. */
+function groupByProject(sessions: Session[]): [string, Session[]][] {
+  const groups = new Map<string, Session[]>();
+  for (const s of sessions) {
+    const key = projectKey(s.cwd);
+    groups.set(key, [...(groups.get(key) ?? []), s]);
+  }
+  return [...groups];
+}
+
+const COLLAPSED_KEY = "bach.collapsedProjects";
+const loadCollapsed = (): Set<string> => {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]"));
+  } catch {
+    return new Set();
+  }
+};
+
 function applyEvent(s: Session, e: RunEvent): Session {
   const blocks = [...s.blocks];
   switch (e.type) {
@@ -87,6 +110,7 @@ export function App() {
   // What the backend already has, so unchanged sessions aren't re-saved (a save reorders history).
   const saved = useRef(new Map<string, Session>());
   const [confirmDelete, setConfirmDelete] = useState<string>();
+  const [collapsed, setCollapsed] = useState(loadCollapsed);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -129,6 +153,31 @@ export function App() {
     }, 400);
     return () => clearTimeout(t);
   }, [sessions]);
+
+  // Empty sessions were never saved; don't let them pile up as the user moves around.
+  const isKept = (x: Session) => x.blocks.length > 0 || !!x.runId;
+
+  function select(id: string) {
+    setSessions((a) => a.filter((x) => x.id === id || isKept(x)));
+    setActiveId(id);
+  }
+
+  function toggleProject(key: string) {
+    const next = new Set(collapsed);
+    next.has(key) ? next.delete(key) : next.add(key);
+    setCollapsed(next);
+    try {
+      localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+    } catch {}
+  }
+
+  function startSession(cwd: string, agent: AgentKind) {
+    const s = newSession(agent, cwd);
+    setSessions((a) => [s, ...a.filter(isKept)]);
+    setActiveId(s.id);
+    // Make sure the new session is visible even if its project was collapsed.
+    if (collapsed.has(projectKey(cwd))) toggleProject(projectKey(cwd));
+  }
 
   async function remove(id: string) {
     const s = sessions.find((x) => x.id === id);
@@ -174,34 +223,45 @@ export function App() {
   return (
     <div className="app">
       <aside className="sidebar">
-        <button
-          className="new"
-          onClick={() => {
-            const s = newSession(active?.agent ?? "claude", active?.cwd);
-            setSessions((a) => [s, ...a]);
-            setActiveId(s.id);
-          }}
-        >
+        <button className="new" onClick={() => startSession(active?.cwd ?? "", active?.agent ?? "claude")}>
           + New session
         </button>
         <div className="list">
-          {sessions.map((s) => (
-            <div key={s.id} className={s.id === activeId ? "item active" : "item"}>
-              <button className="open" onClick={() => setActiveId(s.id)}>
-                <span className={s.runId ? "dot live" : "dot"} />
-                <span className="title">{s.title}</span>
-                <span className="agent">{s.agent}</span>
-              </button>
-              <button
-                className={confirmDelete === s.id ? "del confirm" : "del"}
-                title="Delete session"
-                onClick={() => (confirmDelete === s.id ? void remove(s.id) : setConfirmDelete(s.id))}
-                onBlur={() => setConfirmDelete(undefined)}
-              >
-                {confirmDelete === s.id ? "Delete?" : "×"}
-              </button>
-            </div>
-          ))}
+          {groupByProject(sessions).map(([key, group]) => {
+            const open = !collapsed.has(key) || group.some((x) => x.id === activeId);
+            return (
+              <div key={key} className="project">
+                <div className="project-head" title={key || "Sessions without a working directory"}>
+                  <button className="toggle" onClick={() => toggleProject(key)}>
+                    <span className="chev">{open ? "▾" : "▸"}</span>
+                    <span className="name">{projectName(key)}</span>
+                    <span className="count">{group.length}</span>
+                  </button>
+                  <button className="add" title="New session in this project" onClick={() => startSession(key, group[0].agent)}>
+                    +
+                  </button>
+                </div>
+                {open &&
+                  group.map((s) => (
+                    <div key={s.id} className={s.id === activeId ? "item active" : "item"}>
+                      <button className="open" onClick={() => select(s.id)}>
+                        <span className={s.runId ? "dot live" : "dot"} />
+                        <span className="title">{s.title}</span>
+                        <span className="agent">{s.agent}</span>
+                      </button>
+                      <button
+                        className={confirmDelete === s.id ? "del confirm" : "del"}
+                        title="Delete session"
+                        onClick={() => (confirmDelete === s.id ? void remove(s.id) : setConfirmDelete(s.id))}
+                        onBlur={() => setConfirmDelete(undefined)}
+                      >
+                        {confirmDelete === s.id ? "Delete?" : "×"}
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            );
+          })}
         </div>
         <BackendPicker />
       </aside>
@@ -211,11 +271,11 @@ export function App() {
         {active && (
           <>
             <header className="bar">
-              <input
-                className="cwd"
-                placeholder="Working directory (defaults to app cwd)"
+              <CwdInput
+                key={active.id}
                 value={active.cwd}
-                onChange={(e) => patch(active.id, (s) => ({ ...s, cwd: e.target.value }))}
+                locked={!!active.agentSessionId}
+                onCommit={(cwd) => patch(active.id, (s) => ({ ...s, cwd }))}
               />
             </header>
             <div className="transcript">
@@ -264,6 +324,24 @@ export function App() {
         )}
       </main>
     </div>
+  );
+}
+
+/** Edits apply on blur/Enter so the session doesn't hop between project groups while typing. */
+function CwdInput({ value, locked, onCommit }: { value: string; locked: boolean; onCommit: (v: string) => void }) {
+  const [draft, setDraft] = useState(value);
+  return (
+    <input
+      className="cwd"
+      placeholder="Project directory (defaults to the backend's cwd)"
+      value={draft}
+      disabled={locked}
+      title={locked ? "The project can't change once the agent session has started" : undefined}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => onCommit(draft.trim())}
+      onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+      spellCheck={false}
+    />
   );
 }
 

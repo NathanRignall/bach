@@ -62,3 +62,13 @@ pre { background: var(--panel); border: 1px solid var(--border); border-radius: 
 .md table { border-collapse: collapse; display: block; overflow-x: auto; }
 .md th, .md td { border: 1px solid var(--border); padding: 4px 10px; }
 .md hr { border: 0; border-top: 1px solid var(--border); }
+.project { display: flex; flex-direction: column; gap: 1px; margin-bottom: 8px; }
+.project-head { display: flex; align-items: center; color: var(--dim); }
+.project-head .toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; border: 0; background: none; padding: 4px 6px; text-align: left; color: inherit; font-size: 12px; font-weight: 600; }
+.project-head .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-head .count { font-weight: 400; font-size: 11px; }
+.project-head .chev { width: 10px; }
+.project-head .add { border: 0; background: none; color: inherit; padding: 2px 8px; visibility: hidden; }
+.project-head:hover .add { visibility: visible; }
+.project .item { margin-left: 8px; }
+.cwd:disabled { opacity: .7; }
