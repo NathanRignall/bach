@@ -21,6 +21,7 @@ pub enum Request {
         cwd: Option<String>,
         #[serde(rename = "sessionId")]
         session_id: Option<String>,
+        model: Option<String>,
     },
     ListDir {
         path: Option<String>,

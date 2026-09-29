@@ -2,7 +2,7 @@
 use super::AgentEvent;
 use serde_json::Value;
 
-pub fn args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
+pub fn args(prompt: &str, session_id: Option<&str>, _model: Option<&str>) -> Vec<String> {
     match session_id {
         Some(id) => vec![
             "exec".into(),
@@ -20,12 +20,14 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
     match v["type"].as_str() {
         Some("thread.started") => vec![AgentEvent::Session {
             id: s(&v["thread_id"]),
+            model: None,
         }],
         Some("item.completed") => {
             let item = &v["item"];
             match item["type"].as_str() {
                 Some("agent_message") => vec![AgentEvent::Text {
                     text: s(&item["text"]),
+                    parent: None,
                 }],
                 Some("reasoning") => vec![AgentEvent::Thinking {
                     text: s(&item["text"]),
@@ -37,11 +39,13 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
                             id: id.clone(),
                             name: "shell".into(),
                             input: serde_json::json!({ "command": item["command"] }),
+                            parent: None,
                         },
                         AgentEvent::ToolResult {
                             id,
                             output: s(&item["aggregated_output"]),
                             is_error: item["exit_code"].as_i64().is_some_and(|c| c != 0),
+                            parent: None,
                         },
                     ]
                 }

@@ -10,11 +10,25 @@ export interface AgentInfo {
 }
 
 export type AgentEvent =
-  | { type: "session"; id: string }
-  | { type: "text"; text: string }
+  | { type: "session"; id: string; model?: string }
+  | { type: "text"; text: string; parent?: string }
   | { type: "thinking"; text: string }
-  | { type: "tool_use"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; id: string; output: string; is_error: boolean }
+  | { type: "tool_use"; id: string; name: string; input: unknown; parent?: string }
+  | { type: "tool_result"; id: string; output: string; is_error: boolean; parent?: string }
+  | {
+      // Sub-agent / background task progress for the tool call `id`; only changed fields are set.
+      type: "task";
+      id: string;
+      status?: string;
+      title?: string;
+      agent_type?: string;
+      activity?: string;
+      tool_uses?: number;
+      tokens?: number;
+      duration_ms?: number;
+      summary?: string;
+      background?: boolean;
+    }
   | { type: "done"; cost_usd: number | null; is_error: boolean }
   | { type: "error"; message: string }
   | { type: "cancelled" }
@@ -111,6 +125,7 @@ export const startRun = (args: {
   prompt: string;
   cwd?: string;
   sessionId?: string;
+  model?: string;
 }) => call<string>("start_run", args);
 
 export const cancelRun = (runId: string) => call<void>("cancel_run", { runId });

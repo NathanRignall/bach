@@ -33,6 +33,7 @@ async fn cancel_kills_the_agent_and_ends_the_run() {
             "hi".into(),
             Some(dir.to_string_lossy().into()),
             None,
+            None,
         )
         .await
         .unwrap();

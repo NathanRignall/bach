@@ -144,9 +144,10 @@ async fn handle(st: &AppState, req: Request) -> Result<Value, String> {
             prompt,
             cwd,
             session_id,
+            model,
         } => st
             .runs
-            .start(st.emit.clone(), agent, prompt, cwd, session_id)
+            .start(st.emit.clone(), agent, prompt, cwd, session_id, model)
             .await
             .map(Value::String),
         Request::ListDir { path, show_hidden } => crate::fs::list_dir(path.as_deref(), show_hidden)

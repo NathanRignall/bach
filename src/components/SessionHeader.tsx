@@ -1,4 +1,4 @@
-import { GitBranch, GitFork } from "lucide-react";
+import { Cpu, GitBranch, GitFork } from "lucide-react";
 import { Session } from "@/session";
 
 /** Read-only summary of where a started session runs. */
@@ -13,6 +13,12 @@ export function SessionHeader({ session }: { session: Session }) {
           {session.worktree ? <GitFork className="size-3.5" /> : <GitBranch className="size-3.5" />}
           <span className="font-mono">{session.gitBranch}</span>
           {session.worktree && <span>· worktree{session.workdirRemoved ? " (removed)" : ""}</span>}
+        </span>
+      )}
+      {session.model && (
+        <span className="ml-auto flex shrink-0 items-center gap-1.5" title="Model used on the latest run">
+          <Cpu className="size-3.5" />
+          <span className="font-mono">{session.model}</span>
         </span>
       )}
     </header>

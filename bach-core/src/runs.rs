@@ -29,7 +29,22 @@ impl Runs {
         prompt: String,
         cwd: Option<String>,
         session_id: Option<String>,
+        model: Option<String>,
     ) -> Result<String, String> {
+        // Passed straight to the CLI, so keep to plausible model names (aliases like `opus`,
+        // ids like `claude-opus-5-5`, `sonnet[1m]`) and never anything that looks like a flag.
+        let model = model
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty() && m != "default");
+        if let Some(m) = &model {
+            let ok = m.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+                && m.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-._[]/:".contains(c));
+            if !ok {
+                return Err(format!("`{m}` isn't a valid model name."));
+            }
+        }
+
         // No implicit "wherever the backend happens to be": a new session must name its folder.
         // (A resumed session may predate this rule and have none saved.)
         let cwd = cwd.map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
@@ -47,7 +62,7 @@ impl Runs {
         }
 
         let mut cmd = Command::new(agent.binary());
-        cmd.args(agent.args(&prompt, session_id.as_deref()))
+        cmd.args(agent.args(&prompt, session_id.as_deref(), model.as_deref()))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -152,7 +167,7 @@ mod tests {
         let runs = Runs::default();
         for cwd in [None, Some("  ".to_string())] {
             let err = runs
-                .start(noop(), AgentKind::Claude, "hi".into(), cwd, None)
+                .start(noop(), AgentKind::Claude, "hi".into(), cwd, None, None)
                 .await
                 .unwrap_err();
             assert!(err.contains("Choose a project folder"), "{err}");
@@ -164,9 +179,29 @@ mod tests {
                 "hi".into(),
                 Some("/definitely/not/here".into()),
                 None,
+                None,
             )
             .await
             .unwrap_err();
         assert!(err.contains("not a folder"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn rejects_flag_like_model_names() {
+        let runs = Runs::default();
+        for m in ["--dangerously-skip-permissions", "-x", "opus; rm", "a b"] {
+            let err = runs
+                .start(
+                    noop(),
+                    AgentKind::Claude,
+                    "hi".into(),
+                    Some("/tmp".into()),
+                    None,
+                    Some(m.into()),
+                )
+                .await
+                .unwrap_err();
+            assert!(err.contains("valid model"), "{m}: {err}");
+        }
     }
 }

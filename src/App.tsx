@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ArrowDown } from "lucide-react";
 import {
   AgentInfo,
   AgentKind,
@@ -18,6 +19,7 @@ import { Composer } from "@/components/Composer";
 import { NewSessionPage } from "@/components/NewSessionPage";
 import { SessionHeader } from "@/components/SessionHeader";
 import { Sidebar } from "@/components/Sidebar";
+import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Session, applyEvent, branchNameFor, canRun, groupByProject, isKept, isStarted, newSession, projectKey } from "@/session";
 
@@ -44,7 +46,11 @@ export function App() {
   const early = useRef(new Map<string, RunEvent[]>());
   // What the backend already has, so unchanged sessions aren't re-saved (a save reorders history).
   const saved = useRef(new Map<string, Session>());
-  const endRef = useRef<HTMLDivElement>(null);
+  // Follow new output only while the reader is at the bottom; scrolling up pins the view.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
+  const [showJump, setShowJump] = useState(false);
 
   useEffect(() => {
     Promise.all([listAgents(), listSessions()])
@@ -75,7 +81,6 @@ export function App() {
   }, []);
 
   const active = sessions.find((s) => s.id === activeId);
-  useEffect(() => endRef.current?.scrollIntoView({ block: "end" }), [active?.blocks.length, active?.runId]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -87,6 +92,47 @@ export function App() {
     }, 400);
     return () => clearTimeout(t);
   }, [sessions]);
+
+  const scrollToBottom = () => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  };
+  const lastTop = useRef(0);
+  const followLatest = () => {
+    stick.current = true;
+    setShowJump(false);
+    scrollToBottom();
+    lastTop.current = scrollRef.current?.scrollTop ?? 0;
+  };
+  // Only a scroll that moves *up* away from the bottom unpins. Our own scroll-to-bottom can
+  // land a little short when content grows again before the event fires; that must not unpin.
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const top = el.scrollTop;
+    if (el.scrollHeight - top - el.clientHeight < 48) {
+      stick.current = true;
+      setShowJump(false);
+    } else if (top < lastTop.current) {
+      stick.current = false;
+      setShowJump(true);
+    }
+    lastTop.current = top;
+  };
+
+  // Re-pin to the bottom when switching sessions, then follow growth of the content (new
+  // blocks, sub-agent steps, an expanded card) for as long as the reader hasn't scrolled up.
+  const chatShown = !!active && (isStarted(active) || !!active.workdirRemoved);
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content) return;
+    followLatest();
+    const ro = new ResizeObserver(() => stick.current && scrollToBottom());
+    ro.observe(content);
+    // Also follow when the window is resized while pinned to the bottom.
+    if (scrollRef.current) ro.observe(scrollRef.current);
+    return () => ro.disconnect();
+  }, [activeId, chatShown]);
 
   const patch = (id: string, f: (s: Session) => Session) =>
     setSessions((all) => all.map((s) => (s.id === id ? f(s) : s)));
@@ -124,6 +170,7 @@ export function App() {
     const prompt = draft.trim();
     setDraft("");
     setStarting(true);
+    followLatest();
     // A retry from the create page shouldn't stack up errors from earlier attempts.
     if (!isStarted(active)) patch(active.id, (s) => ({ ...s, blocks: s.blocks.filter((b) => b.kind !== "error") }));
     const fail = (err: unknown) => {
@@ -151,6 +198,7 @@ export function App() {
         prompt,
         cwd: (workdir ?? active.cwd).trim() || undefined,
         sessionId: active.agentSessionId,
+        model: active.agent === "claude" && active.modelChoice !== "default" ? active.modelChoice : undefined,
       });
       const buffered = early.current.get(runId) ?? [];
       early.current.delete(runId);
@@ -229,23 +277,35 @@ export function App() {
           <>
             <SessionHeader session={active} />
 
-            <div className="flex-1 overflow-y-auto">
-              <div className="mx-auto flex max-w-3xl flex-col gap-4 px-5 py-6">
-                {connectionError && (
-                  <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                    {connectionError}
-                  </p>
-                )}
-                {active.blocks.map((b, i) => (
-                  <BlockView key={i} block={b} />
-                ))}
-                {(running || starting) && (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
-                    <Spinner className="text-primary" /> Working…
-                  </div>
-                )}
-                <div ref={endRef} />
+            <div className="relative min-h-0 flex-1">
+              <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
+                <div ref={contentRef} className="mx-auto flex max-w-3xl flex-col gap-4 px-5 py-6">
+                  {connectionError && (
+                    <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                      {connectionError}
+                    </p>
+                  )}
+                  {active.blocks.map((b, i) => (
+                    <BlockView key={i} block={b} live={running} />
+                  ))}
+                  {(running || starting) && (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+                      <Spinner className="text-primary" /> Working…
+                    </div>
+                  )}
+                </div>
               </div>
+              {showJump && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-background shadow-md"
+                  onClick={followLatest}
+                >
+                  <ArrowDown data-icon="inline-start" />
+                  Jump to latest
+                </Button>
+              )}
             </div>
 
             <div className="mx-auto w-full max-w-3xl px-5 pb-5">
@@ -262,6 +322,8 @@ export function App() {
                 agent={active.agent}
                 agentLocked
                 onAgent={() => {}}
+                modelChoice={active.modelChoice}
+                onModel={(modelChoice) => patch(active.id, (s) => ({ ...s, modelChoice }))}
               />
             </div>
           </>

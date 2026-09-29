@@ -24,11 +24,13 @@ async fn start_run(
     prompt: String,
     cwd: Option<String>,
     session_id: Option<String>,
+    model: Option<String>,
 ) -> Result<String, String> {
     let emit: Emit = Arc::new(move |ev| {
         let _ = app.emit("agent-event", ev);
     });
-    runs.start(emit, agent, prompt, cwd, session_id).await
+    runs.start(emit, agent, prompt, cwd, session_id, model)
+        .await
 }
 
 #[tauri::command]

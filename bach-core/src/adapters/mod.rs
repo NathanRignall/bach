@@ -36,11 +36,13 @@ impl AgentKind {
     }
 
     /// Arguments for a headless, JSON-streaming invocation.
-    pub fn args(self, prompt: &str, session_id: Option<&str>) -> Vec<String> {
+    ///
+    /// `model` is only honoured by Claude Code so far (`--model`, e.g. `opus` or a full id).
+    pub fn args(self, prompt: &str, session_id: Option<&str>, model: Option<&str>) -> Vec<String> {
         match self {
-            AgentKind::Claude => claude::args(prompt, session_id),
-            AgentKind::Codex => codex::args(prompt, session_id),
-            AgentKind::Opencode => opencode::args(prompt, session_id),
+            AgentKind::Claude => claude::args(prompt, session_id, model),
+            AgentKind::Codex => codex::args(prompt, session_id, model),
+            AgentKind::Opencode => opencode::args(prompt, session_id, model),
         }
     }
 
@@ -65,9 +67,15 @@ pub enum AgentEvent {
     /// The agent's own session id, usable to resume the conversation.
     Session {
         id: String,
+        /// The model the agent reports using for this run.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
+    /// `parent` is the tool call (a sub-agent) this output belongs to, if any.
     Text {
         text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent: Option<String>,
     },
     Thinking {
         text: String,
@@ -76,11 +84,39 @@ pub enum AgentEvent {
         id: String,
         name: String,
         input: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent: Option<String>,
     },
     ToolResult {
         id: String,
         output: String,
         is_error: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent: Option<String>,
+    },
+    /// Progress of a sub-agent / background task started by the tool call `id`.
+    /// Only the fields that changed are set.
+    Task {
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
+        /// What it is doing right now.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        activity: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_uses: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        background: Option<bool>,
     },
     Done {
         cost_usd: Option<f64>,
@@ -113,8 +149,8 @@ mod tests {
             .iter()
             .flat_map(|l| AgentKind::Claude.parse_line(l))
             .collect();
-        assert!(matches!(&events[0], AgentEvent::Session { id } if id == "abc"));
-        assert!(matches!(&events[1], AgentEvent::Text { text } if text == "hi"));
+        assert!(matches!(&events[0], AgentEvent::Session { id, .. } if id == "abc"));
+        assert!(matches!(&events[1], AgentEvent::Text { text, .. } if text == "hi"));
         assert!(matches!(&events[2], AgentEvent::ToolUse { name, .. } if name == "Bash"));
         assert!(matches!(&events[3], AgentEvent::ToolResult { output, .. } if output == "ok"));
         assert!(matches!(&events[4], AgentEvent::Done { .. }));

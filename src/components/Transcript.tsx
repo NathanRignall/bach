@@ -1,15 +1,41 @@
+import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, Brain, CheckCircle2, ChevronRight, Wrench, XCircle } from "lucide-react";
+import { AlertCircle, Ban, Bot, Brain, CheckCircle2, ChevronRight, Wrench, XCircle } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
-import { Block } from "@/session";
+import { Block, ToolBlock, isSubagent } from "@/session";
 
 const summaryClass =
   "group/trigger flex w-full items-center gap-2 rounded-lg border bg-card px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent";
 const preClass = "max-h-72 overflow-auto rounded-lg border bg-muted p-3 font-mono text-xs whitespace-pre-wrap break-all";
+const chevron = "size-3.5 shrink-0 transition-transform group-data-[panel-open]/trigger:rotate-90";
 
-export function BlockView({ block }: { block: Block }) {
+function formatDuration(ms: number) {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+function formatTokens(n: number) {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+/** Counts up from `since`, so a long-running call visibly is still alive. */
+function Elapsed({ since }: { since?: number }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  return since ? <span className="tabular-nums">{formatDuration(now - since)}</span> : null;
+}
+
+/**
+ * `live` is whether the session is running right now. A call with no result while the session
+ * isn't running was cut off (stopped, or the server restarted), so it must not spin forever.
+ */
+export function BlockView({ block, live }: { block: Block; live: boolean }) {
   switch (block.kind) {
     case "user":
       return (
@@ -32,7 +58,7 @@ export function BlockView({ block }: { block: Block }) {
       return (
         <Collapsible>
           <CollapsibleTrigger className={summaryClass}>
-            <ChevronRight className="size-3.5 transition-transform group-data-[panel-open]/trigger:rotate-90" />
+            <ChevronRight className={chevron} />
             <Brain className="size-3.5" />
             Thinking
           </CollapsibleTrigger>
@@ -53,29 +79,102 @@ export function BlockView({ block }: { block: Block }) {
         </div>
       );
 
-    case "tool": {
-      const pending = block.output === undefined;
-      return (
-        <Collapsible>
-          <CollapsibleTrigger className={summaryClass}>
-            <ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[panel-open]/trigger:rotate-90" />
-            <Wrench className="size-3.5 shrink-0" />
-            <span className="font-semibold text-foreground">{block.name}</span>
-            <code className="min-w-0 flex-1 truncate font-mono">{JSON.stringify(block.input)}</code>
-            {pending ? (
-              <Spinner className="size-3.5 shrink-0 text-primary" />
-            ) : block.isError ? (
-              <XCircle className="size-3.5 shrink-0 text-destructive" aria-label="Failed" />
-            ) : (
-              <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground" aria-label="Done" />
-            )}
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-2 flex flex-col gap-2">
-            <pre className={preClass}>{JSON.stringify(block.input, null, 2)}</pre>
-            {!pending && <pre className={preClass + (block.isError ? " border-destructive/40" : "")}>{block.output}</pre>}
-          </CollapsibleContent>
-        </Collapsible>
-      );
-    }
+    case "tool":
+      return isSubagent(block) ? <SubagentCard block={block} live={live} /> : <ToolCard block={block} live={live} />;
   }
+}
+
+function ToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
+  const pending = block.output === undefined;
+  return (
+    <Collapsible>
+      <CollapsibleTrigger className={summaryClass}>
+        <ChevronRight className={chevron} />
+        <Wrench className="size-3.5 shrink-0" />
+        <span className="font-semibold text-foreground">{block.name}</span>
+        <code className="min-w-0 flex-1 truncate font-mono">{JSON.stringify(block.input)}</code>
+        {pending && live ? (
+          <>
+            <Elapsed since={block.startedAt} />
+            <Spinner className="size-3.5 shrink-0 text-primary" />
+          </>
+        ) : pending ? (
+          <Ban className="size-3.5 shrink-0" aria-label="Interrupted" />
+        ) : block.isError ? (
+          <XCircle className="size-3.5 shrink-0 text-destructive" aria-label="Failed" />
+        ) : (
+          <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground" aria-label="Done" />
+        )}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="mt-2 flex flex-col gap-2">
+        <pre className={preClass}>{JSON.stringify(block.input, null, 2)}</pre>
+        {!pending && <pre className={preClass + (block.isError ? " border-destructive/40" : "")}>{block.output}</pre>}
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+/** A sub-agent (or other long-running task): live status, counters, and its own nested steps. */
+function SubagentCard({ block, live }: { block: ToolBlock; live: boolean }) {
+  const t = block.task ?? {};
+  const input = (block.input ?? {}) as { description?: string; subagent_type?: string };
+  const title = t.title ?? input.description ?? block.name;
+  const agentType = t.agentType ?? input.subagent_type;
+
+  // A backgrounded task returns its tool result at once, so trust the task status when present.
+  const status = t.status ?? (block.output !== undefined ? (block.isError ? "failed" : "completed") : "running");
+  const running = status === "running" && live;
+  const stopped = status === "running" && !live;
+  const failed = status === "failed" || status === "error";
+
+  // Open while it runs so progress is visible; the user can still collapse it.
+  const [open, setOpen] = useState(running);
+  useEffect(() => {
+    if (running) setOpen(true);
+  }, [running]);
+
+  const stats = [
+    t.toolUses !== undefined && `${t.toolUses} tool${t.toolUses === 1 ? "" : "s"}`,
+    t.tokens !== undefined && `${formatTokens(t.tokens)} tokens`,
+  ].filter(Boolean);
+  const result = t.summary ?? block.output;
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger className={summaryClass + " py-2"}>
+        <ChevronRight className={chevron} />
+        <Bot className="size-4 shrink-0 text-foreground" />
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{title}</span>
+        {agentType && <Badge variant="outline">{agentType}</Badge>}
+        {stats.length > 0 && <span className="hidden shrink-0 sm:inline">{stats.join(" · ")}</span>}
+        {running ? (
+          <>
+            <Elapsed since={block.startedAt} />
+            <Spinner className="size-3.5 shrink-0 text-primary" />
+          </>
+        ) : stopped ? (
+          <Ban className="size-3.5 shrink-0" aria-label="Interrupted" />
+        ) : failed ? (
+          <XCircle className="size-3.5 shrink-0 text-destructive" aria-label="Failed" />
+        ) : (
+          <>
+            {t.durationMs !== undefined && <span className="tabular-nums">{formatDuration(t.durationMs)}</span>}
+            <CheckCircle2 className="size-3.5 shrink-0" aria-label="Done" />
+          </>
+        )}
+      </CollapsibleTrigger>
+
+      {running && t.activity && <p className="mt-1 truncate pl-9 text-xs text-muted-foreground">{t.activity}</p>}
+
+      <CollapsibleContent className="mt-2 flex flex-col gap-3 border-l-2 pl-4">
+        {block.children?.map((c, i) => <BlockView key={i} block={c} live={live} />)}
+        {result && (
+          <div className="rounded-lg bg-muted p-3 text-xs whitespace-pre-wrap break-words">
+            <p className="mb-1 font-medium text-muted-foreground">Result</p>
+            {result}
+          </div>
+        )}
+      </CollapsibleContent>
+    </Collapsible>
+  );
 }

@@ -4,9 +4,38 @@ export type Block =
   | { kind: "user"; text: string }
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
-  | { kind: "tool"; id: string; name: string; input: unknown; output?: string; isError?: boolean }
+  | ToolBlock
   | { kind: "error"; text: string }
   | { kind: "note"; text: string };
+
+/** Progress of a sub-agent or background task started by a tool call. */
+export interface TaskInfo {
+  status?: string;
+  title?: string;
+  agentType?: string;
+  activity?: string;
+  toolUses?: number;
+  tokens?: number;
+  durationMs?: number;
+  summary?: string;
+  background?: boolean;
+}
+
+export interface ToolBlock {
+  kind: "tool";
+  id: string;
+  name: string;
+  input: unknown;
+  output?: string;
+  isError?: boolean;
+  /** When the call started (client clock), to show how long it has been running. */
+  startedAt?: number;
+  task?: TaskInfo;
+  /** What a sub-agent did while this call ran. */
+  children?: Block[];
+}
+
+export const isSubagent = (b: ToolBlock) => !!b.task || b.name === "Agent" || b.name === "Task";
 
 export interface Session {
   id: string;
@@ -27,6 +56,10 @@ export interface Session {
   /** The branch the session runs on once started. */
   gitBranch?: string;
   agentSessionId?: string;
+  /** Model choice for Claude Code: "default" or an alias like "opus". */
+  modelChoice?: string;
+  /** The model the agent reported using on its latest run. */
+  model?: string;
   runId?: string;
   blocks: Block[];
 }
@@ -77,35 +110,65 @@ export function groupByProject(sessions: Session[]): [string, Session[]][] {
   return [...groups];
 }
 
+function mapTool(blocks: Block[], id: string, f: (t: ToolBlock) => ToolBlock): Block[] {
+  return blocks.map((b) => (b.kind === "tool" && b.id === id ? f(b) : b));
+}
+
+/** Routes a block to its parent sub-agent's children when it has one, else the top level. */
+function place(blocks: Block[], parent: string | undefined, add: (list: Block[]) => Block[]): Block[] {
+  if (!parent || !blocks.some((b) => b.kind === "tool" && b.id === parent)) return add(blocks);
+  return mapTool(blocks, parent, (t) => ({ ...t, children: add(t.children ?? []) }));
+}
+
 export function applyEvent(s: Session, e: RunEvent): Session {
-  const blocks = [...s.blocks];
+  const blocks = s.blocks;
   switch (e.type) {
     case "session":
-      return { ...s, agentSessionId: e.id };
+      return { ...s, agentSessionId: e.id, model: e.model ?? s.model };
     case "text":
-      blocks.push({ kind: "text", text: e.text });
-      break;
+      return { ...s, blocks: place(blocks, e.parent, (l) => [...l, { kind: "text", text: e.text }]) };
     case "thinking":
-      blocks.push({ kind: "thinking", text: e.text });
-      break;
+      return { ...s, blocks: [...blocks, { kind: "thinking", text: e.text }] };
     case "tool_use":
-      blocks.push({ kind: "tool", id: e.id, name: e.name, input: e.input });
-      break;
+      return {
+        ...s,
+        blocks: place(blocks, e.parent, (l) => [
+          ...l,
+          { kind: "tool", id: e.id, name: e.name, input: e.input, startedAt: Date.now() },
+        ]),
+      };
     case "tool_result": {
-      const i = blocks.findIndex((b) => b.kind === "tool" && b.id === e.id);
-      if (i >= 0) blocks[i] = { ...(blocks[i] as Extract<Block, { kind: "tool" }>), output: e.output, isError: e.is_error };
-      break;
+      const done = (t: ToolBlock): ToolBlock => ({ ...t, output: e.output, isError: e.is_error });
+      return {
+        ...s,
+        blocks: e.parent
+          ? place(blocks, e.parent, (l) => mapTool(l, e.id, done))
+          : mapTool(blocks, e.id, done),
+      };
+    }
+    case "task": {
+      const patch: TaskInfo = {
+        status: e.status,
+        title: e.title,
+        agentType: e.agent_type,
+        activity: e.activity,
+        toolUses: e.tool_uses,
+        tokens: e.tokens,
+        durationMs: e.duration_ms,
+        summary: e.summary,
+        background: e.background,
+      };
+      // Keep only what changed so later events don't blank earlier fields.
+      const changed = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+      return { ...s, blocks: mapTool(blocks, e.id, (t) => ({ ...t, task: { ...t.task, ...changed } })) };
     }
     case "error":
-      blocks.push({ kind: "error", text: e.message });
-      break;
+      return { ...s, blocks: [...blocks, { kind: "error", text: e.message }] };
     case "raw":
-      blocks.push({ kind: "text", text: e.line });
-      break;
+      return { ...s, blocks: [...blocks, { kind: "text", text: e.line }] };
     case "cancelled":
       return { ...s, runId: undefined, blocks: [...blocks, { kind: "note", text: "Stopped" }] };
     case "done":
       return { ...s, runId: undefined };
   }
-  return { ...s, blocks };
 }

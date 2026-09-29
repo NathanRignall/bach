@@ -2,7 +2,7 @@
 use super::AgentEvent;
 use serde_json::Value;
 
-pub fn args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
+pub fn args(prompt: &str, session_id: Option<&str>, _model: Option<&str>) -> Vec<String> {
     let mut a = vec!["run".into(), "--format".into(), "json".into()];
     if let Some(id) = session_id {
         a.push("--session".into());

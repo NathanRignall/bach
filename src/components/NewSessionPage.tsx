@@ -31,7 +31,7 @@ export function NewSessionPage({ session, agents, draft, onDraft, onSend, starti
 
         {/* Errors from a failed start stay here so the settings can be fixed and retried. */}
         {session.blocks.map((b, i) => (
-          <BlockView key={i} block={b} />
+          <BlockView key={i} block={b} live={false} />
         ))}
         {error && <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
 
@@ -50,6 +50,8 @@ export function NewSessionPage({ session, agents, draft, onDraft, onSend, starti
           agent={session.agent}
           agentLocked={false}
           onAgent={(agent: AgentKind) => onChange({ agent })}
+          modelChoice={session.modelChoice}
+          onModel={(modelChoice) => onChange({ modelChoice })}
           left={
             <>
               <ProjectButton cwd={session.cwd} onChange={setProject} />

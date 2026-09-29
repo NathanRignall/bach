@@ -64,3 +64,13 @@ For a git project folder, a new session shows a branch picker and a Worktree swi
   Your own checkout is untouched. Worktrees are not deleted when a session is.
 
 This happens when the first message is sent; the folder, branch and worktree are then fixed.
+
+## Sub-agents, long-running calls and models
+
+- Claude's sub-agent (`Agent`/`Task`) calls render as a card with the sub-agent's title, type,
+  live tool/token counts and duration; its own steps and summary nest inside. Running tool
+  calls show a ticking elapsed time; calls cut off by Stop or a restart show as interrupted.
+- The transcript follows new output only while you're at the bottom. Scroll up to stay put;
+  "Jump to latest" re-pins.
+- Claude Code sessions have a model picker (Default/Opus/Sonnet/Haiku, passed as `--model`);
+  the model each run actually reports using is shown in the session header.
