@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { Square, ArrowUp } from "lucide-react";
 import {
   AgentInfo,
   AgentKind,
@@ -14,15 +13,13 @@ import {
   startRun,
 } from "@/api";
 import { BlockView } from "@/components/Transcript";
-import { BranchBar } from "@/components/BranchBar";
 import { WorktreeCleanup } from "@/components/WorktreeCleanup";
-import { CwdInput } from "@/components/CwdInput";
+import { Composer } from "@/components/Composer";
+import { NewSessionPage } from "@/components/NewSessionPage";
+import { SessionHeader } from "@/components/SessionHeader";
 import { Sidebar } from "@/components/Sidebar";
-import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { Textarea } from "@/components/ui/textarea";
-import { Session, applyEvent, branchNameFor, canRun, isKept, isStarted, newSession, projectKey } from "@/session";
+import { Session, applyEvent, branchNameFor, canRun, groupByProject, isKept, isStarted, newSession, projectKey } from "@/session";
 
 const COLLAPSED_KEY = "bach.collapsedProjects";
 const loadCollapsed = (): Set<string> => {
@@ -127,6 +124,8 @@ export function App() {
     const prompt = draft.trim();
     setDraft("");
     setStarting(true);
+    // A retry from the create page shouldn't stack up errors from earlier attempts.
+    if (!isStarted(active)) patch(active.id, (s) => ({ ...s, blocks: s.blocks.filter((b) => b.kind !== "error") }));
     const fail = (err: unknown) => {
       setDraft(prompt);
       const message = String((err as Error).message ?? err);
@@ -179,7 +178,12 @@ export function App() {
   }
 
   const running = !!active?.runId;
-  const agentItems = agents.map((a) => ({ value: a.kind, label: a.installed ? a.name : `${a.name} (not installed)` }));
+  // A session is set up on the create page until it has started (also after a failed start).
+  const isNew = !!active && !isStarted(active) && !active.workdirRemoved;
+  const recentProjects = groupByProject(sessions)
+    .map(([key]) => key)
+    .filter((k) => k && k !== active?.cwd.trim())
+    .slice(0, 5);
 
   return (
     <div className="flex h-dvh bg-background text-foreground">
@@ -207,30 +211,29 @@ export function App() {
 
       <main className="flex min-w-0 flex-1 flex-col">
         {!active && connectionError && <p className="p-6 text-sm text-destructive">{connectionError}</p>}
-        {active && (
+        {active && isNew && (
+          <NewSessionPage
+            key={active.id}
+            session={active}
+            agents={agents}
+            draft={draft}
+            onDraft={setDraft}
+            onSend={() => void send()}
+            starting={starting}
+            recentProjects={recentProjects}
+            onChange={(p) => patch(active.id, (s) => ({ ...s, ...p }))}
+            error={connectionError}
+          />
+        )}
+        {active && !isNew && (
           <>
-            <header className="flex flex-col gap-2 border-b px-5 py-2.5">
-              <div className="flex items-center gap-2">
-                <CwdInput
-                  key={active.id}
-                  value={active.cwd}
-                  locked={isStarted(active)}
-                  onCommit={(cwd) => patch(active.id, (s) => ({ ...s, cwd, branch: undefined, worktree: false }))}
-                />
-              </div>
-              <BranchBar key={active.id} session={active} onChange={(p) => patch(active.id, (s) => ({ ...s, ...p }))} />
-            </header>
+            <SessionHeader session={active} />
 
             <div className="flex-1 overflow-y-auto">
               <div className="mx-auto flex max-w-3xl flex-col gap-4 px-5 py-6">
                 {connectionError && (
                   <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                     {connectionError}
-                  </p>
-                )}
-                {active.blocks.length === 0 && (
-                  <p className="mt-[18vh] text-center text-xl text-muted-foreground">
-                    {canRun(active) ? "What should we work on?" : "Choose a project folder to get started"}
                   </p>
                 )}
                 {active.blocks.map((b, i) => (
@@ -246,58 +249,20 @@ export function App() {
             </div>
 
             <div className="mx-auto w-full max-w-3xl px-5 pb-5">
-              <div className="rounded-2xl border bg-card p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/30">
-                <Textarea
-                  value={draft}
-                  disabled={!canRun(active)}
-                  placeholder={
-                    canRun(active)
-                      ? "Message the agent…"
-                      : active.workdirRemoved
-                        ? "This session's worktree was removed"
-                        : "Choose a project folder first"
-                  }
-                  className="min-h-14 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent"
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      void send();
-                    }
-                  }}
-                />
-                <div className="flex items-center justify-between gap-2 px-1 pt-1">
-                  <Select
-                    items={agentItems}
-                    value={active.agent}
-                    disabled={!!active.agentSessionId}
-                    onValueChange={(v) => v && patch(active.id, (s) => ({ ...s, agent: v as AgentKind }))}
-                  >
-                    <SelectTrigger size="sm" aria-label="Agent">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {agents.map((a) => (
-                        <SelectItem key={a.kind} value={a.kind} disabled={!a.installed}>
-                          {a.installed ? a.name : `${a.name} (not installed)`}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-
-                  {running ? (
-                    <Button variant="outline" size="sm" onClick={() => void cancelRun(active.runId!)}>
-                      <Square data-icon="inline-start" className="fill-current" />
-                      Stop
-                    </Button>
-                  ) : (
-                    <Button size="sm" onClick={() => void send()} disabled={!draft.trim() || !canRun(active) || starting}>
-                      {starting ? <Spinner data-icon="inline-start" /> : <ArrowUp data-icon="inline-start" />}
-                      Send
-                    </Button>
-                  )}
-                </div>
-              </div>
+              <Composer
+                draft={draft}
+                onDraft={setDraft}
+                onSend={() => void send()}
+                onStop={() => void cancelRun(active.runId!)}
+                running={running}
+                starting={starting}
+                blockedReason={canRun(active) ? undefined : "This session can't be continued"}
+                placeholder={active.workdirRemoved ? "This session's worktree was removed" : "Message the agent…"}
+                agents={agents}
+                agent={active.agent}
+                agentLocked
+                onAgent={() => {}}
+              />
             </div>
           </>
         )}

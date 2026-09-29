@@ -7,7 +7,7 @@ import { Block } from "@/session";
 
 const summaryClass =
   "group/trigger flex w-full items-center gap-2 rounded-lg border bg-card px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent";
-const preClass = "max-h-72 overflow-auto rounded-lg border bg-muted p-3 font-mono text-xs whitespace-pre-wrap break-words";
+const preClass = "max-h-72 overflow-auto rounded-lg border bg-muted p-3 font-mono text-xs whitespace-pre-wrap break-all";
 
 export function BlockView({ block }: { block: Block }) {
   switch (block.kind) {
