@@ -6,6 +6,7 @@ use crate::{
     list_agents,
     protocol::{Envelope, Request},
     runs::{Emit, RunRequest, Runs},
+    satie::Satie,
     store::Store,
 };
 use axum::{
@@ -38,7 +39,7 @@ struct AppState {
     config: Config,
 }
 
-pub fn router(config: Config, store: Store) -> Router {
+pub fn router(config: Config, store: Store, satie: Option<Satie>) -> Router {
     let (events, _) = broadcast::channel(1024);
     let emit: Emit = {
         let events = events.clone();
@@ -49,7 +50,7 @@ pub fn router(config: Config, store: Store) -> Router {
         })
     };
     let state = Arc::new(AppState {
-        runs: Runs::default(),
+        runs: Runs::with_satie(satie),
         git: Git::new(config.worktrees_dir.clone()),
         store,
         events,

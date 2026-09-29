@@ -3,6 +3,7 @@ use bach_core::{
     git::{Git, GitInfo, Workspace, WorktreeEntry},
     list_agents as core_list_agents,
     runs::{Decision, Emit, RunRequest, Runs},
+    satie::Satie,
     store::Store,
     AgentInfo,
 };
@@ -125,11 +126,14 @@ fn delete_session(store: State<'_, Store>, session_id: String) -> Result<(), Str
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(Runs::default())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             app.manage(Store::open(&dir.join("bach.db"))?);
             app.manage(Git::new(dir.join("worktrees")));
+            // Bach's own MCP server for agents, on any free loopback port.
+            let satie =
+                tauri::async_runtime::block_on(Satie::start("127.0.0.1:0".parse().unwrap()))?;
+            app.manage(Runs::with_satie(Some(satie)));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

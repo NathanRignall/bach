@@ -3,6 +3,7 @@ pub mod fs;
 pub mod git;
 pub mod protocol;
 pub mod runs;
+pub mod satie;
 pub mod server;
 pub mod store;
 

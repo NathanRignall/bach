@@ -7,6 +7,7 @@ pub fn args(
     session_id: Option<&str>,
     model: Option<&str>,
     allowed_tools: &[String],
+    mcp_config: Option<&str>,
 ) -> Vec<String> {
     let mut a: Vec<String> = [
         "-p",
@@ -27,6 +28,10 @@ pub fn args(
     if let Some(m) = model {
         a.push("--model".into());
         a.push(m.into());
+    }
+    if let Some(cfg) = mcp_config {
+        a.push("--mcp-config".into());
+        a.push(cfg.into());
     }
     if !allowed_tools.is_empty() {
         a.push("--allowedTools".into());

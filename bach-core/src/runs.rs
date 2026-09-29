@@ -1,4 +1,7 @@
-use crate::adapters::{AgentEvent, AgentKind};
+use crate::{
+    adapters::{AgentEvent, AgentKind},
+    satie::{RunInfo, Satie, TokenGuard},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::HashMap, process::Stdio, sync::Arc};
@@ -60,7 +63,11 @@ struct Live {
 
 /// Tracks live agent processes so they can be cancelled and their approvals answered.
 #[derive(Default)]
-pub struct Runs(Arc<Mutex<HashMap<String, Live>>>);
+pub struct Runs {
+    live: Arc<Mutex<HashMap<String, Live>>>,
+    /// Bach's own MCP server (background tasks), offered to Claude Code runs.
+    satie: Option<Satie>,
+}
 
 fn valid_rule(r: &str) -> bool {
     !r.is_empty() && !r.starts_with('-') && r.len() < 500
@@ -131,6 +138,13 @@ fn build_response(
 }
 
 impl Runs {
+    pub fn with_satie(satie: Option<Satie>) -> Self {
+        Self {
+            satie,
+            ..Default::default()
+        }
+    }
+
     pub async fn start(&self, emit: Emit, req: RunRequest) -> Result<String, String> {
         let RunRequest {
             agent,
@@ -180,12 +194,28 @@ impl Runs {
             .map(|d| d.canonicalize().unwrap_or_else(|_| d.clone()));
 
         let stdin_prompt = agent.stdin_prompt(&prompt);
+
+        // Claude Code gets Bach's MCP server, with a token that lets us tell which run calls it.
+        // The guard revokes the token when the run ends (or if launching fails below).
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let (mcp_config, token): (Option<String>, Option<TokenGuard>) = match (&self.satie, agent) {
+            (Some(satie), AgentKind::Claude) => {
+                let (config, guard) = satie.register_run(RunInfo {
+                    run_id: run_id.clone(),
+                    cwd: project.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                });
+                (Some(config), Some(guard))
+            }
+            _ => (None, None),
+        };
+
         let mut cmd = Command::new(agent.binary());
         cmd.args(agent.args(
             &prompt,
             session_id.as_deref(),
             model.as_deref(),
             &allowed_tools,
+            mcp_config.as_deref(),
         ))
         .stdin(if stdin_prompt.is_some() {
             Stdio::piped()
@@ -211,9 +241,8 @@ impl Runs {
         let stdin = Arc::new(Mutex::new(stdin));
         let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
 
-        let run_id = uuid::Uuid::new_v4().to_string();
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
-        self.0.lock().await.insert(
+        self.live.lock().await.insert(
             run_id.clone(),
             Live {
                 cancel: Some(cancel_tx),
@@ -224,7 +253,7 @@ impl Runs {
 
         let stdout = child.stdout.take().expect("piped");
         let stderr = child.stderr.take().expect("piped");
-        let runs = self.0.clone();
+        let runs = self.live.clone();
         let id = run_id.clone();
 
         let emit = {
@@ -249,6 +278,7 @@ impl Runs {
         });
 
         tokio::spawn(async move {
+            let _token = token; // revoked when the run ends
             let mut lines = BufReader::new(stdout).lines();
             let mut done = false;
             loop {
@@ -320,7 +350,7 @@ impl Runs {
     }
 
     pub async fn cancel(&self, run_id: &str) {
-        let live = self.0.lock().await.remove(run_id);
+        let live = self.live.lock().await.remove(run_id);
         if let Some(tx) = live.and_then(|l| l.cancel) {
             let _ = tx.send(());
         }
@@ -336,7 +366,7 @@ impl Runs {
         answers: Option<HashMap<String, String>>,
     ) -> Result<(), String> {
         let (stdin, pending) = {
-            let runs = self.0.lock().await;
+            let runs = self.live.lock().await;
             let live = runs.get(run_id).ok_or("That run has already finished.")?;
             (live.stdin.clone(), live.pending.clone())
         };

@@ -24,6 +24,12 @@ const summaryClass =
 const preClass = "max-h-72 overflow-auto rounded-lg border bg-muted p-3 font-mono text-xs whitespace-pre-wrap break-all";
 const chevron = "size-3.5 shrink-0 transition-transform group-data-[panel-open]/trigger:rotate-90";
 
+/** `mcp__satie__task_start` -> `satie · task_start`; other names are unchanged. */
+function toolLabel(name: string): string {
+  const m = /^mcp__(.+?)__(.+)$/.exec(name);
+  return m ? `${m[1]} · ${m[2]}` : name;
+}
+
 function formatDuration(ms: number) {
   const s = Math.round(ms / 1000);
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
@@ -103,7 +109,7 @@ function ToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
       <CollapsibleTrigger className={summaryClass}>
         <ChevronRight className={chevron} />
         <Wrench className="size-3.5 shrink-0" />
-        <span className="font-semibold text-foreground">{block.name}</span>
+        <span className="font-semibold text-foreground">{toolLabel(block.name)}</span>
         <code className="min-w-0 flex-1 truncate font-mono">{JSON.stringify(block.input)}</code>
         {pending && live ? (
           <>
@@ -259,7 +265,7 @@ function ApprovalCard({ block, live }: { block: ApprovalBlock; live: boolean }) 
       <p className="flex items-center gap-2 px-1 text-xs text-muted-foreground" title={block.rules.join("\n")}>
         <Icon className="size-3.5 shrink-0" />
         <span>{DECIDED[decision]}</span>
-        <span className="font-semibold text-foreground">{block.toolName}</span>
+        <span className="font-semibold text-foreground">{toolLabel(block.toolName)}</span>
         <code className="min-w-0 flex-1 truncate font-mono">{main ?? rest?.replace(/\s+/g, " ")}</code>
       </p>
     );
@@ -275,7 +281,7 @@ function ApprovalCard({ block, live }: { block: ApprovalBlock; live: boolean }) 
       <div className="flex items-center gap-2 text-sm">
         <ShieldAlert className="size-4 shrink-0 text-primary" />
         <span>
-          Claude wants to use <span className="font-semibold">{block.toolName}</span>
+          Claude wants to use <span className="font-semibold">{toolLabel(block.toolName)}</span>
         </span>
         {block.reason && <span className="text-xs text-muted-foreground">· {block.reason}</span>}
       </div>

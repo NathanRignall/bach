@@ -4,6 +4,7 @@
 use bach_core::{
     adapters::AgentKind,
     runs::{Decision, RunRequest, Runs},
+    satie::Satie,
 };
 use serde_json::Value;
 use std::{os::unix::fs::PermissionsExt, path::Path, sync::mpsc, time::Duration};
@@ -30,6 +31,8 @@ cat > /dev/null
 "#;
 
 struct Outcome {
+    /// Runs still holding an MCP token once the agent had exited.
+    tokens_left: usize,
     events: Vec<Value>,
     answer: Value,
     args: String,
@@ -48,6 +51,7 @@ fn answers_map(a: &Answers) -> Option<std::collections::HashMap<String, String>>
 
 /// A run that has been started and is waiting on the request the stand-in agent sent.
 struct Waiting {
+    satie: Satie,
     runs: Runs,
     run_id: String,
     rx: mpsc::Receiver<Value>,
@@ -68,7 +72,8 @@ async fn begin(dir: &Path, request: &str, rules: &[&str]) -> Waiting {
     );
 
     let (tx, rx) = mpsc::channel();
-    let runs = Runs::default();
+    let satie = Satie::start("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let runs = Runs::with_satie(Some(satie.clone()));
     let run_id = runs
         .start(
             std::sync::Arc::new(move |ev| {
@@ -96,6 +101,7 @@ async fn begin(dir: &Path, request: &str, rules: &[&str]) -> Waiting {
         }
     }
     Waiting {
+        satie,
         runs,
         run_id,
         rx,
@@ -130,8 +136,17 @@ async fn finish(mut w: Waiting) -> Outcome {
         "agent {pid} still running after the turn"
     );
 
+    // The run's MCP token is revoked when the run is over.
+    for _ in 0..40 {
+        if w.satie.active_runs() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
     let read = |f: &str| std::fs::read_to_string(w.out.join(f)).unwrap();
     Outcome {
+        tokens_left: w.satie.active_runs(),
         answer: serde_json::from_str(&read("answer")).unwrap(),
         args: read("args"),
         first: serde_json::from_str(&read("first")).unwrap(),
@@ -207,6 +222,17 @@ async fn approvals_round_trip() {
     ] {
         assert!(o.args.contains(flag), "missing `{flag}` in: {}", o.args);
     }
+    // Claude Code is handed Bach's MCP server (Satie), with a per-run token, and it is revoked after.
+    let cfg = &o.args[o.args.find("--mcp-config ").expect("--mcp-config missing") + 13..];
+    assert!(cfg.starts_with(r#"{"mcpServers":{"satie":{"#), "{cfg}");
+    assert!(
+        cfg.contains(r#""type":"http""#) && cfg.contains("Bearer "),
+        "{cfg}"
+    );
+    assert_eq!(
+        o.tokens_left, 0,
+        "the run's MCP token must be revoked once it ends"
+    );
     assert!(
         !o.args.contains("list tmux"),
         "the prompt belongs on stdin, not argv: {}",

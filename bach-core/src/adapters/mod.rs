@@ -39,6 +39,8 @@ impl AgentKind {
     ///
     /// `model` is only honoured by Claude Code so far (`--model`, e.g. `opus` or a full id).
     ///
+    /// `mcp_config` is `--mcp-config` JSON adding Bach's own MCP servers (Claude Code only).
+    ///
     /// `allowed_tools` are permission rules (e.g. `Bash(tmux ls *)`) approved earlier in the
     /// session; only Claude Code takes them.
     pub fn args(
@@ -47,9 +49,10 @@ impl AgentKind {
         session_id: Option<&str>,
         model: Option<&str>,
         allowed_tools: &[String],
+        mcp_config: Option<&str>,
     ) -> Vec<String> {
         match self {
-            AgentKind::Claude => claude::args(session_id, model, allowed_tools),
+            AgentKind::Claude => claude::args(session_id, model, allowed_tools, mcp_config),
             AgentKind::Codex => codex::args(prompt, session_id, model),
             AgentKind::Opencode => opencode::args(prompt, session_id, model),
         }
