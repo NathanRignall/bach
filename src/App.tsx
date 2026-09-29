@@ -1,5 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { AgentInfo, AgentKind, RunEvent, cancelRun, listAgents, onAgentEvent, startRun } from "./api";
+import {
+  AgentInfo,
+  AgentKind,
+  RunEvent,
+  canSwitchBackend,
+  cancelRun,
+  listAgents,
+  onAgentEvent,
+  remoteUrl,
+  setBackend,
+  startRun,
+} from "./api";
 
 type Block =
   | { kind: "user"; text: string }
@@ -146,6 +157,7 @@ export function App() {
             </button>
           ))}
         </div>
+        <BackendPicker />
       </aside>
 
       <main className="main">
@@ -231,4 +243,24 @@ function BlockView({ block }: { block: Block }) {
         </details>
       );
   }
+}
+
+function BackendPicker() {
+  const [url, setUrl] = useState(remoteUrl ?? "ws://localhost:3421");
+  const [mode, setMode] = useState(remoteUrl ? "remote" : "local");
+  if (!canSwitchBackend) return <div className="backend">Agents on {remoteUrl}</div>;
+  const changed = mode === "local" ? remoteUrl !== null : url !== remoteUrl;
+  return (
+    <div className="backend">
+      <label>
+        Agents run
+        <select value={mode} onChange={(e) => setMode(e.target.value)}>
+          <option value="local">on this machine</option>
+          <option value="remote">on a remote bach-server</option>
+        </select>
+      </label>
+      {mode === "remote" && <input value={url} onChange={(e) => setUrl(e.target.value)} spellCheck={false} />}
+      {changed && <button onClick={() => setBackend(mode === "local" ? null : url.trim())}>Apply</button>}
+    </div>
+  );
 }

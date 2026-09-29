@@ -41,3 +41,10 @@ ssh -L 3421:localhost:3421 orion           # then open http://orion:3420
 
 `BACH_PORT` changes the port; `BACH_ALLOWED_ORIGINS` (comma-separated) replaces the allowed
 origins. Point the UI elsewhere with `VITE_BACH_WS`.
+
+## Native app on the Mac, agents on orion
+
+Run the tunnel as above, then start the Tauri app on the Mac (`pnpm tauri dev`) and, in the
+sidebar, set "Agents run" to "on a remote bach-server" (`ws://localhost:3421`) and Apply. The
+choice is saved in the app. Working directories are then paths on orion. The server accepts
+the Tauri webview origins (`tauri://localhost`, `http://tauri.localhost`) by default.

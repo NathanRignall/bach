@@ -41,3 +41,7 @@ pre { background: var(--panel); border: 1px solid var(--border); border-radius: 
 .composer textarea { width: 100%; min-height: 56px; resize: none; background: none; border: 0; outline: none; }
 .composer .row { display: flex; justify-content: space-between; gap: 8px; }
 .composer select { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; }
+.backend { border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--dim); }
+.backend label { display: flex; flex-direction: column; gap: 4px; }
+.backend select, .backend input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; font-size: 12px; }
+.backend input { font-family: ui-monospace, monospace; }

@@ -23,13 +23,35 @@ export type RunEvent = AgentEvent & { run_id: string };
 
 const inTauri = "__TAURI_INTERNALS__" in window;
 
-// Outside Tauri (a plain browser) commands go over a WebSocket to `bach-server`, normally
-// reached through `ssh -L 3421:localhost:3421 orion`.
-const WS_URL = import.meta.env.VITE_BACH_WS ?? "ws://localhost:3421";
+// Commands go over a WebSocket to `bach-server` (normally reached through
+// `ssh -L 3421:localhost:3421 orion`) unless we're in the Tauri app with the local backend.
+const DEFAULT_WS_URL = import.meta.env.VITE_BACH_WS ?? "ws://localhost:3421";
+const STORAGE_KEY = "bach.backend";
+
+const stored = (): string | null => {
+  try {
+    return localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+};
+
+/** The remote backend URL in use, or null when commands run locally through Tauri. */
+export const remoteUrl: string | null = inTauri ? stored() : (stored() ?? DEFAULT_WS_URL);
+export const canSwitchBackend = inTauri;
+
+/** Persists the choice (null = local) and reloads so every listener uses the new transport. */
+export function setBackend(url: string | null) {
+  try {
+    url ? localStorage.setItem(STORAGE_KEY, url) : localStorage.removeItem(STORAGE_KEY);
+  } catch {}
+  location.reload();
+}
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
 class Bridge {
+  constructor(private url: string) {}
   private socket?: Promise<WebSocket>;
   private nextId = 0;
   private pending = new Map<number, Pending>();
@@ -37,11 +59,11 @@ class Bridge {
 
   private connect(): Promise<WebSocket> {
     this.socket ??= new Promise<WebSocket>((resolve, reject) => {
-      const ws = new WebSocket(WS_URL);
+      const ws = new WebSocket(this.url);
       ws.onopen = () => resolve(ws);
       ws.onerror = () => {
         this.socket = undefined;
-        reject(new Error(`Can't reach bach-server at ${WS_URL}. Is it running, and is the SSH tunnel up?`));
+        reject(new Error(`Can't reach bach-server at ${this.url}. Is it running, and is the SSH tunnel up?`));
       };
       ws.onclose = () => {
         this.socket = undefined;
@@ -76,22 +98,20 @@ class Bridge {
   }
 }
 
-const bridge = new Bridge();
+const bridge = remoteUrl ? new Bridge(remoteUrl) : null;
 
 export const listAgents = (): Promise<AgentInfo[]> =>
-  inTauri ? invoke("list_agents") : bridge.call("list_agents");
+  bridge ? bridge.call("list_agents") : invoke("list_agents");
 
 export const startRun = (args: {
   agent: AgentKind;
   prompt: string;
   cwd?: string;
   sessionId?: string;
-}): Promise<string> => (inTauri ? invoke("start_run", args) : bridge.call("start_run", args));
+}): Promise<string> => (bridge ? bridge.call("start_run", args) : invoke("start_run", args));
 
 export const cancelRun = (runId: string): Promise<void> =>
-  inTauri ? invoke("cancel_run", { runId }) : bridge.call("cancel_run", { runId });
+  bridge ? bridge.call("cancel_run", { runId }) : invoke("cancel_run", { runId });
 
 export const onAgentEvent = (cb: (e: RunEvent) => void): Promise<() => void> =>
-  inTauri
-    ? listen<RunEvent>("agent-event", (e) => cb(e.payload))
-    : Promise.resolve(bridge.subscribe(cb));
+  bridge ? Promise.resolve(bridge.subscribe(cb)) : listen<RunEvent>("agent-event", (e) => cb(e.payload));

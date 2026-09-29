@@ -12,10 +12,19 @@ async fn main() {
         .unwrap_or(3421);
     let allowed_origins = match std::env::var("BACH_ALLOWED_ORIGINS") {
         Ok(v) => v.split(',').map(|s| s.trim().to_string()).collect(),
-        // The Vite dev page, opened directly or through a tunnel.
+        // The Vite dev page (opened directly or through a tunnel) and the Tauri app's
+        // webview origins (macOS uses tauri://localhost, Linux/Windows http://tauri.localhost).
         Err(_) => ["localhost", "127.0.0.1", "orion", "10.16.20.1"]
             .iter()
             .map(|h| format!("http://{h}:3420"))
+            .chain(
+                [
+                    "tauri://localhost",
+                    "http://tauri.localhost",
+                    "https://tauri.localhost",
+                ]
+                .map(String::from),
+            )
             .collect(),
     };
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
