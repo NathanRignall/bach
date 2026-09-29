@@ -116,7 +116,7 @@ export class SocketTransport implements Transport {
   private receive(frame: ServerFrame) {
     if (frame.kind === "hello") {
       if (frame.protocol !== PROTOCOL) {
-        this.mismatch = `bach-server ${frame.version} is a different version from this page; reload it, or restart the server.`;
+        this.mismatch = `bach-server ${frame.version} is a different version from this page; reload the page, or restart the server (ssh <host> bach-server restart).`;
       }
       return;
     }

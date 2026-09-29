@@ -26,6 +26,12 @@ export async function getConnection(): Promise<ConnectionStatus> {
 /** Switches where the desktop app's agents run. Saved in the app. */
 export const setConnection = (connection: Connection) => invoke<void>("set_connection", { connection });
 
+/** Restarts bach-server on the SSH host (the installed build replaces a stale one), then reconnects. */
+export const restartServer = () => invoke<void>("restart_server");
+
+/** Starts the desktop app over. */
+export const relaunchApp = () => invoke<void>("relaunch");
+
 /** Every change to the desktop app's connection. Returns an unsubscribe function. */
 export function onConnection(cb: (s: ConnectionStatus) => void): () => void {
   const un = listen<ConnectionStatus>("bach-connection", (e) => {

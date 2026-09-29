@@ -6,6 +6,9 @@
 //! - `bach-server attach`: connects stdin/stdout to the server, starting it if needed. The desktop
 //!   app runs this over SSH: `ssh orion bach-server attach`.
 //!
+//! - `bach-server restart`: replaces the running server with this binary's (after an update leaves
+//!   an old one running, the app and the server disagree on the protocol).
+//!
 //! Env: BACH_DB (session database, default ~/.local/share/bach/bach.db), BACH_PORT (default
 //! 3421), BACH_ALLOWED_ORIGINS (comma-separated browser origins, replaces the defaults).
 mod connection;
@@ -34,13 +37,20 @@ async fn main() {
                 }
             }
         }
+        Some("restart") => match local::restart(&paths).await {
+            Ok(()) => println!("bach-server restarted"),
+            Err(e) => {
+                eprintln!("bach-server restart: {e}");
+                std::process::exit(1);
+            }
+        },
         Some("--version" | "-V") => println!(
             "bach-server {} (protocol {})",
             env!("CARGO_PKG_VERSION"),
             bach_protocol::fingerprint()
         ),
         Some(other) => {
-            eprintln!("usage: bach-server [serve | attach | --version] (unknown: {other})");
+            eprintln!("usage: bach-server [serve | attach | restart | --version] (unknown: {other})");
             std::process::exit(2);
         }
     }

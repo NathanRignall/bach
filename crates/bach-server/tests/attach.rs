@@ -107,6 +107,23 @@ fn attach_starts_one_server_and_carries_frames() {
     assert!(frames.iter().any(|f| f["kind"] == "reply" && f["id"] == 3), "{frames:?}");
     assert!(once.child.wait().unwrap().success());
 
+    // `restart` replaces the running server; clients get the new one.
+    let restarted = Command::new(env!("CARGO_BIN_EXE_bach-server"))
+        .arg("restart")
+        .env("BACH_DB", &db)
+        .env("BACH_PORT", port.to_string())
+        .output()
+        .unwrap();
+    assert!(restarted.status.success(), "{}", String::from_utf8_lossy(&restarted.stderr));
+    let replaced = servers_for(&db);
+    assert_eq!(replaced.len(), 1, "{replaced:?}");
+    assert_ne!(replaced, servers, "a new server process");
+    let servers = replaced;
+    let mut after = attach(&db, port);
+    assert_eq!(after.next()["kind"], "hello");
+    drop(after.stdin);
+    after.child.wait().unwrap();
+
     // Another `serve` for the same database refuses to start.
     let out = Command::new(env!("CARGO_BIN_EXE_bach-server"))
         .arg("serve")

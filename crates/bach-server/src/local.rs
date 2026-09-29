@@ -117,29 +117,93 @@ fn start_server(paths: &Paths) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Waits for the server's socket to accept connections; the server's log tells why if it doesn't.
+async fn wait_for_socket(paths: &Paths) -> Result<UnixStream, String> {
+    for _ in 0..150 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Ok(s) = UnixStream::connect(&paths.socket).await {
+            return Ok(s);
+        }
+    }
+    let log = std::fs::read_to_string(&paths.log).unwrap_or_default();
+    let tail: Vec<&str> = log.lines().rev().take(10).collect();
+    Err(format!(
+        "bach-server didn't start (log: {}):\n{}",
+        paths.log.display(),
+        tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+    ))
+}
+
+/// Processes holding the lock file open: the running server, whatever version it is.
+fn lock_holders(paths: &Paths) -> Vec<i32> {
+    let Ok(want) = paths.lock.canonicalize() else {
+        return vec![];
+    };
+    let me = std::process::id() as i32;
+    let Ok(procs) = std::fs::read_dir("/proc") else {
+        return vec![];
+    };
+    procs
+        .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i32>().ok())
+        .filter(|pid| *pid != me)
+        .filter(|pid| {
+            std::fs::read_dir(format!("/proc/{pid}/fd")).is_ok_and(|fds| {
+                fds.filter_map(|f| std::fs::read_link(f.ok()?.path()).ok())
+                    .any(|target| target == want)
+            })
+        })
+        .collect()
+}
+
+/// Whether a server holds the lock (taking it, briefly, if not).
+fn server_running(paths: &Paths) -> bool {
+    matches!(lock(paths), Ok(None))
+}
+
+/// Stops the running server, if any, and starts this binary's in its place: how a server left
+/// running from an older build gets replaced. Agent turns in progress end with it; background
+/// tasks don't (Satie detaches them).
+pub async fn restart(paths: &Paths) -> Result<(), String> {
+    if server_running(paths) {
+        let holders = lock_holders(paths);
+        if holders.is_empty() {
+            return Err(format!(
+                "bach-server is running for {} but I can't tell which process it is; stop it yourself.",
+                paths.db.display()
+            ));
+        }
+        for (signal, wait) in [(libc::SIGTERM, 100), (libc::SIGKILL, 50)] {
+            for pid in &holders {
+                // SAFETY: plain kill(2); a pid that has gone away just fails.
+                unsafe { libc::kill(*pid, signal) };
+            }
+            for _ in 0..wait {
+                if !server_running(paths) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            if !server_running(paths) {
+                break;
+            }
+        }
+        if server_running(paths) {
+            return Err("the old bach-server wouldn't stop.".into());
+        }
+    }
+    // Whatever is left is from the server that just ended; connecting must reach the new one.
+    let _ = std::fs::remove_file(&paths.socket);
+    start_server(paths).map_err(|e| format!("couldn't start bach-server: {e}"))?;
+    wait_for_socket(paths).await.map(drop)
+}
+
 /// Connects stdin and stdout to the server, starting it first if it isn't running.
 pub async fn attach(paths: &Paths) -> Result<(), String> {
     let stream = match UnixStream::connect(&paths.socket).await {
         Ok(s) => s,
         Err(_) => {
             start_server(paths).map_err(|e| format!("couldn't start bach-server: {e}"))?;
-            let mut connected = None;
-            for _ in 0..150 {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                if let Ok(s) = UnixStream::connect(&paths.socket).await {
-                    connected = Some(s);
-                    break;
-                }
-            }
-            connected.ok_or_else(|| {
-                let log = std::fs::read_to_string(&paths.log).unwrap_or_default();
-                let tail: Vec<&str> = log.lines().rev().take(10).collect();
-                format!(
-                    "bach-server didn't start (log: {}):\n{}",
-                    paths.log.display(),
-                    tail.into_iter().rev().collect::<Vec<_>>().join("\n")
-                )
-            })?
+            wait_for_socket(paths).await?
         }
     };
     let (mut from_server, mut to_server) = stream.into_split();

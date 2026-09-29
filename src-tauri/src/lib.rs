@@ -51,6 +51,7 @@ fn status(connection: Connection, state: ConnectionState) -> ConnectionStatus {
         state,
         error: None,
         retrying: false,
+        incompatible: false,
         version: None,
     }
 }
@@ -67,6 +68,10 @@ fn ssh_command(host: &str, command: &str) -> Vec<String> {
 }
 
 fn ssh_args(host: &str, command: &str) -> Vec<String> {
+    ssh_args_for(host, command, "attach")
+}
+
+fn ssh_args_for(host: &str, command: &str, verb: &str) -> Vec<String> {
     [
         "-T",
         "-o",
@@ -82,7 +87,7 @@ fn ssh_args(host: &str, command: &str) -> Vec<String> {
     ]
     .into_iter()
     .map(String::from)
-    .chain([format!("{command} attach")])
+    .chain([format!("{command} {verb}")])
     .collect()
 }
 
@@ -215,9 +220,14 @@ impl App {
                                 version: Some(version),
                                 ..status(conn.clone(), ConnectionState::Connected)
                             },
-                            Status::Disconnected { error, retrying } => ConnectionStatus {
+                            Status::Disconnected {
+                                error,
+                                retrying,
+                                incompatible,
+                            } => ConnectionStatus {
                                 error: Some(error),
                                 retrying,
+                                incompatible,
                                 ..status(conn.clone(), ConnectionState::Disconnected)
                             },
                         });
@@ -282,6 +292,38 @@ async fn open_port(ports: State<'_, ports::Ports>, port: u16) -> Result<(), Stri
 #[tauri::command]
 async fn set_auto_forward(ports: State<'_, ports::Ports>, auto: bool) -> Result<(), String> {
     ports.set_auto(auto).await
+}
+
+/// Replaces the server on the SSH host with the one installed there (`bach-server restart`), then
+/// connects again. For when the app and the server disagree on the protocol because an update
+/// left an old server running.
+#[tauri::command]
+async fn restart_server(app: State<'_, App>) -> Result<(), String> {
+    let connection = load_connection(&app.config);
+    let Connection::Ssh { host, command } = &connection else {
+        return Err("This app runs its own backend; relaunch it instead.".into());
+    };
+    let mut ssh = tokio::process::Command::new("ssh");
+    ssh.args(ssh_args_for(host, command, "restart"))
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(45), ssh.output())
+        .await
+        .map_err(|_| format!("{host} didn't restart bach-server in time."))?
+        .map_err(|e| format!("Couldn't run ssh: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let tail: Vec<&str> = err.trim().lines().rev().take(4).collect();
+        return Err(tail.into_iter().rev().collect::<Vec<_>>().join("\n"));
+    }
+    app.connect(connection).await;
+    Ok(())
+}
+
+/// Starts the app over, for when a new build is installed but the old one is still running.
+#[tauri::command]
+fn relaunch(app: AppHandle) {
+    app.restart();
 }
 
 #[tauri::command]
@@ -383,6 +425,8 @@ pub fn run() {
             rpc,
             get_connection,
             set_connection,
+            restart_server,
+            relaunch,
             get_forwarding,
             forward_port,
             stop_forward,
