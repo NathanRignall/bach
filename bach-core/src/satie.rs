@@ -437,7 +437,7 @@ impl Satie {
             .into_iter()
             .map(|task| {
                 let ports = if task.status == TaskStatus::Running {
-                    ports_of_group(task.pid)
+                    presentable_ports(ports_of_group(task.pid))
                 } else {
                     vec![]
                 };
@@ -1008,6 +1008,42 @@ mod tests {
         assert!(Satie::describe(&view).contains(&format!("listening on {port}")));
         satie.stop_task(&t.id).await.unwrap();
         assert!(satie.view(&t.id).unwrap().ports.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn the_task_view_hides_random_ports_but_keeps_named_ones() {
+        let dir = tmp("presentable");
+        let satie = satie_in(&Store::in_memory().unwrap(), &dir).await;
+        // A named port (below the ephemeral range) that is free right now.
+        let named = (20000u16..30000)
+            .find(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok())
+            .expect("a free port");
+        let script = format!(
+            "import socket,time\na=socket.socket(); a.bind(('127.0.0.1',{named})); a.listen()\nb=socket.socket(); b.bind(('127.0.0.1',0)); b.listen()\nc=socket.socket(); c.bind(('127.0.0.1',0)); c.listen()\ntime.sleep(60)\n"
+        );
+        std::fs::write(dir.join("two.py"), script).unwrap();
+        let t = satie.start_task(req("python3 two.py", &dir)).unwrap();
+
+        // The process really has three listeners...
+        until("three listeners", || ports_of_group(t.pid).len() == 3).await;
+        // ...but only the recognisable one is presented, in the view and in what the agent is told.
+        let view = satie.view(&t.id).unwrap();
+        assert_eq!(view.ports, vec![named], "{view:?}");
+        assert!(Satie::describe(&view).contains(&format!("listening on {named}")));
+        assert!(
+            Satie::describe(&view).ends_with(&format!("listening on {named}")),
+            "the description lists just the named port: {}",
+            Satie::describe(&view)
+        );
+        satie.stop_task(&t.id).await.unwrap();
+
+        // A task that only has random ports keeps them: they are the point of it.
+        std::fs::write(dir.join("rand.py"), "import socket,time\nb=socket.socket(); b.bind(('127.0.0.1',0)); b.listen()\ntime.sleep(60)\n").unwrap();
+        let r = satie.start_task(req("python3 rand.py", &dir)).unwrap();
+        until("random listener", || ports_of_group(r.pid).len() == 1).await;
+        assert_eq!(satie.view(&r.id).unwrap().ports.len(), 1);
+        satie.stop_task(&r.id).await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 
