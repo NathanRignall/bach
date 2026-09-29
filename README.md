@@ -31,7 +31,8 @@ CLI in headless JSON-streaming mode and normalizing their output into one event 
     `run_in_background`, the MCP config with the run's token).
 - `crates/bach-server/` — the server binary: `serve` (a private Unix socket for the desktop app,
   plus a WebSocket for browsers; one server per database) and `attach` (stdin/stdout to that
-  socket, starting the server if needed).
+  socket, starting the server if needed), and `restart` (replace a running server with this binary's;
+  the app's "Restart server" button runs it over SSH when the two disagree on the protocol).
 - `crates/bach-client/` — the desktop app's side of a remote connection: runs
   `ssh <host> bach-server attach`, checks the protocol, matches replies, reconnects; `forward.rs`
   adds port forwards to that SSH connection.

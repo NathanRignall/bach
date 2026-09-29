@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Settings2 } from "lucide-react";
-import { ConnectionStatus, getConnection, inTauri, onConnection, remoteUrl, setConnection } from "@/api";
+import { ConnectionStatus, getConnection, inTauri, onConnection, relaunchApp, remoteUrl, restartServer, setConnection } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -23,7 +23,6 @@ function hint(error: string, host: string) {
   if (/Could not resolve hostname/i.test(error)) return "Check the host name, or add it to ~/.ssh/config.";
   if (/command not found|No such file or directory/i.test(error))
     return `bach-server isn't installed on ${host} (or isn't on its PATH). Set how to run it in the connection settings.`;
-  if (/different version/i.test(error)) return "Build the app and bach-server from the same commit.";
   return undefined;
 }
 
@@ -62,9 +61,44 @@ export function ConnectionPicker() {
           <p className="line-clamp-4 font-mono text-[11px] break-words whitespace-pre-wrap">{status.error}</p>
           {hint(status.error, host) && <p>{hint(status.error, host)}</p>}
           {status.retrying && <p className="text-muted-foreground">Trying again…</p>}
+          {status.incompatible && <Relaunch ssh={status.connection.mode === "ssh"} />}
         </div>
       )}
       {open && <ConnectionDialog status={status} onClose={() => setOpen(false)} />}
+    </div>
+  );
+}
+
+/** The app and the server are different builds: restart whichever is stale. */
+function Relaunch({ ssh }: { ssh: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  async function restart() {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await restartServer();
+      // Everything on screen came from the old server.
+      location.reload();
+    } catch (e) {
+      setError(String(e));
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="flex flex-col gap-1.5 text-foreground">
+      <p>Restart the older one. Restarting the server ends agent turns in progress; background tasks keep running.</p>
+      <div className="flex gap-1.5">
+        {ssh && (
+          <Button size="xs" disabled={busy} onClick={() => void restart()}>
+            {busy ? "Restarting…" : "Restart server"}
+          </Button>
+        )}
+        <Button size="xs" variant="outline" disabled={busy} onClick={() => void relaunchApp()}>
+          Relaunch app
+        </Button>
+      </div>
+      {error && <p className="font-mono text-[11px] break-words whitespace-pre-wrap text-destructive">{error}</p>}
     </div>
   );
 }

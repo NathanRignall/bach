@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "db895bbfa58a5426";
+export const PROTOCOL = "d8ca84bac63badde";
 
 /**
  * Agent-independent events the UI renders.
@@ -104,6 +104,11 @@ error: string | null,
  * Whether it will try again by itself.
  */
 retrying: boolean, 
+/**
+ * The server is there but speaks another protocol than this app: restarting it (or the app)
+ * is the way out.
+ */
+incompatible: boolean, 
 /**
  * The server's version, once connected.
  */

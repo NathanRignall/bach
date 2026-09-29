@@ -41,6 +41,9 @@ pub struct ConnectionStatus {
     pub error: Option<String>,
     /// Whether it will try again by itself.
     pub retrying: bool,
+    /// The server is there but speaks another protocol than this app: restarting it (or the app)
+    /// is the way out.
+    pub incompatible: bool,
     /// The server's version, once connected.
     pub version: Option<String>,
 }
