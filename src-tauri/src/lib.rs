@@ -284,6 +284,15 @@ async fn stop_forward(ports: State<'_, ports::Ports>, port: u16) -> Result<(), S
     ports.stop(port).await
 }
 
+/// Opens a link in the default browser (the webview can't open windows of its own).
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !["http://", "https://", "mailto:"].iter().any(|p| url.starts_with(p)) {
+        return Err(format!("won't open {url}: only web and mail links"));
+    }
+    ports::open_url(&url)
+}
+
 #[tauri::command]
 async fn open_port(ports: State<'_, ports::Ports>, port: u16) -> Result<(), String> {
     ports.open(port).await
@@ -431,6 +440,7 @@ pub fn run() {
             forward_port,
             stop_forward,
             open_port,
+            open_url,
             set_auto_forward,
             titlebar::title_bar
         ])

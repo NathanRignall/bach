@@ -15,6 +15,7 @@ export {
   onConnection,
   onForwarding,
   openPort,
+  openUrl,
   relaunchApp,
   remoteUrl,
   restartServer,
