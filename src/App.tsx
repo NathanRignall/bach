@@ -259,6 +259,7 @@ export function App() {
           cwd: newDraft.cwd.trim(),
           branch: newDraft.branch ?? undefined,
           worktree: !!newDraft.worktree,
+          newBranch: newDraft.worktree ? newDraft.newBranch?.trim() || undefined : undefined,
           modelChoice: newDraft.modelChoice ?? undefined,
           permissionMode: newDraft.permissionMode ?? undefined,
           prompt,

@@ -238,13 +238,18 @@ impl Handler for Api {
         }
         // Where it runs: the folder on the chosen branch, or a new worktree branched from it.
         let worktree = a.worktree.unwrap_or(false);
+        let new_branch = a
+            .new_branch
+            .map(|b| b.trim().to_string())
+            .filter(|b| !b.is_empty())
+            .unwrap_or_else(|| branch_name_for(&prompt));
         let ws = self
             .git
             .prepare(
                 cwd.clone(),
                 a.branch.clone(),
                 worktree,
-                worktree.then(|| branch_name_for(&prompt)),
+                worktree.then_some(new_branch),
             )
             .await
             .map_err(ApiError::failed)?;

@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "b72ec9b332cef201";
+export const PROTOCOL = "db895bbfa58a5426";
 
 /**
  * Agent-independent events the UI renders.
@@ -448,7 +448,11 @@ export type SessionLog = { session: Session, entries: Array<LogEntry>, };
  * `branch`, or (with `worktree`) creates a new branch from it in an isolated worktree. Nothing is
  * saved if that, or starting the agent, fails.
  */
-export type StartSessionArgs = { agent: AgentKind, cwd: string, branch?: string, worktree?: boolean, modelChoice?: string, permissionMode?: string, prompt: string, };
+export type StartSessionArgs = { agent: AgentKind, cwd: string, branch?: string, worktree?: boolean, 
+/**
+ * The worktree's branch name; made up from the prompt when not given.
+ */
+newBranch?: string, modelChoice?: string, permissionMode?: string, prompt: string, };
 
 /**
  * Starts a command by hand, as a task of the project in `cwd`.

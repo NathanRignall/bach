@@ -24,7 +24,7 @@ interface Props {
 export function NewSessionPage({ session, agents, draft, onDraft, onSend, starting, recentProjects, onChange, error, indicator }: Props) {
   const git = useGitInfo(session, onChange);
   const hasFolder = !!session.cwd.trim();
-  const setProject = (cwd: string) => onChange({ cwd, branch: undefined, worktree: false });
+  const setProject = (cwd: string) => onChange({ cwd, branch: undefined, worktree: false, newBranch: undefined });
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center overflow-y-auto px-5 py-10">

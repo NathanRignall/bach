@@ -66,6 +66,8 @@ export interface NewSession {
   cwd: string;
   branch?: string | null;
   worktree?: boolean;
+  /** The worktree's branch name; the backend makes one up from the message when empty. */
+  newBranch?: string;
   modelChoice?: string | null;
   permissionMode?: string | null;
   /** Why the last attempt to start it failed. */

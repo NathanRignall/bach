@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, GitBranch, Plus } from "lucide-react";
 import { GitInfo, gitInfo } from "@/api";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
@@ -80,6 +81,16 @@ export function BranchControls({ session, git, onChange }: { session: Session; g
           placeholder={info.current ? undefined : "Detached HEAD"}
           onChange={(b) => (b === NEW_BRANCH ? onChange({ worktree: true }) : onChange({ branch: b }))}
         />
+        {session.worktree && (
+          <Input
+            aria-label="New branch name"
+            className="h-7 w-44 font-mono text-xs"
+            placeholder="branch name (auto)"
+            value={session.newBranch ?? ""}
+            onChange={(e) => onChange({ newBranch: e.target.value })}
+            spellCheck={false}
+          />
+        )}
       </div>
       <div className="flex items-center gap-2">
         <Switch id="worktree" size="sm" checked={!!session.worktree} onCheckedChange={(w) => onChange({ worktree: w })} />
@@ -98,9 +109,11 @@ export function BranchHint({ session, git }: { session: Session; git: GitState }
   if (!info?.isRepo) return null;
   const selected = session.branch ?? info.current ?? undefined;
   if (session.worktree) {
+    const name = session.newBranch?.trim();
     return (
       <p className="text-xs text-muted-foreground">
-        Creates a new branch from {selected ?? "HEAD"} in an isolated worktree, so your checkout stays as is.
+        Creates {name ? <span className="font-mono">{name}</span> : "a branch named after your message"} from {selected ?? "HEAD"} in an isolated worktree, so your
+        checkout stays as is.
       </p>
     );
   }
