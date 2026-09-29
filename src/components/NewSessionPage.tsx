@@ -1,7 +1,6 @@
 import { ReactNode } from "react";
 import { AgentInfo, AgentKind } from "@/api";
-import { Button } from "@/components/ui/button";
-import { NewSession as Session, projectName } from "@/session";
+import { NewSession as Session } from "@/session";
 import { BlockView } from "./Transcript";
 import { BranchControls, BranchHint, useGitInfo } from "./GitControls";
 import { Composer } from "./Composer";
@@ -62,7 +61,7 @@ export function NewSessionPage({ session, agents, draft, onDraft, onSend, starti
           onPermissionMode={(permissionMode) => onChange({ permissionMode })}
           left={
             <>
-              <ProjectButton cwd={session.cwd} onChange={setProject} />
+              <ProjectButton cwd={session.cwd} recent={recentProjects} onChange={setProject} />
               <BranchControls session={session} git={git} onChange={onChange} />
             </>
           }
@@ -71,17 +70,6 @@ export function NewSessionPage({ session, agents, draft, onDraft, onSend, starti
         <div className="min-h-5 px-1">
           <BranchHint session={session} git={git} />
         </div>
-
-        {recentProjects.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5 px-1">
-            <span className="text-xs text-muted-foreground">Recent</span>
-            {recentProjects.map((p) => (
-              <Button key={p} variant={p === session.cwd.trim() ? "secondary" : "ghost"} size="xs" title={p} onClick={() => setProject(p)}>
-                {projectName(p)}
-              </Button>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   );

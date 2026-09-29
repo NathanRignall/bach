@@ -80,16 +80,19 @@ interface PickerProps {
   mono?: boolean;
   /** Where the menu opens relative to the trigger. */
   align?: "start" | "end";
+  /** Shown in the trigger before the value. */
+  icon?: ReactNode;
   className?: string;
   onChange: (v: string) => void;
 }
 
 /** A small picker whose menu explains each choice, in the style of Claude Code's own. */
-export function Picker({ heading, label, choices, value, placeholder, disabled, mono, align = "end", className, onChange }: PickerProps) {
+export function Picker({ heading, label, choices, value, placeholder, disabled, mono, align = "end", icon, className, onChange }: PickerProps) {
   return (
     <Select items={choices} value={value} disabled={disabled} onValueChange={(v) => v && onChange(v)}>
       <SelectTrigger size="sm" aria-label={label} className={cn(mono && "font-mono text-xs", className)}>
-        <SelectValue placeholder={placeholder} />
+        {icon}
+        <SelectValue placeholder={placeholder} className="max-w-40 truncate" />
       </SelectTrigger>
       <SelectContent className="min-w-64" align={align} alignItemWithTrigger={false}>
         <SelectGroup>
@@ -101,7 +104,7 @@ export function Picker({ heading, label, choices, value, placeholder, disabled, 
                 {c.icon}
                 <span className="flex flex-col gap-0.5">
                   <span className={cn(mono && "font-mono text-xs")}>{c.label}</span>
-                  <span className="font-sans text-xs font-normal text-muted-foreground">{c.description}</span>
+                  <span className="font-sans text-xs font-normal whitespace-normal text-muted-foreground">{c.description}</span>
                 </span>
               </SelectItem>
             </Fragment>
