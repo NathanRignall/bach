@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { Session, macTitleBar } from "@/api";
+import { Session, TaskView, macTitleBar } from "@/api";
 import { awaitingApproval, groupByProject, projectName } from "@/session";
 import { ConnectionPicker } from "./ConnectionPicker";
 
@@ -20,11 +20,12 @@ interface Props {
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onOpenCleanup: () => void;
-  runningTasks: number;
+  tasks: TaskView[];
   onToggleTasks: () => void;
 }
 
-export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onDelete, onRename, onOpenCleanup, runningTasks, onToggleTasks }: Props) {
+export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onDelete, onRename, onOpenCleanup, tasks, onToggleTasks }: Props) {
+  const runningTasks = tasks.filter((t) => t.status === "running").length;
   const [confirmDelete, setConfirmDelete] = useState<string>();
   const [editing, setEditing] = useState<{ id: string; draft: string }>();
   const cancelled = useRef(false);
@@ -157,7 +158,7 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
           <GitFork data-icon="inline-start" />
           Clean up worktrees…
         </Button>
-        <ConnectionPicker />
+        <ConnectionPicker tasks={tasks} />
       </div>
     </aside>
   );

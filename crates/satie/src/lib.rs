@@ -198,6 +198,7 @@ impl Satie {
             }),
         };
         satie.tick(); // reconcile: what ran while we were down?
+        satie.prune_superseded();
 
         let monitor = satie.clone();
         tokio::spawn(async move {
@@ -213,6 +214,29 @@ impl Satie {
             let _ = axum::serve(listener, app).await;
         });
         Ok(satie)
+    }
+
+    /// Forgets finished runs of a command that was started again later in the same folder: only
+    /// the latest run of each is worth listing. (Recorded by older versions, which kept them all.)
+    fn prune_superseded(&self) {
+        let tasks = self.inner.tasks.lock().unwrap();
+        let superseded: Vec<String> = tasks
+            .values()
+            .filter(|t| t.status != TaskStatus::Running)
+            .filter(|t| {
+                tasks.values().any(|later| {
+                    later.id != t.id
+                        && later.command == t.command
+                        && later.cwd == t.cwd
+                        && (later.started_at, &later.id) > (t.started_at, &t.id)
+                })
+            })
+            .map(|t| t.id.clone())
+            .collect();
+        drop(tasks);
+        for id in superseded {
+            let _ = self.remove_task(&id);
+        }
     }
 
     /// The MCP endpoint.

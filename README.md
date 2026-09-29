@@ -81,7 +81,8 @@ up. Its status and any SSH error are shown in the sidebar.
 **Port forwarding.** Over SSH, the ports background tasks listen on are forwarded to the Mac as
 they come and go (like VS Code), so `http://localhost:5173` on the Mac reaches the dev server on
 orion. The cable icon next to the connection in the sidebar (shown over SSH, with a count) lists
-the forwards, switches the automatic ones off, and forwards any other port by hand. Clicking a
+the forwards, each labelled with the task (and compose process) listening on it, switches the
+automatic ones off, and forwards any other port by hand. Clicking a
 port anywhere opens it in the browser, forwarding it first if needed. Forwards
 use the app's own SSH connection (it runs as a `ControlMaster`; each forward is
 `ssh -O forward -L 127.0.0.1:<local>:localhost:<port>`), so there's no second login, they listen
@@ -198,13 +199,14 @@ runs one agent process per message. **Satie** is Bach's own launcher for things 
 - Processes start *detached* (own session, output in a log file, exit code in a file) and are recorded
   in the database, so they survive turns, agents and even a `bach-server` restart; on startup Bach
   finds them again, notices ones that ended, and can still stop them. Starting the same command
-  in the same folder again replaces its earlier, finished runs, so a restarted server is listed once.
+  in the same folder again replaces its earlier, finished runs, so a restarted server is listed once
+  (runs left behind by older versions are pruned at startup).
 - Agents reach it as an MCP server (`satie`, loopback only, one bearer token per run): `task_start`
   (optionally waits for a `port`), `task_list`, `task_logs`, `task_stop`. Agents only see their own
   project's tasks. Claude Code runs also get a system-prompt note and a hook that refuses Bash
   `run_in_background` and points at `task_start`.
 - The **Background tasks** panel (sidebar) lists them with status, uptime, listening ports (clickable),
-  live logs, Stop and Remove, and can start a command by hand. It follows `task` events the backend
+  live logs, Stop and Remove (or **Clear finished** for all of them at once), and can start a command by hand. It follows `task` events the backend
   pushes (Satie checks tasks every second while anyone is listening) instead of polling.
 - Satie keeps its own database and task files in a `tasks/` folder next to the session database
   (`~/.local/share/bach/tasks/satie.db`). Tasks from older versions, kept in `bach.db`, are moved

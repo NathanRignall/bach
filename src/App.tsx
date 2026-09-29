@@ -331,7 +331,7 @@ export function App() {
         onDelete={(id) => void remove(id)}
         onRename={(id, title) => void update({ sessionId: id, title })}
         onOpenCleanup={() => setCleanupOpen(true)}
-        runningTasks={tasks.tasks.filter((t) => t.status === "running").length}
+        tasks={tasks.tasks}
         onToggleTasks={() => setTasksOpen((v) => !v)}
       />
 

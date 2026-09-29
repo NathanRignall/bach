@@ -257,11 +257,24 @@ export function TasksPanel({ tasks, error, refresh, onClose }: Props) {
   const [viewing, setViewing] = useState<{ id: string; process?: string }>();
   const viewed = tasks.find((t) => t.id === viewing?.id);
   const forwarding = useForwarding();
+  const finished = tasks.filter((t) => t.status !== "running");
 
   return (
     <aside className="flex w-96 shrink-0 flex-col border-l bg-background" aria-label="Background tasks">
       <header data-tauri-drag-region className="flex h-(--title-bar-height) shrink-0 items-center gap-2 border-b px-4">
         <h2 className="flex-1 text-sm font-semibold">Background tasks</h2>
+        {finished.length > 0 && (
+          <Button
+            variant="ghost"
+            size="xs"
+            className="text-muted-foreground"
+            title="Remove every task that isn't running"
+            onClick={() => void Promise.allSettled(finished.map((t) => removeTask(t.id))).then(refresh)}
+          >
+            <Trash2 data-icon="inline-start" />
+            Clear finished
+          </Button>
+        )}
         <Button variant="ghost" size="icon-sm" aria-label="Close tasks panel" onClick={onClose}>
           <X />
         </Button>

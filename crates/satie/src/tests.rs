@@ -183,6 +183,26 @@
     }
 
     #[tokio::test]
+    async fn a_restart_forgets_runs_superseded_before_the_rule_existed() {
+        let dir = tmp("prune");
+        let before = satie_in(&dir).await;
+        let old = before.start_task(req("exit 0", &dir)).unwrap();
+        until("old ended", || status(&before, &old.id) == TaskStatus::Exited).await;
+        // Put a second, later run beside it by hand, as an older version would have left it.
+        let mut newer = old.clone();
+        newer.id = new_task_id();
+        newer.started_at = old.started_at + 1;
+        before.import(vec![newer.clone()]);
+        assert!(before.get(&old.id).is_some() && before.get(&newer.id).is_some());
+        drop(before);
+
+        let after = satie_in(&dir).await;
+        assert!(after.get(&old.id).is_none(), "the superseded run is forgotten on startup");
+        assert!(after.get(&newer.id).is_some(), "the latest run stays");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn tasks_survive_a_restart_and_are_reconciled() {
         let dir = tmp("restart");
         let before = satie_in(&dir).await;

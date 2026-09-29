@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, Cable, ExternalLink, X } from "lucide-react";
-import { Forwarding, forwardPort, getForwarding, inTauri, onForwarding, openPort, setAutoForward, stopForward, taskHost } from "@/api";
+import { Forwarding, TaskView, forwardPort, getForwarding, inTauri, onForwarding, openPort, setAutoForward, stopForward, taskHost } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -67,8 +67,19 @@ export function PortLink({ port, forwarding, className }: { port: number; forwar
   );
 }
 
+/** What listens on a port, as far as the background tasks say: the task, and its process for a compose project. */
+function listener(port: number, tasks: TaskView[]) {
+  for (const t of tasks) {
+    if (t.status !== "running") continue;
+    const proc = t.compose?.find((p) => p.ports.includes(port));
+    if (proc) return `${t.name} · ${proc.name}`;
+    if (t.ports.includes(port) || t.upPorts.includes(port)) return t.name;
+  }
+  return undefined;
+}
+
 /** The forwards to this computer, as a small icon that opens the list (only over SSH). */
-export function PortsButton({ forwarding }: { forwarding: Forwarding | null }) {
+export function PortsButton({ forwarding, tasks }: { forwarding: Forwarding | null; tasks: TaskView[] }) {
   if (!forwarding?.available) return null;
   const n = forwarding.forwards.length;
   return (
@@ -91,15 +102,15 @@ export function PortsButton({ forwarding }: { forwarding: Forwarding | null }) {
           </span>
         )}
       </PopoverTrigger>
-      <PopoverContent side="top" align="end" className="w-80">
-        <ForwardedPorts forwarding={forwarding} />
+      <PopoverContent side="top" align="end" className="w-96">
+        <ForwardedPorts forwarding={forwarding} tasks={tasks} />
       </PopoverContent>
     </Popover>
   );
 }
 
 /** The forwards to this computer, when agents run on another machine. */
-export function ForwardedPorts({ forwarding }: { forwarding: Forwarding }) {
+export function ForwardedPorts({ forwarding, tasks }: { forwarding: Forwarding; tasks: TaskView[] }) {
   const [port, setPort] = useState("");
   const [error, setError] = useState<string>();
 
@@ -127,23 +138,27 @@ export function ForwardedPorts({ forwarding }: { forwarding: Forwarding }) {
       </div>
       {forwarding.forwards.length > 0 ? (
         <ul className="flex flex-col gap-1">
-          {forwarding.forwards.map((f) => (
-            <li key={f.remote} className="flex items-center gap-2 text-xs">
-              <span className="font-mono">:{f.remote}</span>
-              <ArrowRight className="size-3 text-muted-foreground" />
-              <button type="button" className="font-mono text-primary hover:underline" onClick={() => void openPort(f.remote)}>
-                localhost:{f.local}
-              </button>
-              {f.auto && <span className="text-muted-foreground">task</span>}
-              <span className="flex-1" />
-              <Button variant="ghost" size="icon-xs" title="Open in browser" aria-label={`Open port ${f.remote}`} onClick={() => void openPort(f.remote)}>
-                <ExternalLink />
-              </Button>
-              <Button variant="ghost" size="icon-xs" title="Stop forwarding" aria-label={`Stop forwarding port ${f.remote}`} onClick={() => void stopForward(f.remote)}>
-                <X />
-              </Button>
-            </li>
-          ))}
+          {forwarding.forwards.map((f) => {
+            const who = listener(f.remote, tasks);
+            return (
+              <li key={f.remote} className="flex items-center gap-2 text-xs">
+                <span className="font-mono">:{f.remote}</span>
+                <ArrowRight className="size-3 text-muted-foreground" />
+                <button type="button" className="font-mono text-primary hover:underline" onClick={() => void openPort(f.remote)}>
+                  localhost:{f.local}
+                </button>
+                <span className="min-w-0 flex-1 truncate text-muted-foreground" title={who ?? (f.auto ? "Forwarded for a task that has since stopped" : undefined)}>
+                  {who ?? (f.auto ? "task" : "")}
+                </span>
+                <Button variant="ghost" size="icon-xs" title="Open in browser" aria-label={`Open port ${f.remote}`} onClick={() => void openPort(f.remote)}>
+                  <ExternalLink />
+                </Button>
+                <Button variant="ghost" size="icon-xs" title="Stop forwarding" aria-label={`Stop forwarding port ${f.remote}`} onClick={() => void stopForward(f.remote)}>
+                  <X />
+                </Button>
+              </li>
+            );
+          })}
         </ul>
       ) : (
         <p className="text-xs text-muted-foreground">No ports forwarded.</p>
