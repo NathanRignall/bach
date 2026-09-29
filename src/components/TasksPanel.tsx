@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Ban, CheckCircle2, Maximize2, ScrollText, Square, Trash2, X, XCircle } from "lucide-react";
-import { Forwarding, TaskStatus, TaskView, listTasks, onReconnect, onTaskEvent, removeTask, stopTask, taskLogs } from "@/api";
+import { useEffect, useState } from "react";
+import { AlertTriangle, Ban, CheckCircle2, ScrollText, Square, Trash2, X, XCircle } from "lucide-react";
+import { Forwarding, TaskStatus, TaskView, listTasks, onReconnect, onTaskEvent, removeTask, stopTask } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { AnsiLine } from "@/lib/ansi";
-import { ComposeProcesses, ProcessTabs } from "./ComposeProcesses";
+import { ComposeProcesses } from "./ComposeProcesses";
 import { LogViewer } from "./LogViewer";
 import { PortLink, useForwarding } from "./Ports";
 import { projectName } from "@/session";
@@ -78,52 +77,6 @@ function StatusIcon({ task }: { task: TaskView }) {
   }
 }
 
-/** The tail of a task's output (or one process's), refreshed while open. */
-function Logs({ id, running, process }: { id: string; running: boolean; process?: string }) {
-  const [text, setText] = useState<string>();
-  const ref = useRef<HTMLPreElement>(null);
-  const pinned = useRef(true);
-  useEffect(() => {
-    let live = true;
-    setText(undefined);
-    pinned.current = true;
-    const load = () =>
-      taskLogs(id, 200, process)
-        .then((t) => live && setText(t))
-        .catch((e) => live && setText(String(e.message ?? e)));
-    void load();
-    const t = running ? setInterval(load, 1500) : undefined;
-    return () => {
-      live = false;
-      clearInterval(t);
-    };
-  }, [id, running, process]);
-  useEffect(() => {
-    const el = ref.current;
-    if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  }, [text]);
-  return (
-    <pre
-      ref={ref}
-      onScroll={(e) => {
-        const el = e.currentTarget;
-        pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-      }}
-      className="max-h-56 overflow-auto rounded-lg border bg-muted p-2 font-mono text-[11px] leading-snug whitespace-pre-wrap break-all select-text"
-    >
-      {text === undefined
-        ? "Loading…"
-        : text
-          ? text.split("\n").map((line, i) => (
-              <div key={i}>
-                <AnsiLine text={line} />
-              </div>
-            ))
-          : "(no output yet)"}
-    </pre>
-  );
-}
-
 function TaskCard({
   task,
   forwarding,
@@ -135,9 +88,6 @@ function TaskCard({
   onChanged: () => void;
   onOpenViewer: (process?: string) => void;
 }) {
-  const [showLogs, setShowLogs] = useState(false);
-  /** Whose output the inline log shows, for a process-compose task; everything by default. */
-  const [logProcess, setLogProcess] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const running = task.status === "running";
@@ -204,7 +154,7 @@ function TaskCard({
           processes={task.compose}
           running={running}
           forwarding={forwarding}
-          onShowLogs={(p) => (setLogProcess(p), setShowLogs(true))}
+          onShowLogs={onOpenViewer}
         />
       ) : (
         running &&
@@ -216,13 +166,9 @@ function TaskCard({
       )}
 
       <div className="flex items-center gap-1.5">
-        <Button variant="outline" size="xs" onClick={() => setShowLogs((v) => !v)} aria-expanded={showLogs}>
+        <Button variant="outline" size="xs" onClick={() => onOpenViewer()} aria-label={`Open ${task.name} log`} title="Open the log">
           <ScrollText data-icon="inline-start" />
           Logs
-        </Button>
-        <Button variant="outline" size="xs" onClick={() => onOpenViewer(logProcess)} aria-label={`Open ${task.name} log full screen`} title="Full-screen log">
-          <Maximize2 data-icon="inline-start" />
-          Full screen
         </Button>
         {running ? (
           <Button variant="outline" size="xs" disabled={busy} onClick={() => void act(() => stopTask(task.id))}>
@@ -237,10 +183,6 @@ function TaskCard({
         )}
       </div>
       {error && <p className="text-xs text-destructive">{error}</p>}
-      {showLogs && task.compose && task.compose.length > 0 && (
-        <ProcessTabs processes={task.compose} value={logProcess} onChange={setLogProcess} />
-      )}
-      {showLogs && <Logs id={task.id} running={running} process={logProcess} />}
     </li>
   );
 }
