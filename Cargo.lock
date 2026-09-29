@@ -173,6 +173,7 @@ dependencies = [
  "satie-protocol",
  "serde",
  "serde_json",
+ "shlex",
  "tokio",
  "uuid",
  "which",

@@ -72,7 +72,7 @@ impl AgentCli for AgentKind {
             AgentKind::Claude => {
                 claude::args(session_id, model, permission_mode, allowed_tools, satie)
             }
-            AgentKind::Codex => codex::args(prompt, image_files, session_id, model),
+            AgentKind::Codex => codex::args(),
             AgentKind::Opencode => opencode::args(prompt, image_files, session_id, model),
         }
     }
@@ -80,6 +80,7 @@ impl AgentCli for AgentKind {
     fn stdin_prompt(self, prompt: &str, images: &[String]) -> Option<String> {
         match self {
             AgentKind::Claude => Some(claude::user_message(prompt, images)),
+            // Codex gets its prompt as part of a conversation (see [`Conversation`]).
             _ => None,
         }
     }
@@ -96,10 +97,82 @@ impl AgentCli for AgentKind {
         };
         match self {
             AgentKind::Claude => claude::parse(&v),
-            AgentKind::Codex => codex::parse(&v),
+            // Codex's lines only make sense within their conversation; this reads one alone.
+            AgentKind::Codex => codex::Conversation::new("", &[], None, None, &[]).on_line(&v).0,
             AgentKind::Opencode => opencode::parse(&v),
         }
     }
+}
+
+/// One run's exchange with the agent process over stdin/stdout.
+pub enum Conversation {
+    /// The agent writes events and reads nothing, or only answers, from Bach (Claude Code,
+    /// opencode).
+    Lines(AgentKind),
+    Codex(Box<codex::Conversation>),
+}
+
+impl Conversation {
+    /// `images` are `data:` URLs (Claude Code) and `image_files` the same images saved as files
+    /// (the others).
+    pub fn new(
+        agent: AgentKind,
+        prompt: &str,
+        images: &[String],
+        image_files: &[String],
+        session_id: Option<&str>,
+        cwd: Option<&str>,
+        allowed_tools: &[String],
+    ) -> (Self, Vec<String>) {
+        match agent {
+            AgentKind::Codex => {
+                let c = codex::Conversation::new(prompt, image_files, session_id, cwd, allowed_tools);
+                let opening = c.opening();
+                (Self::Codex(Box::new(c)), opening)
+            }
+            _ => (
+                Self::Lines(agent),
+                agent.stdin_prompt(prompt, images).into_iter().collect(),
+            ),
+        }
+    }
+
+    /// Whether stdin stays open for the conversation (otherwise the agent gets none).
+    pub fn uses_stdin(&self) -> bool {
+        match self {
+            Self::Lines(agent) => agent.stdin_prompt("", &[]).is_some(),
+            Self::Codex(_) => true,
+        }
+    }
+
+    /// One line from the agent: the events to show and the lines to send back.
+    pub fn on_line(&mut self, line: &str) -> (Vec<AgentEvent>, Vec<String>) {
+        match self {
+            Self::Lines(agent) => (agent.parse_line(line), vec![]),
+            Self::Codex(c) => match serde_json::from_str::<Value>(line) {
+                Ok(v) => c.on_line(&v),
+                Err(_) => (
+                    vec![AgentEvent::Raw {
+                        line: line.to_string(),
+                    }],
+                    vec![],
+                ),
+            },
+        }
+    }
+
+    /// A line asking the agent to stop the turn, for agents that take one.
+    pub fn interrupt(&self) -> Option<String> {
+        match self {
+            Self::Lines(_) => None,
+            Self::Codex(c) => c.interrupt(),
+        }
+    }
+}
+
+/// The reply to a Codex approval request (see [`codex::answer`]).
+pub fn codex_answer(suggestions: &Value, decision: bach_protocol::Decision) -> String {
+    codex::answer(suggestions, decision)
 }
 
 /// The agent CLIs Bach knows, and whether each is on the backend host's PATH.
@@ -160,34 +233,8 @@ mod tests {
     }
 
     #[test]
-    fn codex_and_opencode_take_images_as_files_before_the_prompt() {
+    fn codex_and_opencode_take_images_as_files() {
         let files = ["/tmp/a.png".to_string(), "/tmp/b.jpg".to_string()];
-        let codex = AgentKind::Codex.args("-look", &files, None, None, None, &[], None);
-        assert_eq!(
-            codex,
-            [
-                "exec",
-                "--json",
-                "--image=/tmp/a.png",
-                "--image=/tmp/b.jpg",
-                "--",
-                "-look"
-            ]
-        );
-        let resumed = AgentKind::Codex.args("hi", &files[..1], Some("t1"), None, None, &[], None);
-        assert_eq!(
-            resumed,
-            [
-                "exec",
-                "resume",
-                "--json",
-                "--image=/tmp/a.png",
-                "--",
-                "t1",
-                "hi"
-            ]
-        );
-
         let opencode = AgentKind::Opencode.args("hi", &files, Some("s1"), None, None, &[], None);
         assert_eq!(
             opencode,

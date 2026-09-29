@@ -437,7 +437,7 @@ export function App() {
           <>
             <SessionHeader session={active} inset={!sidebarOpen} />
 
-            <TranscriptContext.Provider value={{ decide, retry: running || starting ? undefined : retry }}>
+            <TranscriptContext.Provider value={{ decide, retry: running || starting ? undefined : retry, agent: active.agent }}>
             <div className="relative min-h-0 flex-1">
               <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
                 <div ref={contentRef} className="mx-auto flex max-w-3xl flex-col gap-4 px-5 py-6 select-text">
