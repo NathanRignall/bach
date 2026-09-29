@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, GitBranch } from "lucide-react";
+import { AlertTriangle, GitBranch, Plus } from "lucide-react";
 import { GitInfo, gitInfo } from "@/api";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { NewSession as Session } from "@/session";
+import { Choice, Picker } from "./Composer";
+
+/** The menu entry that starts a new branch (in a worktree) instead of picking one. */
+const NEW_BRANCH = "\0new";
 
 interface GitState {
   info?: GitInfo;
@@ -46,24 +49,37 @@ export function BranchControls({ session, git, onChange }: { session: Session; g
   const selected = session.branch ?? info.current ?? undefined;
   // A repo with no commits has a current branch that isn't listed yet; keep it selectable.
   const names = info.current && !info.branches.includes(info.current) ? [info.current, ...info.branches] : info.branches;
-  const items = names.map((b) => ({ value: b, label: b + (b === info.current ? " (current)" : "") }));
+  const describe = (b: string) => {
+    if (session.worktree) return b === info.current ? "Checked out here; the new branch starts from it" : "The new branch starts from it";
+    if (b === info.current) return "Checked out in this folder";
+    return info.dirty ? "Switches this folder to it (it has uncommitted changes)" : "Switches this folder to it";
+  };
+  const choices: Choice[] = names.map((b) => ({ value: b, label: b + (b === info.current ? " (current)" : ""), description: describe(b) }));
+  if (!session.worktree) {
+    choices.push({
+      value: NEW_BRANCH,
+      label: "New branch",
+      description: `From ${selected ?? "HEAD"}, in its own worktree`,
+      icon: <Plus className="size-4 text-muted-foreground" />,
+      separated: true,
+    });
+  }
 
   return (
     <>
       <div className="flex items-center gap-1.5">
         <GitBranch className="size-4 text-muted-foreground" />
-        <Select items={items} value={selected ?? null} onValueChange={(b) => b && onChange({ branch: b })}>
-          <SelectTrigger size="sm" aria-label="Branch" className="min-w-32 font-mono text-xs">
-            <SelectValue placeholder={info.current ? undefined : "Detached HEAD"} />
-          </SelectTrigger>
-          <SelectContent>
-            {items.map((i) => (
-              <SelectItem key={i.value} value={i.value} className="font-mono text-xs">
-                {i.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <Picker
+          heading={session.worktree ? "Branch from" : "Branch"}
+          label="Branch"
+          mono
+          align="start"
+          className="min-w-32"
+          choices={choices}
+          value={selected ?? null}
+          placeholder={info.current ? undefined : "Detached HEAD"}
+          onChange={(b) => (b === NEW_BRANCH ? onChange({ worktree: true }) : onChange({ branch: b }))}
+        />
       </div>
       <div className="flex items-center gap-2">
         <Switch id="worktree" size="sm" checked={!!session.worktree} onCheckedChange={(w) => onChange({ worktree: w })} />
