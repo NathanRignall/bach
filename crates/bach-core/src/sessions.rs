@@ -11,6 +11,9 @@ use bach_protocol::{
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
+/// Called with a session whose run (the given id) just finished cleanly.
+pub type OnFinish = Arc<dyn Fn(&mut Session, &str) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Sessions {
     store: Store,
@@ -88,14 +91,15 @@ impl Sessions {
         Ok(self.store.plan_usage()?)
     }
 
-    /// Where a run of session `id` sends its events.
-    pub fn recorder(&self, id: &str) -> Emit {
+    /// Where a run of session `id` sends its events. `on_finish` changes the session in the same
+    /// step that marks a cleanly finished run over, so nobody sees what's in between.
+    pub fn recorder(&self, id: &str, on_finish: Option<OnFinish>) -> Emit {
         let (sessions, id) = (self.clone(), id.to_string());
-        Arc::new(move |ev| sessions.record(&id, ev))
+        Arc::new(move |ev| sessions.record(&id, ev, on_finish.clone()))
     }
 
     /// Records one event of a session's run, and what it means for the session.
-    fn record(&self, id: &str, RunEvent { run_id, event }: RunEvent) {
+    fn record(&self, id: &str, RunEvent { run_id, event }: RunEvent, on_finish: Option<OnFinish>) {
         // Usage readings describe the session (or the account), not what happened in it.
         match event {
             AgentEvent::Limits { usage } => {
@@ -155,12 +159,18 @@ impl Sessions {
             AgentEvent::ApprovalCancelled { request_id } => {
                 Some(Box::new(move |s| s.open_approvals.retain(|r| *r != request_id)))
             }
-            AgentEvent::Done { .. } | AgentEvent::Cancelled => Some(Box::new(move |s| {
-                if s.run_id.as_deref() == Some(&run_id) {
-                    s.run_id = None;
-                    s.open_approvals.clear();
-                }
-            })),
+            AgentEvent::Done { .. } | AgentEvent::Cancelled => {
+                let clean = matches!(event, AgentEvent::Done { is_error: false, .. });
+                Some(Box::new(move |s| {
+                    if s.run_id.as_deref() == Some(&run_id) {
+                        s.run_id = None;
+                        s.open_approvals.clear();
+                        if let (true, Some(f)) = (clean, on_finish) {
+                            f(s, &run_id);
+                        }
+                    }
+                }))
+            }
             _ => None,
         };
         if let Some(effect) = effect {

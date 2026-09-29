@@ -16,7 +16,9 @@ import {
   listSessions,
   onReconnect,
   onSessionEvent,
+  removeQueued,
   sendMessage,
+  sendQueued,
   startSession as startSessionCall,
   stopSession,
   updateSession,
@@ -262,15 +264,21 @@ export function App() {
     await deleteSession(id).catch((e) => setConnectionError(message(e)));
   }
 
-  /** Sends the draft, or `again` (a retry) as a new message. On the create page, this starts the session. */
+  /**
+   * Sends the draft, or `again` (a retry) as a new message; while the agent is busy the backend
+   * queues it instead. On the create page, this starts the session.
+   */
   async function send(again?: string) {
     const prompt = (again ?? draft).trim();
     if (!prompt || starting) return;
-    if (active && (active.runId || !canRun(active))) return;
+    if (active && !canRun(active)) return;
+    const queueing = !!active?.runId;
     // A retry of what's sitting in the composer (a failed start puts it back) consumes it.
     if (again === undefined || draft.trim() === prompt) setDraft("");
-    setStarting(true);
-    followLatest();
+    if (!queueing) {
+      setStarting(true);
+      followLatest();
+    }
     try {
       if (active) {
         const s = await sendMessage(active.id, prompt);
@@ -462,6 +470,21 @@ export function App() {
                 draft={draft}
                 onDraft={setDraft}
                 onSend={() => void send()}
+                queued={active.queued}
+                onSendQueued={(id) => {
+                  followLatest();
+                  sendQueued(active.id, id)
+                    .then((s) => setSessions((all) => upsert(all, s)))
+                    .catch((e) => setConnectionError(message(e)));
+                }}
+                onRemoveQueued={(id, edit) => {
+                  const q = active.queued.find((m) => m.id === id);
+                  // Editing takes it back into the composer, after anything already there.
+                  if (edit && q) setDraft((d) => (d.trim() ? `${d.trimEnd()}\n\n${q.text}` : q.text));
+                  removeQueued(active.id, id)
+                    .then((s) => setSessions((all) => upsert(all, s)))
+                    .catch((e) => setConnectionError(message(e)));
+                }}
                 onStop={() => void stopSession(active.id).catch((e) => setConnectionError(message(e)))}
                 running={running}
                 starting={starting}

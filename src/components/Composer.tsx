@@ -1,6 +1,6 @@
 import { Fragment, ReactNode } from "react";
-import { ArrowUp, Square } from "lucide-react";
-import { AgentInfo, AgentKind } from "@/api";
+import { ArrowUp, ListPlus, Pencil, Square, X } from "lucide-react";
+import { AgentInfo, AgentKind, QueuedMessage } from "@/api";
 import { AgentBadge } from "@/components/AgentBadge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -13,6 +13,11 @@ interface Props {
   onDraft: (v: string) => void;
   onSend: () => void;
   onStop: () => void;
+  /** Messages waiting for the agent to finish; sending while it runs adds to them. */
+  queued?: QueuedMessage[];
+  onSendQueued?: (id: string) => void;
+  /** Takes a message out of the queue; `edit` puts it back in the composer. */
+  onRemoveQueued?: (id: string, edit: boolean) => void;
   running: boolean;
   starting: boolean;
   /** Why sending isn't possible right now, shown as the send button's tooltip. */
@@ -131,6 +136,7 @@ export function Composer(p: Props) {
     <div className="flex flex-col gap-2">
       {/* Where the message goes: project and branch, above the card. */}
       {p.left && <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-1">{p.left}</div>}
+      {!!p.queued?.length && <QueuedList {...p} queued={p.queued} />}
       {/* The message on its own: a card with just the text and the Send button. */}
       <div className="flex items-end gap-2 rounded-2xl border bg-card p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/30">
         <Textarea
@@ -147,10 +153,18 @@ export function Composer(p: Props) {
           }}
         />
         {p.running ? (
-          <Button variant="outline" size="sm" onClick={p.onStop}>
-            <Square data-icon="inline-start" className="fill-current" />
-            Stop
-          </Button>
+          <div className="flex gap-2">
+            {p.draft.trim() && (
+              <Button size="sm" onClick={p.onSend} disabled={!canSend} title="Send once the agent is done">
+                <ListPlus data-icon="inline-start" />
+                Queue
+              </Button>
+            )}
+            <Button variant="outline" size="sm" onClick={p.onStop}>
+              <Square data-icon="inline-start" className="fill-current" />
+              Stop
+            </Button>
+          </div>
         ) : (
           <Button size="sm" onClick={p.onSend} disabled={!canSend} title={p.blockedReason}>
             {p.starting ? <Spinner data-icon="inline-start" /> : <ArrowUp data-icon="inline-start" />}
@@ -174,6 +188,33 @@ export function Composer(p: Props) {
           <Picker heading="Agent" label="Agent" choices={agents} value={p.agent} onChange={(v) => p.onAgent(v as AgentKind)} />
         )}
       </div>
+    </div>
+  );
+}
+
+/** The messages waiting their turn, each of which can be sent now, edited or dropped. */
+function QueuedList(p: Props & { queued: QueuedMessage[] }) {
+  return (
+    <div className="flex flex-col gap-1 rounded-xl border border-dashed px-3 py-2">
+      <p className="text-xs text-muted-foreground">
+        {p.running ? "Queued: sent when the agent is done" : "Queued, paused: the last run was stopped or didn't finish"}
+      </p>
+      {p.queued.map((m) => (
+        <div key={m.id} className="group flex items-start gap-2 text-sm">
+          <span className="line-clamp-2 min-w-0 flex-1 py-1 whitespace-pre-wrap">{m.text}</span>
+          {!p.running && !p.blockedReason && (
+            <Button variant="ghost" size="icon-sm" title="Send now" aria-label="Send now" onClick={() => p.onSendQueued?.(m.id)}>
+              <ArrowUp />
+            </Button>
+          )}
+          <Button variant="ghost" size="icon-sm" title="Edit" aria-label="Edit" onClick={() => p.onRemoveQueued?.(m.id, true)}>
+            <Pencil />
+          </Button>
+          <Button variant="ghost" size="icon-sm" title="Remove" aria-label="Remove" onClick={() => p.onRemoveQueued?.(m.id, false)}>
+            <X />
+          </Button>
+        </div>
+      ))}
     </div>
   );
 }

@@ -4,8 +4,8 @@
 use crate::{
     adapters::list_agents,
     git::Git,
-    runs::{RunRequest, Runs},
-    sessions::Sessions,
+    runs::{Emit, RunRequest, Runs},
+    sessions::{OnFinish, Sessions},
     terminals::Terminals,
     store::{now_ms, Store},
 };
@@ -15,13 +15,17 @@ use satie_protocol::*;
 use serde_json::Value;
 use std::{
     path::Path,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::{sync::broadcast, task::JoinHandle};
+use tokio::{
+    sync::{broadcast, mpsc},
+    task::JoinHandle,
+};
 
 pub struct Api {
     runs: Runs,
+    launcher: Launcher,
     git: Git,
     sessions: Sessions,
     terminals: Terminals,
@@ -54,10 +58,13 @@ impl Api {
 
     pub fn new(store: Store, git: Git, satie: Satie) -> Api {
         let (events, _) = broadcast::channel(1024);
+        let runs = Runs::with_satie(Some(satie.clone()));
+        let sessions = Sessions::new(store, events.clone());
         Api {
-            runs: Runs::with_satie(Some(satie.clone())),
+            launcher: Launcher::new(sessions.clone(), runs.clone()),
+            runs,
             git,
-            sessions: Sessions::new(store, events.clone()),
+            sessions,
             terminals: Terminals::new(events.clone()),
             satie,
             events,
@@ -141,34 +148,150 @@ fn permission_mode(m: Option<String>) -> Option<String> {
 
 impl Api {
     /// Sends `prompt` to session `id`'s agent: records it, marks the session running and starts
-    /// the run. A run that can't start is recorded as failed.
+    /// the run. A run that can't start is recorded as failed. While the agent is busy, the
+    /// message is queued instead.
     async fn send(&self, id: &str, prompt: String) -> Result<Session, ApiError> {
         let prompt = prompt.trim().to_string();
         if prompt.is_empty() {
             return Err(ApiError::invalid("Write a message first."));
         }
         let run_id = uuid::Uuid::new_v4().to_string();
+        let mut queued = false;
         let s = self.sessions.update(id, |s| {
-            if s.run_id.is_some() {
-                return Err(ApiError::invalid("The agent is still working on the last message."));
-            }
             if s.workdir_removed {
                 return Err(ApiError::invalid(
                     "This session's worktree was removed, so it can't be continued.",
                 ));
+            }
+            if s.run_id.is_some() {
+                s.queued.push(QueuedMessage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    text: prompt.clone(),
+                });
+                queued = true;
+                return Ok(());
             }
             s.run_id = Some(run_id.clone());
             // Talking to it again brings it back.
             s.archived = false;
             Ok(())
         })?;
-        self.sessions.append(id, Entry::User { text: prompt.clone() })?;
+        if queued {
+            return Ok(s);
+        }
+        self.launcher.launch(id, s, run_id, prompt).await
+    }
+}
+
+/// Starts agent runs for sessions, and the next queued message whenever a run finishes cleanly.
+#[derive(Clone)]
+struct Launcher {
+    sessions: Sessions,
+    runs: Runs,
+    /// Queued messages claimed when a run finished, to launch once its process has exited.
+    next: mpsc::UnboundedSender<Next>,
+}
+
+/// A queued message taken off the queue as its session's run finished: the session is marked
+/// running with it, to launch once the finished run's process has exited.
+struct Next {
+    session_id: String,
+    run_id: String,
+    prompt: String,
+    after: String,
+}
+
+impl Launcher {
+    fn new(sessions: Sessions, runs: Runs) -> Launcher {
+        let (next, mut rx) = mpsc::unbounded_channel::<Next>();
+        let this = Launcher {
+            sessions,
+            runs,
+            next,
+        };
+        let worker = this.clone();
+        tokio::spawn(async move {
+            while let Some(n) = rx.recv().await {
+                // `Done` comes with the agent's result, a moment before its process exits; the
+                // next run resumes the same conversation, so let this one finish writing it.
+                for _ in 0..100 {
+                    if !worker.runs.is_live(&n.after).await {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                let id = n.session_id;
+                let launched = match worker.sessions.get(&id) {
+                    // Stopped while waiting: the message goes back to the head of the queue.
+                    Ok(s) if s.run_id.as_deref() != Some(&n.run_id) => worker
+                        .sessions
+                        .update(&id, |s| {
+                            let id = uuid::Uuid::new_v4().to_string();
+                            s.queued.insert(0, QueuedMessage { id, text: n.prompt });
+                            Ok(())
+                        }),
+                    Ok(s) => worker.launch(&id, s, n.run_id, n.prompt).await,
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = launched {
+                    eprintln!("couldn't send session {id}'s next queued message: {}", e.message);
+                }
+            }
+        });
+        this
+    }
+
+    /// Sends queued message `message_id` now. The session must be idle.
+    async fn send_queued(&self, id: &str, message_id: &str) -> Result<Session, ApiError> {
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let mut prompt = String::new();
+        let s = self.sessions.update(id, |s| {
+            if s.workdir_removed {
+                return Err(ApiError::invalid(
+                    "This session's worktree was removed, so it can't be continued.",
+                ));
+            }
+            if s.run_id.is_some() {
+                return Err(ApiError::invalid(
+                    "The agent is still working; queued messages go once it's done.",
+                ));
+            }
+            let i = s
+                .queued
+                .iter()
+                .position(|q| q.id == message_id)
+                .ok_or_else(|| ApiError::not_found("That message isn't queued any more."))?;
+            prompt = s.queued.remove(i).text;
+            s.run_id = Some(run_id.clone());
+            s.archived = false;
+            Ok(())
+        })?;
+        self.launch(id, s, run_id, prompt).await
+    }
+
+    /// Records `prompt` and starts run `run_id` of session `s`, which is already marked running.
+    async fn launch(
+        &self,
+        id: &str,
+        s: Session,
+        run_id: String,
+        prompt: String,
+    ) -> Result<Session, ApiError> {
+        self.sessions.append(
+            id,
+            Entry::User {
+                text: prompt.clone(),
+            },
+        )?;
         let req = RunRequest {
             agent: s.agent,
             prompt: prompt.clone(),
             cwd: s.workdir.clone().or(Some(s.cwd.clone())),
             session_id: s.agent_session_id.clone(),
-            model: s.model_choice.clone().filter(|_| s.agent == AgentKind::Claude),
+            model: s
+                .model_choice
+                .clone()
+                .filter(|_| s.agent == AgentKind::Claude),
             permission_mode: s
                 .permission_mode
                 .clone()
@@ -177,7 +300,7 @@ impl Api {
             session_key: Some(id.to_string()),
             run_id: Some(run_id.clone()),
         };
-        match self.runs.start(self.sessions.recorder(id), req).await {
+        match self.runs.start(self.recorder(id), req).await {
             Ok(_) => self.sessions.get(id),
             Err(message) => {
                 self.sessions.append(
@@ -196,6 +319,27 @@ impl Api {
                 Err(ApiError::failed(message))
             }
         }
+    }
+
+    /// Records the run's events and, once it finishes cleanly, hands the session to its next
+    /// queued message. A stopped or failed run leaves the queue waiting: the user may not want
+    /// what comes next any more.
+    fn recorder(&self, id: &str) -> Emit {
+        let next = self.next.clone();
+        let on_finish: OnFinish = Arc::new(move |s: &mut Session, finished: &str| {
+            if s.queued.is_empty() || s.workdir_removed {
+                return;
+            }
+            let (run_id, prompt) = (uuid::Uuid::new_v4().to_string(), s.queued.remove(0).text);
+            s.run_id = Some(run_id.clone());
+            let _ = next.send(Next {
+                session_id: s.id.clone(),
+                run_id,
+                prompt,
+                after: finished.to_string(),
+            });
+        });
+        self.sessions.recorder(id, Some(on_finish))
     }
 }
 
@@ -276,6 +420,7 @@ impl Handler for Api {
             run_id: None,
             archived: false,
             open_approvals: vec![],
+            queued: vec![],
             created_at: now,
             updated_at: now,
             last_seq: 0,
@@ -293,6 +438,19 @@ impl Handler for Api {
 
     async fn send_message(&self, a: SendMessageArgs) -> Result<Session, ApiError> {
         self.send(&a.session_id, a.prompt).await
+    }
+
+    async fn send_queued(&self, a: SendQueuedArgs) -> Result<Session, ApiError> {
+        self.launcher
+            .send_queued(&a.session_id, &a.message_id)
+            .await
+    }
+
+    async fn remove_queued(&self, a: RemoveQueuedArgs) -> Result<Session, ApiError> {
+        self.sessions.update(&a.session_id, |s| {
+            s.queued.retain(|q| q.id != a.message_id);
+            Ok(())
+        })
     }
 
     async fn stop_session(&self, a: StopSessionArgs) -> Result<(), ApiError> {

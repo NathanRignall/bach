@@ -62,7 +62,7 @@ struct Live {
 }
 
 /// Tracks live agent processes so they can be cancelled and their approvals answered.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Runs {
     live: Arc<Mutex<HashMap<String, Live>>>,
     /// Satie (background tasks), offered to Claude Code runs as an MCP server.

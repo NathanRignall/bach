@@ -64,6 +64,10 @@ pub struct Session {
     /// Approval requests the running agent is waiting on.
     #[serde(default)]
     pub open_approvals: Vec<String>,
+    /// Messages sent while the agent was busy, oldest first. The next one goes when a run
+    /// finishes cleanly; a stopped or failed run leaves them waiting.
+    #[serde(default)]
+    pub queued: Vec<QueuedMessage>,
 
     pub created_at: i64,
     /// Last activity; sessions are listed most recent first.
@@ -71,6 +75,13 @@ pub struct Session {
     /// `seq` of the latest transcript entry (0 when there are none).
     #[serde(default)]
     pub last_seq: u64,
+}
+
+/// A message waiting for the agent to finish its current run.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct QueuedMessage {
+    pub id: String,
+    pub text: String,
 }
 
 /// One step of a session's transcript.

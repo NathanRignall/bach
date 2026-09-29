@@ -76,6 +76,8 @@ export const listSessions = () => call("list_sessions");
 export const getSession = (sessionId: string, afterSeq?: number) => call("get_session", { sessionId, afterSeq });
 export const startSession = (args: Args<"start_session">) => call("start_session", args);
 export const sendMessage = (sessionId: string, prompt: string) => call("send_message", { sessionId, prompt });
+export const sendQueued = (sessionId: string, messageId: string) => call("send_queued", { sessionId, messageId });
+export const removeQueued = (sessionId: string, messageId: string) => call("remove_queued", { sessionId, messageId });
 export const stopSession = (sessionId: string) => call("stop_session", { sessionId });
 export const answerApproval = (args: Args<"answer_approval">) => call("answer_approval", args);
 export const updateSession = (args: Args<"update_session">) => call("update_session", args);

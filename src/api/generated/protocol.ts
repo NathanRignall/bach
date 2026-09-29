@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "77823c4af29bd037";
+export const PROTOCOL = "2b42d7e2bff05897";
 
 /**
  * Agent-independent events the UI renders.
@@ -336,6 +336,16 @@ auto: boolean, };
 export type ProcessAction = "start" | "stop" | "restart";
 
 /**
+ * A message waiting for the agent to finish its current run.
+ */
+export type QueuedMessage = { id: string, text: string, };
+
+/**
+ * Takes a message out of the queue without sending it.
+ */
+export type RemoveQueuedArgs = { sessionId: string, messageId: string, };
+
+/**
  * Forgets a finished task and deletes its log.
  */
 export type RemoveTaskArgs = { taskId: string, };
@@ -356,9 +366,14 @@ deleteBranch?: boolean, };
 export type ResizeTerminalArgs = { terminalId: string, cols: number, rows: number, };
 
 /**
- * Sends a message to a session's agent. The session must not be running.
+ * Sends a message to a session's agent; while it is busy, the message is queued instead.
  */
 export type SendMessageArgs = { sessionId: string, prompt: string, };
+
+/**
+ * Sends a queued message now. The session must not be running.
+ */
+export type SendQueuedArgs = { sessionId: string, messageId: string, };
 
 /**
  * Everything the backend pushes to clients, whichever transport carries it.
@@ -436,7 +451,12 @@ runId: string | null,
 /**
  * Approval requests the running agent is waiting on.
  */
-openApprovals: Array<string>, createdAt: number, 
+openApprovals: Array<string>, 
+/**
+ * Messages sent while the agent was busy, oldest first. The next one goes when a run
+ * finishes cleanly; a stopped or failed run leaves them waiting.
+ */
+queued: Array<QueuedMessage>, createdAt: number, 
 /**
  * Last activity; sessions are listed most recent first.
  */
@@ -689,9 +709,17 @@ export type Commands = {
    */
   start_session: { args: StartSessionArgs; output: Session };
   /**
-   * Sends a message to a session's agent. The session must not be running.
+   * Sends a message to a session's agent; while it is busy, the message is queued instead.
    */
   send_message: { args: SendMessageArgs; output: Session };
+  /**
+   * Sends a queued message now. The session must not be running.
+   */
+  send_queued: { args: SendQueuedArgs; output: Session };
+  /**
+   * Takes a message out of the queue without sending it.
+   */
+  remove_queued: { args: RemoveQueuedArgs; output: Session };
   /**
    * Stops the session's agent run, if one is going.
    */
