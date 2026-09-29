@@ -1,28 +1,15 @@
-pub mod adapters;
-mod runs;
-
-use adapters::AgentKind;
-use runs::Runs;
-use serde::Serialize;
-use tauri::{AppHandle, State};
-
-#[derive(Serialize)]
-struct AgentInfo {
-    kind: AgentKind,
-    name: &'static str,
-    installed: bool,
-}
+use bach_core::{
+    adapters::AgentKind,
+    list_agents as core_list_agents,
+    runs::{Emit, Runs},
+    AgentInfo,
+};
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter, State};
 
 #[tauri::command]
 fn list_agents() -> Vec<AgentInfo> {
-    AgentKind::ALL
-        .iter()
-        .map(|&kind| AgentInfo {
-            kind,
-            name: kind.display_name(),
-            installed: which::which(kind.binary()).is_ok(),
-        })
-        .collect()
+    core_list_agents()
 }
 
 /// Starts a run and returns its run id. Events arrive on the `agent-event` channel.
@@ -35,7 +22,10 @@ async fn start_run(
     cwd: Option<String>,
     session_id: Option<String>,
 ) -> Result<String, String> {
-    runs.start(app, agent, prompt, cwd, session_id).await
+    let emit: Emit = Arc::new(move |ev| {
+        let _ = app.emit("agent-event", ev);
+    });
+    runs.start(emit, agent, prompt, cwd, session_id).await
 }
 
 #[tauri::command]

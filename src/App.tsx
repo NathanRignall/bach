@@ -63,20 +63,31 @@ export function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeId, setActiveId] = useState<string>();
   const [draft, setDraft] = useState("");
+  const [connectionError, setConnectionError] = useState<string>();
+  // Events can arrive before startRun resolves and the session learns its run id.
+  const early = useRef(new Map<string, RunEvent[]>());
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    listAgents().then((a) => {
-      setAgents(a);
-      const first = newSession(a.find((x) => x.installed)?.kind ?? "claude");
-      setSessions([first]);
-      setActiveId(first.id);
-    });
+    listAgents()
+      .then((a) => {
+        setAgents(a);
+        const first = newSession(a.find((x) => x.installed)?.kind ?? "claude");
+        setSessions([first]);
+        setActiveId(first.id);
+      })
+      .catch((e) => setConnectionError(String(e.message ?? e)));
   }, []);
 
   useEffect(() => {
     const un = onAgentEvent((e) =>
-      setSessions((all) => all.map((s) => (s.runId === e.run_id ? applyEvent(s, e) : s))),
+      setSessions((all) => {
+        if (!all.some((s) => s.runId === e.run_id)) {
+          early.current.set(e.run_id, [...(early.current.get(e.run_id) ?? []), e]);
+          return all;
+        }
+        return all.map((s) => (s.runId === e.run_id ? applyEvent(s, e) : s));
+      }),
     );
     return () => void un.then((f) => f());
   }, []);
@@ -98,12 +109,16 @@ export function App() {
         cwd: active.cwd || undefined,
         sessionId: active.agentSessionId,
       });
-      patch(active.id, (s) => ({
-        ...s,
-        runId,
-        title: s.blocks.length ? s.title : prompt.slice(0, 40),
-        blocks: [...s.blocks, { kind: "user", text: prompt }],
-      }));
+      const buffered = early.current.get(runId) ?? [];
+      early.current.delete(runId);
+      patch(active.id, (s) =>
+        buffered.reduce(applyEvent, {
+          ...s,
+          runId,
+          title: s.blocks.length ? s.title : prompt.slice(0, 40),
+          blocks: [...s.blocks, { kind: "user", text: prompt }],
+        }),
+      );
     } catch (err) {
       patch(active.id, (s) => ({ ...s, blocks: [...s.blocks, { kind: "error", text: String(err) }] }));
     }
@@ -134,6 +149,7 @@ export function App() {
       </aside>
 
       <main className="main">
+        {!active && connectionError && <div className="msg error" style={{ padding: 24 }}>{connectionError}</div>}
         {active && (
           <>
             <header className="bar">
@@ -145,6 +161,7 @@ export function App() {
               />
             </header>
             <div className="transcript">
+              {connectionError && <div className="msg error">{connectionError}</div>}
               {active.blocks.length === 0 && <div className="empty">What should we work on?</div>}
               {active.blocks.map((b, i) => (
                 <BlockView key={i} block={b} />

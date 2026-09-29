@@ -1,15 +1,17 @@
 use crate::adapters::{AgentEvent, AgentKind};
 use serde::Serialize;
 use std::{collections::HashMap, process::Stdio, sync::Arc};
-use tauri::{AppHandle, Emitter};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
     sync::{oneshot, Mutex},
 };
 
+/// Delivers events to whichever transport (Tauri window, WebSocket) is listening.
+pub type Emit = Arc<dyn Fn(RunEvent) + Send + Sync>;
+
 #[derive(Clone, Serialize)]
-struct RunEvent {
+pub struct RunEvent {
     run_id: String,
     #[serde(flatten)]
     event: AgentEvent,
@@ -22,7 +24,7 @@ pub struct Runs(Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>);
 impl Runs {
     pub async fn start(
         &self,
-        app: AppHandle,
+        emit: Emit,
         agent: AgentKind,
         prompt: String,
         cwd: Option<String>,
@@ -51,15 +53,12 @@ impl Runs {
         let id = run_id.clone();
 
         let emit = {
-            let (app, id) = (app.clone(), run_id.clone());
+            let id = run_id.clone();
             move |event: AgentEvent| {
-                let _ = app.emit(
-                    "agent-event",
-                    RunEvent {
-                        run_id: id.clone(),
-                        event,
-                    },
-                );
+                emit(RunEvent {
+                    run_id: id.clone(),
+                    event,
+                })
             }
         };
 

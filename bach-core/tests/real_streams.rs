@@ -1,5 +1,5 @@
 //! Runs recorded output of the real CLIs through the adapters.
-use bach_lib::adapters::{AgentEvent, AgentKind};
+use bach_core::adapters::{AgentEvent, AgentKind};
 
 fn events(agent: AgentKind, fixture: &str) -> Vec<AgentEvent> {
     fixture.lines().flat_map(|l| agent.parse_line(l)).collect()
