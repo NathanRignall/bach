@@ -27,6 +27,10 @@ pub struct Session {
     /// Model choice for Claude Code: an alias like `opus`, or none for the default.
     #[serde(default)]
     pub model_choice: Option<String>,
+    /// Permission mode for Claude Code (`acceptEdits`, `auto`, `plan`, …), or none for its
+    /// default: asking before anything that isn't read-only.
+    #[serde(default)]
+    pub permission_mode: Option<String>,
 
     /// Where the agent runs (a worktree, or `cwd`).
     #[serde(default)]

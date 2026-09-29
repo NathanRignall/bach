@@ -24,6 +24,9 @@ interface Props {
   /** Model choice ("default", "opus", …); only offered for Claude Code. */
   modelChoice?: string;
   onModel?: (m: string) => void;
+  /** Permission mode ("default", "acceptEdits", "auto", …); only offered for Claude Code. */
+  permissionMode?: string;
+  onPermissionMode?: (m: string) => void;
   /** Extra controls shown before the agent picker (project, branch, …). */
   left?: ReactNode;
   /** Shown next to the model picker (usage). */
@@ -38,6 +41,16 @@ const MODELS = [
   { value: "opus", label: "Opus" },
   { value: "sonnet", label: "Sonnet" },
   { value: "haiku", label: "Haiku" },
+];
+
+/** Claude Code's `--permission-mode` choices. */
+const PERMISSION_MODES = [
+  { value: "default", label: "Ask first" },
+  { value: "acceptEdits", label: "Accept edits" },
+  { value: "auto", label: "Auto" },
+  { value: "plan", label: "Plan" },
+  { value: "bypassPermissions", label: "Bypass permissions" },
+  { value: "dontAsk", label: "Don't ask" },
 ];
 
 export function Composer(p: Props) {
@@ -62,6 +75,20 @@ export function Composer(p: Props) {
         {p.left}
         <div className="ml-auto flex items-center gap-2">
           {p.indicator}
+          {p.agent === "claude" && p.onPermissionMode && (
+            <Select items={PERMISSION_MODES} value={p.permissionMode ?? "default"} onValueChange={(v) => v && p.onPermissionMode!(v)}>
+              <SelectTrigger size="sm" aria-label="Permission mode">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PERMISSION_MODES.map((m) => (
+                  <SelectItem key={m.value} value={m.value}>
+                    {m.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           {p.agent === "claude" && p.onModel && (
             <Select items={MODELS} value={p.modelChoice ?? "default"} onValueChange={(v) => v && p.onModel!(v)}>
               <SelectTrigger size="sm" aria-label="Model">

@@ -30,6 +30,7 @@ async fn run(dir: &std::path::Path, mode: &str) -> Vec<Value> {
                 cwd: Some(dir.to_string_lossy().into()),
                 session_id: None,
                 model: None,
+                permission_mode: None,
                 allowed_tools: vec![],
                 session_key: None,
                 run_id: None,

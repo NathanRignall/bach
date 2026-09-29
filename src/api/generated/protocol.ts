@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "b8802bafc78c02b3";
+export const PROTOCOL = "b72ec9b332cef201";
 
 /**
  * Agent-independent events the UI renders.
@@ -384,6 +384,11 @@ worktree: boolean,
  */
 modelChoice: string | null, 
 /**
+ * Permission mode for Claude Code (`acceptEdits`, `auto`, `plan`, …), or none for its
+ * default: asking before anything that isn't read-only.
+ */
+permissionMode: string | null, 
+/**
  * Where the agent runs (a worktree, or `cwd`).
  */
 workdir: string | null, 
@@ -443,7 +448,7 @@ export type SessionLog = { session: Session, entries: Array<LogEntry>, };
  * `branch`, or (with `worktree`) creates a new branch from it in an isolated worktree. Nothing is
  * saved if that, or starting the agent, fails.
  */
-export type StartSessionArgs = { agent: AgentKind, cwd: string, branch?: string, worktree?: boolean, modelChoice?: string, prompt: string, };
+export type StartSessionArgs = { agent: AgentKind, cwd: string, branch?: string, worktree?: boolean, modelChoice?: string, permissionMode?: string, prompt: string, };
 
 /**
  * Starts a command by hand, as a task of the project in `cwd`.
@@ -621,9 +626,10 @@ seq: number, };
 export type TerminalSnapshotArgs = { terminalId: string, };
 
 /**
- * Renames a session, or changes the model its next messages use (`""` for the default).
+ * Renames a session, or changes the model or permission mode its next messages use (`""` for
+ * the default).
  */
-export type UpdateSessionArgs = { sessionId: string, title?: string, modelChoice?: string, };
+export type UpdateSessionArgs = { sessionId: string, title?: string, modelChoice?: string, permissionMode?: string, };
 
 /**
  * A worktree Bach created.
@@ -678,7 +684,8 @@ export type Commands = {
    */
   answer_approval: { args: AnswerApprovalArgs; output: null };
   /**
-   * Renames a session, or changes the model its next messages use (`""` for the default).
+   * Renames a session, or changes the model or permission mode its next messages use (`""` for
+   * the default).
    */
   update_session: { args: UpdateSessionArgs; output: Session };
   /**

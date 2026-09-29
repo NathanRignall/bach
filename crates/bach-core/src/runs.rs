@@ -33,6 +33,8 @@ pub struct RunRequest {
     /// The agent's own session id, to continue an earlier conversation.
     pub session_id: Option<String>,
     pub model: Option<String>,
+    /// Claude Code's `--permission-mode` (`acceptEdits`, `auto`, …); none for its default.
+    pub permission_mode: Option<String>,
     /// Permission rules approved earlier in this session.
     pub allowed_tools: Vec<String>,
     /// The session this run belongs to, so deleting the session stops it.
@@ -66,6 +68,15 @@ pub struct Runs {
     /// Satie (background tasks), offered to Claude Code runs as an MCP server.
     satie: Option<Satie>,
 }
+
+/// The permission modes Claude Code accepts (besides its default).
+pub const PERMISSION_MODES: &[&str] = &[
+    "acceptEdits",
+    "auto",
+    "plan",
+    "bypassPermissions",
+    "dontAsk",
+];
 
 fn valid_rule(r: &str) -> bool {
     !r.is_empty() && !r.starts_with('-') && r.len() < 500
@@ -150,6 +161,7 @@ impl Runs {
             cwd,
             session_id,
             model,
+            permission_mode,
             allowed_tools,
             session_key,
             run_id,
@@ -166,6 +178,14 @@ impl Runs {
                     .all(|c| c.is_ascii_alphanumeric() || "-._[]/:".contains(c));
             if !ok {
                 return Err(format!("`{m}` isn't a valid model name."));
+            }
+        }
+        let permission_mode = permission_mode
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty() && m != "default");
+        if let Some(m) = &permission_mode {
+            if !PERMISSION_MODES.contains(&m.as_str()) {
+                return Err(format!("`{m}` isn't a permission mode."));
             }
         }
         if let Some(bad) = allowed_tools.iter().find(|r| !valid_rule(r)) {
@@ -211,6 +231,7 @@ impl Runs {
             &prompt,
             session_id.as_deref(),
             model.as_deref(),
+            permission_mode.as_deref(),
             &allowed_tools,
             grant.as_ref(),
         ))
@@ -460,6 +481,7 @@ mod tests {
             cwd: cwd.map(String::from),
             session_id: None,
             model: model.map(String::from),
+            permission_mode: None,
             allowed_tools: rules.iter().map(|r| r.to_string()).collect(),
             session_key: None,
             run_id: None,
@@ -478,6 +500,23 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("not a folder"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn only_known_permission_modes_reach_the_cli() {
+        let runs = Runs::default();
+        for m in ["--dangerously-skip-permissions", "yolo", "Auto"] {
+            let mut r = req(Some("/tmp"), None, &[]);
+            r.permission_mode = Some(m.into());
+            let err = runs.start(noop(), r).await.unwrap_err();
+            assert!(err.contains("isn't a permission mode"), "{m}: {err}");
+        }
+        let a = AgentKind::Claude.args("hi", None, None, Some("auto"), &[], None);
+        let at = a.iter().position(|x| x == "--permission-mode").unwrap();
+        assert_eq!(a[at + 1], "auto");
+        assert!(!AgentKind::Claude
+            .args("hi", None, None, None, &[], None)
+            .contains(&"--permission-mode".to_string()));
     }
 
     #[tokio::test]

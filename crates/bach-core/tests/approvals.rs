@@ -91,6 +91,7 @@ async fn begin(dir: &Path, request: &str, rules: &[&str]) -> Waiting {
                 cwd: Some(dir.to_string_lossy().into()),
                 session_id: None,
                 model: None,
+                permission_mode: None,
                 allowed_tools: rules.iter().map(|r| r.to_string()).collect(),
                 session_key: None,
                 run_id: None,

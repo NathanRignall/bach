@@ -272,6 +272,7 @@ export function App() {
           branch: newDraft.branch ?? undefined,
           worktree: !!newDraft.worktree,
           modelChoice: newDraft.modelChoice ?? undefined,
+          permissionMode: newDraft.permissionMode ?? undefined,
           prompt,
         });
         setSessions((all) => upsert(all, s));
@@ -430,6 +431,8 @@ export function App() {
                 indicator={<UsageIndicator context={active.context} usage={planUsage} />}
                 modelChoice={active.modelChoice ?? undefined}
                 onModel={(modelChoice) => void update({ sessionId: active.id, modelChoice })}
+                permissionMode={active.permissionMode ?? undefined}
+                onPermissionMode={(permissionMode) => void update({ sessionId: active.id, permissionMode })}
               />
             </div>
           </>

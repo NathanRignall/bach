@@ -133,6 +133,12 @@ fn model_choice(m: Option<String>) -> Option<String> {
         .filter(|m| !m.is_empty() && m != "default")
 }
 
+/// No choice, "" and "default" all mean the agent's default permission mode.
+fn permission_mode(m: Option<String>) -> Option<String> {
+    m.map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty() && m != "default")
+}
+
 impl Api {
     /// Sends `prompt` to session `id`'s agent: records it, marks the session running and starts
     /// the run. A run that can't start is recorded as failed.
@@ -161,6 +167,10 @@ impl Api {
             cwd: s.workdir.clone().or(Some(s.cwd.clone())),
             session_id: s.agent_session_id.clone(),
             model: s.model_choice.clone().filter(|_| s.agent == AgentKind::Claude),
+            permission_mode: s
+                .permission_mode
+                .clone()
+                .filter(|_| s.agent == AgentKind::Claude),
             allowed_tools: s.allow_rules.clone(),
             session_key: Some(id.to_string()),
             run_id: Some(run_id.clone()),
@@ -248,6 +258,7 @@ impl Handler for Api {
             branch: a.branch,
             worktree: ws.worktree,
             model_choice: model_choice(a.model_choice),
+            permission_mode: permission_mode(a.permission_mode),
             workdir: Some(ws.workdir),
             git_branch: ws.branch,
             workdir_removed: false,
@@ -339,6 +350,9 @@ impl Handler for Api {
             }
             if a.model_choice.is_some() {
                 s.model_choice = model_choice(a.model_choice);
+            }
+            if a.permission_mode.is_some() {
+                s.permission_mode = permission_mode(a.permission_mode);
             }
             Ok(())
         })

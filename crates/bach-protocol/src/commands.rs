@@ -158,6 +158,7 @@ pub struct StartSessionArgs {
     pub branch: Option<String>,
     pub worktree: Option<bool>,
     pub model_choice: Option<String>,
+    pub permission_mode: Option<String>,
     pub prompt: String,
 }
 
@@ -189,7 +190,8 @@ pub struct AnswerApprovalArgs {
     pub answers: Option<HashMap<String, String>>,
 }
 
-/// Renames a session, or changes the model its next messages use (`""` for the default).
+/// Renames a session, or changes the model or permission mode its next messages use (`""` for
+/// the default).
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(optional_fields)]
@@ -197,6 +199,7 @@ pub struct UpdateSessionArgs {
     pub session_id: String,
     pub title: Option<String>,
     pub model_choice: Option<String>,
+    pub permission_mode: Option<String>,
 }
 
 /// Deletes a session and stops its run (its background tasks keep going).

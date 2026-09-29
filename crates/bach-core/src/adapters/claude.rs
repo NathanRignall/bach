@@ -60,6 +60,7 @@ fn settings() -> String {
 pub fn args(
     session_id: Option<&str>,
     model: Option<&str>,
+    permission_mode: Option<&str>,
     allowed_tools: &[String],
     satie: Option<&Grant>,
 ) -> Vec<String> {
@@ -81,6 +82,10 @@ pub fn args(
     }
     if let Some(m) = model {
         a.push("--model".into());
+        a.push(m.into());
+    }
+    if let Some(m) = permission_mode {
+        a.push("--permission-mode".into());
         a.push(m.into());
     }
     if let Some(grant) = satie {
@@ -329,7 +334,7 @@ mod tests {
             .await
             .unwrap();
         let grant = satie.grant(satie::Scope::default());
-        let a = args(None, None, &[], Some(&grant));
+        let a = args(None, None, None, &[], Some(&grant));
         let after = |flag: &str| a[a.iter().position(|x| x == flag).unwrap() + 1].clone();
 
         let cfg: Value = serde_json::from_str(&after("--mcp-config")).unwrap();

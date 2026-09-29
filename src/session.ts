@@ -67,6 +67,7 @@ export interface NewSession {
   branch?: string | null;
   worktree?: boolean;
   modelChoice?: string | null;
+  permissionMode?: string | null;
   /** Why the last attempt to start it failed. */
   blocks: Block[];
 }

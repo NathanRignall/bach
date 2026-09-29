@@ -15,7 +15,8 @@ pub trait AgentCli: Copy {
 
     /// Arguments for a headless, JSON-streaming invocation.
     ///
-    /// `model` is only honoured by Claude Code so far (`--model`, e.g. `opus` or a full id).
+    /// `model` is only honoured by Claude Code so far (`--model`, e.g. `opus` or a full id),
+    /// as is `permission_mode` (`--permission-mode`, e.g. `acceptEdits` or `auto`).
     ///
     /// `satie` adds Bach's background-task launcher as an MCP server, with guidance and a hook
     /// steering the agent to it (Claude Code only).
@@ -27,6 +28,7 @@ pub trait AgentCli: Copy {
         prompt: &str,
         session_id: Option<&str>,
         model: Option<&str>,
+        permission_mode: Option<&str>,
         allowed_tools: &[String],
         satie: Option<&Grant>,
     ) -> Vec<String>;
@@ -52,11 +54,14 @@ impl AgentCli for AgentKind {
         prompt: &str,
         session_id: Option<&str>,
         model: Option<&str>,
+        permission_mode: Option<&str>,
         allowed_tools: &[String],
         satie: Option<&Grant>,
     ) -> Vec<String> {
         match self {
-            AgentKind::Claude => claude::args(session_id, model, allowed_tools, satie),
+            AgentKind::Claude => {
+                claude::args(session_id, model, permission_mode, allowed_tools, satie)
+            }
             AgentKind::Codex => codex::args(prompt, session_id, model),
             AgentKind::Opencode => opencode::args(prompt, session_id, model),
         }

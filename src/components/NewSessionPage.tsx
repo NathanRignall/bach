@@ -58,6 +58,8 @@ export function NewSessionPage({ session, agents, draft, onDraft, onSend, starti
           onAgent={(agent: AgentKind) => onChange({ agent })}
           modelChoice={session.modelChoice ?? undefined}
           onModel={(modelChoice) => onChange({ modelChoice })}
+          permissionMode={session.permissionMode ?? undefined}
+          onPermissionMode={(permissionMode) => onChange({ permissionMode })}
           left={
             <>
               <ProjectButton cwd={session.cwd} onChange={setProject} />
