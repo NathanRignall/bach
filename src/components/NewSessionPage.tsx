@@ -29,7 +29,7 @@ export function NewSessionPage({ session, agents, draft, onDraft, onSend, starti
   return (
     <div className="flex flex-1 flex-col items-center justify-center overflow-y-auto px-5 py-10">
       <div className="flex w-full max-w-2xl flex-col gap-4">
-        <h1 className="text-center text-2xl font-medium tracking-tight">What should we work on?</h1>
+        <h1 className="text-center text-2xl font-medium tracking-tight">What should we compose?</h1>
 
         {/* Errors from a failed start stay here so the settings can be fixed and retried. */}
         <div className="contents select-text">
