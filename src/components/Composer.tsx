@@ -2,7 +2,7 @@ import { ReactNode } from "react";
 import { ArrowUp, Square } from "lucide-react";
 import { AgentInfo, AgentKind } from "@/api";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -43,14 +43,13 @@ const MODELS = [
   { value: "haiku", label: "Haiku" },
 ];
 
-/** Claude Code's `--permission-mode` choices. */
+/** Claude Code's `--permission-mode` choices, worded as its own picker does. */
 const PERMISSION_MODES = [
-  { value: "default", label: "Ask first" },
-  { value: "acceptEdits", label: "Accept edits" },
-  { value: "auto", label: "Auto" },
-  { value: "plan", label: "Plan" },
-  { value: "bypassPermissions", label: "Bypass permissions" },
-  { value: "dontAsk", label: "Don't ask" },
+  { value: "auto", label: "Auto", description: "Claude handles permission decisions" },
+  { value: "default", label: "Manual", description: "Always ask before making changes" },
+  { value: "acceptEdits", label: "Accept edits", description: "Automatically accept all file edits" },
+  { value: "plan", label: "Plan", description: "Create a plan before making changes" },
+  { value: "bypassPermissions", label: "Bypass permissions", description: "Run everything without asking" },
 ];
 
 export function Composer(p: Props) {
@@ -80,12 +79,18 @@ export function Composer(p: Props) {
               <SelectTrigger size="sm" aria-label="Permission mode">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
-                {PERMISSION_MODES.map((m) => (
-                  <SelectItem key={m.value} value={m.value}>
-                    {m.label}
-                  </SelectItem>
-                ))}
+              <SelectContent className="min-w-64" align="end" alignItemWithTrigger={false}>
+                <SelectGroup>
+                  <SelectLabel>Mode</SelectLabel>
+                  {PERMISSION_MODES.map((m) => (
+                    <SelectItem key={m.value} value={m.value} className="py-1.5">
+                      <span className="flex flex-col gap-0.5">
+                        <span>{m.label}</span>
+                        <span className="text-xs font-normal text-muted-foreground">{m.description}</span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           )}
