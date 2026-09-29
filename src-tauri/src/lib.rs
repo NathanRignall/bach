@@ -1,6 +1,6 @@
 use bach_core::{
     adapters::AgentKind,
-    git::{Git, GitInfo, Workspace},
+    git::{Git, GitInfo, Workspace, WorktreeEntry},
     list_agents as core_list_agents,
     runs::{Emit, Runs},
     store::Store,
@@ -63,6 +63,26 @@ async fn prepare_workspace(
 }
 
 #[tauri::command]
+async fn list_worktrees(git: State<'_, Git>) -> Result<Vec<WorktreeEntry>, String> {
+    Ok(git.list_worktrees().await)
+}
+
+#[tauri::command]
+async fn remove_worktree(
+    git: State<'_, Git>,
+    path: String,
+    discard: Option<bool>,
+    delete_branch: Option<bool>,
+) -> Result<(), String> {
+    git.remove_worktree(
+        path,
+        discard.unwrap_or(false),
+        delete_branch.unwrap_or(false),
+    )
+    .await
+}
+
+#[tauri::command]
 fn list_sessions(store: State<'_, Store>) -> Result<Vec<Value>, String> {
     store.list()
 }
@@ -94,6 +114,8 @@ pub fn run() {
             list_dir,
             git_info,
             prepare_workspace,
+            list_worktrees,
+            remove_worktree,
             list_sessions,
             save_session,
             delete_session

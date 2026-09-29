@@ -43,7 +43,7 @@ export function BranchBar({ session, onChange }: Props) {
       <div className="flex items-center gap-2 text-xs text-muted-foreground" title={session.workdir}>
         {session.worktree ? <GitFork className="size-3.5" /> : <GitBranch className="size-3.5" />}
         <span className="font-mono">{session.gitBranch}</span>
-        {session.worktree && <span>· worktree</span>}
+        {session.worktree && <span>· worktree{session.workdirRemoved ? " (removed)" : ""}</span>}
       </div>
     ) : null;
   }

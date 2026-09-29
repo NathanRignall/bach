@@ -15,6 +15,7 @@ import {
 } from "@/api";
 import { BlockView } from "@/components/Transcript";
 import { BranchBar } from "@/components/BranchBar";
+import { WorktreeCleanup } from "@/components/WorktreeCleanup";
 import { CwdInput } from "@/components/CwdInput";
 import { Sidebar } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
@@ -41,6 +42,7 @@ export function App() {
   const [starting, setStarting] = useState(false);
   const [connectionError, setConnectionError] = useState<string>();
   const [collapsed, setCollapsed] = useState(loadCollapsed);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
   // Events can arrive before startRun resolves and the session learns its run id.
   const early = useRef(new Map<string, RunEvent[]>());
   // What the backend already has, so unchanged sessions aren't re-saved (a save reorders history).
@@ -191,7 +193,17 @@ export function App() {
         onToggleProject={toggleProject}
         onDelete={(id) => void remove(id)}
         onRename={(id, title) => patch(id, (s) => ({ ...s, title, titleEdited: true }))}
+        onOpenCleanup={() => setCleanupOpen(true)}
       />
+
+      {cleanupOpen && (
+        <WorktreeCleanup
+          sessions={sessions}
+          onClose={() => setCleanupOpen(false)}
+          // Their folder is gone: keep the transcript readable, but they can't be continued.
+          onRemoved={(path) => setSessions((all) => all.map((s) => (s.workdir === path ? { ...s, workdirRemoved: true } : s)))}
+        />
+      )}
 
       <main className="flex min-w-0 flex-1 flex-col">
         {!active && connectionError && <p className="p-6 text-sm text-destructive">{connectionError}</p>}
@@ -238,7 +250,13 @@ export function App() {
                 <Textarea
                   value={draft}
                   disabled={!canRun(active)}
-                  placeholder={canRun(active) ? "Message the agent…" : "Choose a project folder first"}
+                  placeholder={
+                    canRun(active)
+                      ? "Message the agent…"
+                      : active.workdirRemoved
+                        ? "This session's worktree was removed"
+                        : "Choose a project folder first"
+                  }
                   className="min-h-14 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent"
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={(e) => {

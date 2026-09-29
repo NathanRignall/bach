@@ -166,6 +166,16 @@ async fn handle(st: &AppState, req: Request) -> Result<Value, String> {
             .prepare(cwd, branch, worktree, new_branch)
             .await
             .map(|w| serde_json::to_value(w).unwrap()),
+        Request::ListWorktrees => Ok(serde_json::to_value(st.git.list_worktrees().await).unwrap()),
+        Request::RemoveWorktree {
+            path,
+            discard,
+            delete_branch,
+        } => st
+            .git
+            .remove_worktree(path, discard, delete_branch)
+            .await
+            .map(|_| Value::Null),
         Request::ListSessions => st.store.list().map(Value::Array),
         Request::SaveSession { session } => st.store.save(&session).map(|_| Value::Null),
         Request::DeleteSession { session_id } => st.store.delete(&session_id).map(|_| Value::Null),

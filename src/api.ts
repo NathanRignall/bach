@@ -148,6 +148,19 @@ export const gitInfo = (path: string) => call<GitInfo>("git_info", { path });
 export const prepareWorkspace = (args: { cwd: string; branch?: string; worktree: boolean; newBranch?: string }) =>
   call<Workspace>("prepare_workspace", args);
 
+export interface WorktreeEntry {
+  path: string;
+  repo: string;
+  branch: string | null;
+  dirty: boolean;
+  unmerged: number;
+}
+
+/** Worktrees Bach created on the backend host. */
+export const listWorktrees = () => call<WorktreeEntry[]>("list_worktrees");
+export const removeWorktree = (args: { path: string; discard?: boolean; deleteBranch?: boolean }) =>
+  call<void>("remove_worktree", args);
+
 /** Sessions are saved by whichever backend is in use (local app data, or the bach-server host). */
 export const listSessions = () => call<unknown[]>("list_sessions");
 export const saveSession = (session: object) => call<void>("save_session", { session });

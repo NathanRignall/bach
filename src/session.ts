@@ -22,6 +22,8 @@ export interface Session {
   worktree?: boolean;
   /** Where the agent actually runs once started (a worktree path, or `cwd`). */
   workdir?: string;
+  /** The worktree was cleaned up, so the session can be read but not continued. */
+  workdirRemoved?: boolean;
   /** The branch the session runs on once started. */
   gitBranch?: string;
   agentSessionId?: string;
@@ -56,7 +58,7 @@ export function branchNameFor(prompt: string): string {
 }
 
 // Sessions saved before folders were mandatory may have none but can still be resumed.
-export const canRun = (s: Session) => !!s.cwd.trim() || !!s.agentSessionId;
+export const canRun = (s: Session) => !s.workdirRemoved && (!!s.cwd.trim() || !!s.agentSessionId);
 
 /** Empty sessions were never saved; they shouldn't pile up as the user moves around. */
 export const isKept = (s: Session) => s.blocks.length > 0 || !!s.runId;

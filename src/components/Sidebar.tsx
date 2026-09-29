@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Plus, X } from "lucide-react";
+import { ChevronDown, ChevronRight, GitFork, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
@@ -18,9 +18,10 @@ interface Props {
   onToggleProject: (key: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
+  onOpenCleanup: () => void;
 }
 
-export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onDelete, onRename }: Props) {
+export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onDelete, onRename, onOpenCleanup }: Props) {
   const [confirmDelete, setConfirmDelete] = useState<string>();
   const [editing, setEditing] = useState<{ id: string; draft: string }>();
   const cancelled = useRef(false);
@@ -139,7 +140,11 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
         })}
       </nav>
 
-      <div className="border-t pt-3">
+      <div className="flex flex-col gap-3 border-t pt-3">
+        <Button variant="ghost" size="sm" className="justify-start text-muted-foreground" onClick={onOpenCleanup}>
+          <GitFork data-icon="inline-start" />
+          Clean up worktrees…
+        </Button>
         <BackendPicker />
       </div>
     </aside>

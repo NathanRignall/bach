@@ -38,6 +38,14 @@ pub enum Request {
         #[serde(rename = "newBranch")]
         new_branch: Option<String>,
     },
+    ListWorktrees,
+    RemoveWorktree {
+        path: String,
+        #[serde(default)]
+        discard: bool,
+        #[serde(rename = "deleteBranch", default)]
+        delete_branch: bool,
+    },
     ListSessions,
     SaveSession {
         session: Value,

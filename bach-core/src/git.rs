@@ -30,6 +30,19 @@ pub struct Workspace {
     pub worktree: bool,
 }
 
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeEntry {
+    pub path: String,
+    /// Folder name of the repository it belongs to.
+    pub repo: String,
+    pub branch: Option<String>,
+    /// Uncommitted changes, including untracked files: removing the worktree would lose them.
+    pub dirty: bool,
+    /// Commits on the branch that exist on no other local or remote branch.
+    pub unmerged: u32,
+}
+
 /// Where new worktrees are created: `<worktrees_dir>/<repo>-<hash>/<branch>`. Kept outside
 /// the repository so its status stays clean.
 #[derive(Clone)]
@@ -102,6 +115,29 @@ impl Git {
             .map_err(|e| e.to_string())?
     }
 
+    pub async fn list_worktrees(&self) -> Vec<WorktreeEntry> {
+        let dir = self.worktrees_dir.clone();
+        tokio::task::spawn_blocking(move || list_worktrees_sync(&dir))
+            .await
+            .unwrap_or_default()
+    }
+
+    /// Removes a worktree Bach created. Refuses if it holds work that exists nowhere else,
+    /// unless `discard` is set.
+    pub async fn remove_worktree(
+        &self,
+        path: String,
+        discard: bool,
+        delete_branch: bool,
+    ) -> Result<(), String> {
+        let dir = self.worktrees_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            remove_worktree_sync(&dir, &path, discard, delete_branch)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
     /// Readies the directory a new session will run in.
     /// - `worktree == false`: runs in `cwd`, first switching it to `branch` if that differs.
     /// - `worktree == true`: creates `new_branch` from `branch` (default: current) in a fresh worktree.
@@ -117,6 +153,115 @@ impl Git {
             .await
             .map_err(|e| e.to_string())?
     }
+}
+
+/// Describes a directory under the worktrees folder, or None if it isn't a live worktree.
+fn worktree_entry(path: &Path) -> Option<(WorktreeEntry, PathBuf)> {
+    let common = run(
+        path,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .ok()?;
+    let root = PathBuf::from(common).parent()?.to_path_buf();
+    let branch = run(path, &["branch", "--show-current"])
+        .ok()
+        .filter(|b| !b.is_empty());
+    let dirty = !run(path, &["status", "--porcelain"]).ok()?.is_empty();
+    let unmerged = branch
+        .as_ref()
+        .and_then(|b| {
+            run(
+                path,
+                &[
+                    "rev-list",
+                    "--count",
+                    &format!("refs/heads/{b}"),
+                    "--not",
+                    &format!("--exclude={b}"),
+                    "--branches",
+                    "--remotes",
+                ],
+            )
+            .ok()
+        })
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    let repo = root
+        .file_name()
+        .map_or("repo".into(), |n| n.to_string_lossy().into_owned());
+    let entry = WorktreeEntry {
+        path: path.to_string_lossy().into_owned(),
+        repo,
+        branch,
+        dirty,
+        unmerged,
+    };
+    Some((entry, root))
+}
+
+/// Worktrees live at `<worktrees_dir>/<repo>-<hash>/<name>`.
+fn list_worktrees_sync(worktrees_dir: &Path) -> Vec<WorktreeEntry> {
+    let Ok(repos) = std::fs::read_dir(worktrees_dir) else {
+        return vec![];
+    };
+    let mut out: Vec<_> = repos
+        .filter_map(Result::ok)
+        .filter_map(|r| std::fs::read_dir(r.path()).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|w| w.path().is_dir())
+        .filter_map(|w| worktree_entry(&w.path()).map(|(e, _)| e))
+        .collect();
+    out.sort_by(|a, b| (&a.repo, &a.branch).cmp(&(&b.repo, &b.branch)));
+    out
+}
+
+fn remove_worktree_sync(
+    worktrees_dir: &Path,
+    path: &str,
+    discard: bool,
+    delete_branch: bool,
+) -> Result<(), String> {
+    // Only ever touch what Bach itself created: exactly <worktrees_dir>/<repo>/<name>.
+    let base = worktrees_dir.canonicalize().map_err(|e| e.to_string())?;
+    let target = Path::new(path)
+        .canonicalize()
+        .map_err(|e| format!("{path}: {e}"))?;
+    if target.parent().and_then(Path::parent) != Some(base.as_path()) {
+        return Err("That folder isn't a worktree created by Bach.".into());
+    }
+    let (entry, root) = worktree_entry(&target).ok_or("That folder isn't a valid git worktree.")?;
+
+    if !discard && (entry.dirty || entry.unmerged > 0) {
+        let mut why = vec![];
+        if entry.dirty {
+            why.push("uncommitted changes".to_string());
+        }
+        if entry.unmerged > 0 {
+            why.push(format!(
+                "{} commit(s) that exist on no other branch",
+                entry.unmerged
+            ));
+        }
+        return Err(format!("Not removed: it has {}.", why.join(" and ")));
+    }
+
+    let target_str = target.to_string_lossy();
+    let mut args = vec!["worktree", "remove"];
+    if discard {
+        args.push("--force");
+    }
+    args.push(&target_str);
+    run(&root, &args)?;
+
+    if delete_branch {
+        if let Some(b) = &entry.branch {
+            run(&root, &["branch", "-D", b])?;
+        }
+    }
+    // Drop the per-repo folder once it's empty (fails harmlessly otherwise).
+    let _ = target.parent().map(std::fs::remove_dir);
+    Ok(())
 }
 
 fn prepare_sync(
@@ -329,6 +474,68 @@ mod tests {
         assert!(again(Some("bad name")).is_err(), "invalid ref");
         assert!(again(Some("-x")).is_err(), "option-like");
         assert!(again(None).is_err(), "name required");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn lists_and_removes_worktrees_safely() {
+        let (base, repo) = repo("cleanup");
+        let wts = base.join("wt");
+        let mk = |name: &str| {
+            prepare_sync(&wts, repo.to_str().unwrap(), None, true, Some(name.into()))
+                .unwrap()
+                .workdir
+        };
+        let clean = mk("bach/clean");
+        let dirty = mk("bach/dirty");
+        let ahead = mk("bach/ahead");
+        std::fs::write(Path::new(&dirty).join("new.txt"), "x").unwrap(); // untracked counts
+        std::fs::write(Path::new(&ahead).join("b.txt"), "b").unwrap();
+        sh(Path::new(&ahead), &["add", "."]);
+        sh(Path::new(&ahead), &["commit", "-q", "-m", "work"]);
+
+        let list = list_worktrees_sync(&wts);
+        let by = |b: &str| {
+            list.iter()
+                .find(|e| e.branch.as_deref() == Some(b))
+                .unwrap()
+        };
+        assert_eq!(list.len(), 3);
+        assert!(!by("bach/clean").dirty && by("bach/clean").unmerged == 0);
+        assert!(by("bach/dirty").dirty);
+        assert_eq!(by("bach/ahead").unmerged, 1);
+        assert_eq!(by("bach/clean").repo, "proj");
+
+        // Unsafe removals are refused unless discard is set; nothing is lost on refusal.
+        assert!(remove_worktree_sync(&wts, &dirty, false, true)
+            .unwrap_err()
+            .contains("uncommitted"));
+        assert!(remove_worktree_sync(&wts, &ahead, false, true)
+            .unwrap_err()
+            .contains("no other branch"));
+        assert!(Path::new(&dirty).exists() && Path::new(&ahead).exists());
+
+        // Paths outside the worktrees folder are never touched, including the main checkout.
+        assert!(remove_worktree_sync(&wts, repo.to_str().unwrap(), true, true).is_err());
+        assert!(remove_worktree_sync(&wts, "/tmp", true, true).is_err());
+        assert!(repo.join("a.txt").exists());
+
+        // A clean one goes, and its branch with it.
+        remove_worktree_sync(&wts, &clean, false, true).unwrap();
+        assert!(!Path::new(&clean).exists());
+        assert!(!info_sync(repo.to_str().unwrap())
+            .unwrap()
+            .branches
+            .contains(&"bach/clean".to_string()));
+
+        // Discarding removes the rest; keeping the branch works too.
+        remove_worktree_sync(&wts, &dirty, true, false).unwrap();
+        assert!(info_sync(repo.to_str().unwrap())
+            .unwrap()
+            .branches
+            .contains(&"bach/dirty".to_string()));
+        remove_worktree_sync(&wts, &ahead, true, true).unwrap();
+        assert!(list_worktrees_sync(&wts).is_empty());
         let _ = std::fs::remove_dir_all(base);
     }
 }
