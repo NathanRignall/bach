@@ -128,6 +128,8 @@ export function Composer(p: Props) {
   const canSend = !!p.draft.trim() && !p.blockedReason && !p.starting;
   return (
     <div className="flex flex-col gap-2">
+      {/* Where the message goes: project and branch, above the card. */}
+      {p.left && <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-1">{p.left}</div>}
       {/* The message on its own: a card with just the text and the Send button. */}
       <div className="flex items-end gap-2 rounded-2xl border bg-card p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/30">
         <Textarea
@@ -155,17 +157,14 @@ export function Composer(p: Props) {
           </Button>
         )}
       </div>
-      {/* What the message goes to: project and branch on the left, agent settings on the right. */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-1">
-        {p.left}
-        <div className="ml-auto flex items-center gap-2">
-          {p.indicator}
-          {p.agent === "claude" && p.onPermissionMode && (
-            <Picker heading="Mode" label="Permission mode" choices={PERMISSION_MODES} value={p.permissionMode ?? "default"} onChange={p.onPermissionMode} />
-          )}
-          {p.agent === "claude" && p.onModel && <Picker heading="Model" label="Model" choices={MODELS} value={p.modelChoice ?? "default"} onChange={p.onModel} />}
-          <Picker heading="Agent" label="Agent" choices={agents} value={p.agent} disabled={p.agentLocked} onChange={(v) => p.onAgent(v as AgentKind)} />
-        </div>
+      {/* How it runs: usage, mode, model and agent, below the card. */}
+      <div className="flex flex-wrap items-center justify-end gap-2 px-1">
+        {p.indicator}
+        {p.agent === "claude" && p.onPermissionMode && (
+          <Picker heading="Mode" label="Permission mode" choices={PERMISSION_MODES} value={p.permissionMode ?? "default"} onChange={p.onPermissionMode} />
+        )}
+        {p.agent === "claude" && p.onModel && <Picker heading="Model" label="Model" choices={MODELS} value={p.modelChoice ?? "default"} onChange={p.onModel} />}
+        <Picker heading="Agent" label="Agent" choices={agents} value={p.agent} disabled={p.agentLocked} onChange={(v) => p.onAgent(v as AgentKind)} />
       </div>
     </div>
   );
