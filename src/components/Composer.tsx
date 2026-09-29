@@ -1,6 +1,7 @@
 import { Fragment, ReactNode } from "react";
 import { ArrowUp, Square } from "lucide-react";
 import { AgentInfo, AgentKind } from "@/api";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
@@ -164,7 +165,14 @@ export function Composer(p: Props) {
           <Picker heading="Mode" label="Permission mode" choices={PERMISSION_MODES} value={p.permissionMode ?? "default"} onChange={p.onPermissionMode} />
         )}
         {p.agent === "claude" && p.onModel && <Picker heading="Model" label="Model" choices={MODELS} value={p.modelChoice ?? "default"} onChange={p.onModel} />}
-        <Picker heading="Agent" label="Agent" choices={agents} value={p.agent} disabled={p.agentLocked} onChange={(v) => p.onAgent(v as AgentKind)} />
+        {p.agentLocked ? (
+          // A session keeps its agent, so there's nothing to choose; say which it is instead of a dead menu.
+          <Badge variant="outline" className="h-7 px-2.5 text-[0.8rem] font-normal" aria-label="Agent">
+            {p.agents.find((a) => a.kind === p.agent)?.name ?? p.agent}
+          </Badge>
+        ) : (
+          <Picker heading="Agent" label="Agent" choices={agents} value={p.agent} onChange={(v) => p.onAgent(v as AgentKind)} />
+        )}
       </div>
     </div>
   );
