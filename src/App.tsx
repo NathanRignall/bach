@@ -47,6 +47,9 @@ const newSession = (agent: AgentKind, cwd = ""): Session => ({
 });
 
 /** A session's project is its working directory. */
+// Sessions saved before folders were mandatory may have none but can still be resumed.
+const canRun = (s: Session) => !!s.cwd.trim() || !!s.agentSessionId;
+
 const projectKey = (cwd: string) => cwd.trim().replace(/\/+$/, "");
 const projectName = (key: string) => (key ? key.split("/").filter(Boolean).pop() ?? key : "No project");
 
@@ -196,14 +199,14 @@ export function App() {
     setSessions((all) => all.map((s) => (s.id === id ? f(s) : s)));
 
   async function send() {
-    if (!active || !draft.trim() || active.runId) return;
+    if (!active || !draft.trim() || active.runId || !canRun(active)) return;
     const prompt = draft.trim();
     setDraft("");
     try {
       const runId = await startRun({
         agent: active.agent,
         prompt,
-        cwd: active.cwd || undefined,
+        cwd: active.cwd.trim() || undefined,
         sessionId: active.agentSessionId,
       });
       const buffered = early.current.get(runId) ?? [];
@@ -281,7 +284,9 @@ export function App() {
             </header>
             <div className="transcript">
               {connectionError && <div className="msg error">{connectionError}</div>}
-              {active.blocks.length === 0 && <div className="empty">What should we work on?</div>}
+              {active.blocks.length === 0 && (
+                <div className="empty">{canRun(active) ? "What should we work on?" : "Choose a project folder to get started"}</div>
+              )}
               {active.blocks.map((b, i) => (
                 <BlockView key={i} block={b} />
               ))}
@@ -290,7 +295,8 @@ export function App() {
             <div className="composer">
               <textarea
                 value={draft}
-                placeholder="Message the agent…"
+                disabled={!canRun(active)}
+                placeholder={canRun(active) ? "Message the agent…" : "Choose a project folder first"}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
@@ -315,7 +321,7 @@ export function App() {
                 {active.runId ? (
                   <button onClick={() => void cancelRun(active.runId!)}>Stop</button>
                 ) : (
-                  <button className="primary" onClick={() => void send()} disabled={!draft.trim()}>
+                  <button className="primary" onClick={() => void send()} disabled={!draft.trim() || !canRun(active)}>
                     Send
                   </button>
                 )}
@@ -336,7 +342,7 @@ function CwdInput({ value, locked, onCommit }: { value: string; locked: boolean;
     <>
       <input
         className="cwd"
-        placeholder="Project directory (defaults to the backend's cwd)"
+        placeholder="Project folder — required"
         value={draft}
         disabled={locked}
         title={locked ? "The project can't change once the agent session has started" : undefined}

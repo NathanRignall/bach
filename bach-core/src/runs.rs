@@ -30,13 +30,29 @@ impl Runs {
         cwd: Option<String>,
         session_id: Option<String>,
     ) -> Result<String, String> {
+        // No implicit "wherever the backend happens to be": a new session must name its folder.
+        // (A resumed session may predate this rule and have none saved.)
+        let cwd = cwd.map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
+        if cwd.is_none() && session_id.is_none() {
+            return Err("Choose a project folder first.".into());
+        }
+        let cwd = cwd.map(|d| crate::fs::expand_home(&d));
+        if let Some(dir) = &cwd {
+            if !dir.is_dir() {
+                return Err(format!(
+                    "{} is not a folder on the machine running the agents.",
+                    dir.display()
+                ));
+            }
+        }
+
         let mut cmd = Command::new(agent.binary());
         cmd.args(agent.args(&prompt, session_id.as_deref()))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        if let Some(dir) = cwd.filter(|d| !d.is_empty()) {
+        if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
         let mut child = cmd
@@ -120,5 +136,37 @@ impl Runs {
         if let Some(tx) = self.0.lock().await.remove(run_id) {
             let _ = tx.send(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn noop() -> Emit {
+        Arc::new(|_| {})
+    }
+
+    #[tokio::test]
+    async fn new_runs_require_an_existing_folder() {
+        let runs = Runs::default();
+        for cwd in [None, Some("  ".to_string())] {
+            let err = runs
+                .start(noop(), AgentKind::Claude, "hi".into(), cwd, None)
+                .await
+                .unwrap_err();
+            assert!(err.contains("Choose a project folder"), "{err}");
+        }
+        let err = runs
+            .start(
+                noop(),
+                AgentKind::Claude,
+                "hi".into(),
+                Some("/definitely/not/here".into()),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("not a folder"), "{err}");
     }
 }

@@ -25,15 +25,23 @@ fn home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// Expands a leading `~` to the home directory.
+pub fn expand_home(path: &str) -> PathBuf {
+    match path {
+        "~" => home(),
+        p => match p.strip_prefix("~/") {
+            Some(rest) => home().join(rest),
+            None => PathBuf::from(p),
+        },
+    }
+}
+
 /// Lists the sub-directories of `path` (default: the home directory). `~` is expanded.
 pub fn list_dir(path: Option<&str>, show_hidden: bool) -> Result<DirListing, String> {
     let home = home();
     let requested = match path.map(str::trim).filter(|p| !p.is_empty()) {
-        None | Some("~") => home.clone(),
-        Some(p) => match p.strip_prefix("~/") {
-            Some(rest) => home.join(rest),
-            None => PathBuf::from(p),
-        },
+        None => home.clone(),
+        Some(p) => expand_home(p),
     };
     let dir = requested
         .canonicalize()
