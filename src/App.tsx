@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef, useState } from "react";
-import { ArrowDown, ShieldAlert } from "lucide-react";
+import { ArrowDown, PanelLeft, ShieldAlert } from "lucide-react";
 import {
   AgentInfo,
   AgentKind,
@@ -23,15 +23,17 @@ import {
 } from "@/api";
 import { BlockView, TranscriptContext } from "@/components/Transcript";
 import { WorktreeCleanup } from "@/components/WorktreeCleanup";
-import { TasksPanel, useTasks } from "@/components/TasksPanel";
+import { TASKS_WIDTH, TasksPanel, useTasks } from "@/components/TasksPanel";
+import { SettingsDialog } from "@/components/SettingsDialog";
 import { TerminalPanel } from "@/components/TerminalPanel";
 import { UsageIndicator, usePlanUsage } from "@/components/UsageIndicator";
 import { Composer } from "@/components/Composer";
 import { NewSessionPage } from "@/components/NewSessionPage";
 import { SessionHeader } from "@/components/SessionHeader";
-import { Sidebar } from "@/components/Sidebar";
+import { SIDEBAR_WIDTH, Sidebar } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { isBoolean, isNumber, useStored } from "@/lib/layout";
 import {
   NewSession,
   Transcript,
@@ -74,6 +76,10 @@ export function App() {
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useStored("bach.sidebarOpen", true, isBoolean);
+  const [sidebarWidth, setSidebarWidth] = useStored("bach.sidebarWidth", SIDEBAR_WIDTH.default, isNumber);
+  const [tasksWidth, setTasksWidth] = useStored("bach.tasksWidth", TASKS_WIDTH.default, isNumber);
   const tasks = useTasks();
   const planUsage = usePlanUsage();
   // Transcripts of the sessions opened so far. Kept in a ref so event handlers see the latest
@@ -213,6 +219,18 @@ export function App() {
     return () => ro.disconnect();
   }, [activeId, chatShown]);
 
+  // Cmd/Ctrl+B hides and shows the sidebar.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        setSidebarOpen(!sidebarOpen);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sidebarOpen]);
+
   // Something is waiting on the user: say so in the tab, in case it's in the background.
   const anyWaiting = sessions.some(awaitingApproval);
   useEffect(() => {
@@ -327,7 +345,26 @@ export function App() {
 
   return (
     <div className="flex h-dvh bg-background text-foreground">
+      {/* Fixed in the top bar so it stays put whether the sidebar is shown or not. */}
+      <div className="fixed top-0 z-40 flex h-(--title-bar-height) items-center" style={{ left: macTitleBar ? "calc(var(--traffic-lights-end) + 4px)" : 12 }}>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="text-muted-foreground"
+          title={sidebarOpen ? "Hide sidebar (Ctrl/Cmd+B)" : "Show sidebar (Ctrl/Cmd+B)"}
+          aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+          aria-expanded={sidebarOpen}
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+        >
+          <PanelLeft />
+        </Button>
+      </div>
+
+      {sidebarOpen && (
       <Sidebar
+        width={sidebarWidth}
+        onWidth={setSidebarWidth}
+        onOpenSettings={() => setSettingsOpen(true)}
         sessions={sessions}
         activeId={activeId}
         collapsed={collapsed}
@@ -342,6 +379,9 @@ export function App() {
         tasks={tasks.tasks}
         onToggleTasks={() => setTasksOpen((v) => !v)}
       />
+      )}
+
+      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
 
       {cleanupOpen && (
         <WorktreeCleanup sessions={sessions} onClose={() => setCleanupOpen(false)} />
@@ -374,7 +414,7 @@ export function App() {
         )}
         {active && (
           <>
-            <SessionHeader session={active} />
+            <SessionHeader session={active} inset={!sidebarOpen} />
 
             <TranscriptContext.Provider value={{ decide, retry: running || starting ? undefined : retry }}>
             <div className="relative min-h-0 flex-1">
@@ -407,7 +447,7 @@ export function App() {
                 <Button
                   variant="outline"
                   size="sm"
-                  className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-background shadow-md"
+                  className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-popover shadow-md hover:bg-accent dark:bg-popover dark:hover:bg-accent"
                   onClick={followLatest}
                 >
                   <ArrowDown data-icon="inline-start" />
@@ -445,6 +485,8 @@ export function App() {
 
       {tasksOpen && (
         <TasksPanel
+          width={tasksWidth}
+          onWidth={setTasksWidth}
           tasks={tasks.tasks}
           error={tasks.error}
           refresh={() => void tasks.refresh()}

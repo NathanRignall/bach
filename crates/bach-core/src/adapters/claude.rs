@@ -191,6 +191,9 @@ fn content_text(content: &Value) -> String {
         Value::Array(blocks) => {
             let texts: Vec<&str> = blocks.iter().filter_map(|b| b["text"].as_str()).collect();
             if texts.is_empty() {
+                if blocks.iter().all(|b| b["type"] == "image") {
+                    return String::new();
+                }
                 content.to_string()
             } else {
                 texts.join("\n")
@@ -198,6 +201,24 @@ fn content_text(content: &Value) -> String {
         }
         other => other.to_string(),
     }
+}
+
+/// Image blocks of a tool result as `data:` URLs (only base64 sources; the readable text is
+/// `content_text`). A screenshot from a browser tool arrives this way.
+fn content_images(content: &Value) -> Vec<String> {
+    content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|b| b["type"] == "image" && b["source"]["type"] == "base64")
+        .filter_map(|b| {
+            let media = b["source"]["media_type"].as_str()?;
+            let data = b["source"]["data"].as_str()?;
+            media
+                .starts_with("image/")
+                .then(|| format!("data:{media};base64,{data}"))
+        })
+        .collect()
 }
 
 pub fn parse(v: &Value) -> Vec<AgentEvent> {
@@ -266,6 +287,7 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
                         id: s(&block["tool_use_id"]),
                         output: content_text(&block["content"]),
                         is_error: block["is_error"].as_bool().unwrap_or(false),
+                        images: content_images(&block["content"]),
                         parent: parent.clone(),
                     }),
                     _ => None,

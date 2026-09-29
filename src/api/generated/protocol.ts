@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "6cc1d551567f2266";
+export const PROTOCOL = "77823c4af29bd037";
 
 /**
  * Agent-independent events the UI renders.
@@ -10,7 +10,11 @@ export type AgentEvent = { "type": "session", id: string,
 /**
  * The model the agent reports using for this run.
  */
-model?: string, } | { "type": "text", text: string, parent?: string, } | { "type": "thinking", text: string, } | { "type": "tool_use", id: string, name: string, input: JsonValue, parent?: string, } | { "type": "tool_result", id: string, output: string, isError: boolean, parent?: string, } | { "type": "approval", requestId: string, toolUseId: string | null, toolName: string, input: JsonValue, description: string | null, reason: string | null, 
+model?: string, } | { "type": "text", text: string, parent?: string, } | { "type": "thinking", text: string, } | { "type": "tool_use", id: string, name: string, input: JsonValue, parent?: string, } | { "type": "tool_result", id: string, output: string, isError: boolean, 
+/**
+ * Images the tool returned (e.g. a browser screenshot), as `data:` URLs.
+ */
+images?: Array<string>, parent?: string, } | { "type": "approval", requestId: string, toolUseId: string | null, toolName: string, input: JsonValue, description: string | null, reason: string | null, 
 /**
  * Permission rules an "allow for this session / always" answer would add.
  */

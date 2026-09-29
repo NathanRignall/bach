@@ -121,6 +121,64 @@
     --sidebar-ring: oklch(0.7 0.13 40);
 }
 
+/* Accent colours (Settings > Appearance). Terracotta is the base theme above. */
+:root[data-accent="blue"] {
+    --primary: oklch(0.6 0.16 255);
+    --ring: oklch(0.6 0.16 255);
+    --chart-1: oklch(0.6 0.16 255);
+    --sidebar-primary: oklch(0.6 0.16 255);
+    --sidebar-ring: oklch(0.6 0.16 255);
+}
+:root.dark[data-accent="blue"] {
+    --primary: oklch(0.72 0.14 255);
+    --ring: oklch(0.72 0.14 255);
+    --chart-1: oklch(0.72 0.14 255);
+    --sidebar-primary: oklch(0.72 0.14 255);
+    --sidebar-ring: oklch(0.72 0.14 255);
+}
+:root[data-accent="green"] {
+    --primary: oklch(0.6 0.16 150);
+    --ring: oklch(0.6 0.16 150);
+    --chart-1: oklch(0.6 0.16 150);
+    --sidebar-primary: oklch(0.6 0.16 150);
+    --sidebar-ring: oklch(0.6 0.16 150);
+}
+:root.dark[data-accent="green"] {
+    --primary: oklch(0.72 0.14 150);
+    --ring: oklch(0.72 0.14 150);
+    --chart-1: oklch(0.72 0.14 150);
+    --sidebar-primary: oklch(0.72 0.14 150);
+    --sidebar-ring: oklch(0.72 0.14 150);
+}
+:root[data-accent="violet"] {
+    --primary: oklch(0.6 0.16 295);
+    --ring: oklch(0.6 0.16 295);
+    --chart-1: oklch(0.6 0.16 295);
+    --sidebar-primary: oklch(0.6 0.16 295);
+    --sidebar-ring: oklch(0.6 0.16 295);
+}
+:root.dark[data-accent="violet"] {
+    --primary: oklch(0.72 0.14 295);
+    --ring: oklch(0.72 0.14 295);
+    --chart-1: oklch(0.72 0.14 295);
+    --sidebar-primary: oklch(0.72 0.14 295);
+    --sidebar-ring: oklch(0.72 0.14 295);
+}
+:root[data-accent="rose"] {
+    --primary: oklch(0.6 0.16 5);
+    --ring: oklch(0.6 0.16 5);
+    --chart-1: oklch(0.6 0.16 5);
+    --sidebar-primary: oklch(0.6 0.16 5);
+    --sidebar-ring: oklch(0.6 0.16 5);
+}
+:root.dark[data-accent="rose"] {
+    --primary: oklch(0.72 0.14 5);
+    --ring: oklch(0.72 0.14 5);
+    --chart-1: oklch(0.72 0.14 5);
+    --sidebar-primary: oklch(0.72 0.14 5);
+    --sidebar-ring: oklch(0.72 0.14 5);
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

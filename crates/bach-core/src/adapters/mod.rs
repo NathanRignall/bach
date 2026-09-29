@@ -122,4 +122,21 @@ mod tests {
         assert!(matches!(&events[3], AgentEvent::ToolResult { output, .. } if output == "ok"));
         assert!(matches!(&events[4], AgentEvent::Done { .. }));
     }
+
+    #[test]
+    fn claude_tool_result_images_become_data_urls() {
+        let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"shot"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}]}}"#;
+        let events = AgentKind::Claude.parse_line(line);
+        assert!(matches!(
+            &events[0],
+            AgentEvent::ToolResult { output, images, .. }
+                if output == "shot" && images == &["data:image/png;base64,AAAA"]
+        ));
+        // An image-only result has no text to show.
+        let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}]}}"#;
+        assert!(matches!(
+            &AgentKind::Claude.parse_line(line)[0],
+            AgentEvent::ToolResult { output, images, .. } if output.is_empty() && images.len() == 1
+        ));
+    }
 }

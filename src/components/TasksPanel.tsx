@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { ComposeProcesses } from "./ComposeProcesses";
 import { LogViewer } from "./LogViewer";
+import { ResizeHandle } from "./ResizeHandle";
 import { PortLink, useForwarding } from "./Ports";
 import { projectName } from "@/session";
 
@@ -187,7 +188,11 @@ function TaskCard({
   );
 }
 
+export const TASKS_WIDTH = { default: 384, min: 320, max: 900 };
+
 interface Props {
+  width: number;
+  onWidth: (w: number) => void;
   tasks: TaskView[];
   error?: string;
   refresh: () => void;
@@ -195,14 +200,15 @@ interface Props {
 }
 
 /** Everything Satie is running (or has run) on the backend host. */
-export function TasksPanel({ tasks, error, refresh, onClose }: Props) {
+export function TasksPanel({ width, onWidth, tasks, error, refresh, onClose }: Props) {
   const [viewing, setViewing] = useState<{ id: string; process?: string }>();
   const viewed = tasks.find((t) => t.id === viewing?.id);
   const forwarding = useForwarding();
   const finished = tasks.filter((t) => t.status !== "running");
 
   return (
-    <aside className="flex w-96 shrink-0 flex-col border-l bg-background" aria-label="Background tasks">
+    <aside style={{ width }} className="relative flex shrink-0 flex-col border-l bg-background" aria-label="Background tasks">
+      <ResizeHandle width={width} onWidth={onWidth} min={TASKS_WIDTH.min} max={TASKS_WIDTH.max} edge="left" reset={TASKS_WIDTH.default} label="Resize background tasks" />
       <header data-tauri-drag-region className="flex h-(--title-bar-height) shrink-0 items-center gap-2 border-b px-4">
         <h2 className="flex-1 text-sm font-semibold">Background tasks</h2>
         {finished.length > 0 && (

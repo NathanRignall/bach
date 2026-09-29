@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { ApprovalBlock, Block, ToolBlock, isSubagent } from "@/session";
 
@@ -102,9 +103,32 @@ export function BlockView({ block, live }: { block: Block; live: boolean }) {
   }
 }
 
+/** Images a tool returned, shown under its card; click one to see it full size. */
+function ToolImages({ images, name }: { images: string[]; name: string }) {
+  const [open, setOpen] = useState<string>();
+  return (
+    <>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {images.map((src, i) => (
+          <button key={i} onClick={() => setOpen(src)} title="View full size" className="overflow-hidden rounded-lg border bg-muted">
+            <img src={src} alt={`Image from ${toolLabel(name)}`} className="block max-h-72 max-w-full object-contain" />
+          </button>
+        ))}
+      </div>
+      <Dialog open={!!open} onOpenChange={(o) => !o && setOpen(undefined)}>
+        <DialogContent className="max-h-[90vh] w-auto max-w-[90vw] overflow-auto p-2 sm:max-w-[90vw]">
+          <DialogTitle className="sr-only">Image from {toolLabel(name)}</DialogTitle>
+          {open && <img src={open} alt={`Image from ${toolLabel(name)}`} className="block max-h-[85vh] max-w-full object-contain select-text" />}
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 function ToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
   const pending = block.output === undefined;
   return (
+    <div>
     <Collapsible>
       <CollapsibleTrigger className={summaryClass}>
         <ChevronRight className={chevron} />
@@ -126,9 +150,13 @@ function ToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
       </CollapsibleTrigger>
       <CollapsibleContent className="mt-2 flex flex-col gap-2">
         <pre className={preClass}>{JSON.stringify(block.input, null, 2)}</pre>
-        {!pending && <pre className={preClass + (block.isError ? " border-destructive/40" : "")}>{block.output}</pre>}
+        {!pending && (block.output || !block.images?.length) && (
+          <pre className={preClass + (block.isError ? " border-destructive/40" : "")}>{block.output}</pre>
+        )}
       </CollapsibleContent>
     </Collapsible>
+    {!!block.images?.length && <ToolImages images={block.images} name={block.name} />}
+    </div>
   );
 }
 
