@@ -56,6 +56,11 @@
             pkgs.xdotool
           ];
 
+          # Link against the macOS 26 SDK: macOS only gives an app its current look (the larger
+          # toolbar traffic lights, window corners) when it was built with that SDK, and nixpkgs'
+          # default is older.
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.apple-sdk_26 ];
+
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
           shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
             export GIO_MODULE_DIR="${pkgs.glib-networking}/lib/gio/modules/"
