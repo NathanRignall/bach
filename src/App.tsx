@@ -234,6 +234,11 @@ export function App() {
     setActiveId(undefined);
   }
 
+  async function archive(id: string, archived: boolean) {
+    if (archived && activeId === id) startSession(active?.cwd ?? "", active?.agent ?? "claude");
+    await update({ sessionId: id, archived });
+  }
+
   async function remove(id: string) {
     if (activeId === id) startSession(active?.cwd ?? "", active?.agent ?? "claude");
     await deleteSession(id).catch((e) => setConnectionError(message(e)));
@@ -330,6 +335,7 @@ export function App() {
         onNew={() => startSession(active?.cwd ?? newDraft.cwd, active?.agent ?? newDraft.agent)}
         onNewInProject={startSession}
         onToggleProject={toggleProject}
+        onArchive={(id, archived) => void archive(id, archived)}
         onDelete={(id) => void remove(id)}
         onRename={(id, title) => void update({ sessionId: id, title })}
         onOpenCleanup={() => setCleanupOpen(true)}

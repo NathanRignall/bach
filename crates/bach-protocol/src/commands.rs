@@ -192,8 +192,8 @@ pub struct AnswerApprovalArgs {
     pub answers: Option<HashMap<String, String>>,
 }
 
-/// Renames a session, or changes the model or permission mode its next messages use (`""` for
-/// the default).
+/// Renames a session, archives or restores it, or changes the model or permission mode its next
+/// messages use (`""` for the default). Archiving stops its run.
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(optional_fields)]
@@ -202,6 +202,7 @@ pub struct UpdateSessionArgs {
     pub title: Option<String>,
     pub model_choice: Option<String>,
     pub permission_mode: Option<String>,
+    pub archived: Option<bool>,
 }
 
 /// Deletes a session and stops its run (its background tasks keep going).

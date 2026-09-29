@@ -212,6 +212,16 @@ async fn a_session_from_first_message_to_deletion() {
     assert!(e.message.contains("nope"), "{e}");
     assert_eq!(api.call("list_sessions", Value::Null).await.unwrap(), before);
 
+    // Archiving keeps the session and its transcript, and can be undone.
+    for archived in [true, false] {
+        let s = api
+            .call("update_session", json!({ "sessionId": id, "archived": archived }))
+            .await
+            .unwrap();
+        assert_eq!(s["archived"], archived);
+        assert!(api.call("get_session", json!({ "sessionId": id })).await.is_ok());
+    }
+
     // Deleting removes it and its transcript.
     drain(&mut events);
     api.call("delete_session", json!({ "sessionId": id }))

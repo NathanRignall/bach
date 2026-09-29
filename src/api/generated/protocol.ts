@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "d8ca84bac63badde";
+export const PROTOCOL = "6cc1d551567f2266";
 
 /**
  * Agent-independent events the UI renders.
@@ -422,6 +422,10 @@ model: string | null,
  */
 context: ContextUsage | null, 
 /**
+ * Put away: kept with its transcript, but out of the sidebar's main list.
+ */
+archived: boolean, 
+/**
  * The agent run in progress, if any.
  */
 runId: string | null, 
@@ -635,10 +639,10 @@ seq: number, };
 export type TerminalSnapshotArgs = { terminalId: string, };
 
 /**
- * Renames a session, or changes the model or permission mode its next messages use (`""` for
- * the default).
+ * Renames a session, archives or restores it, or changes the model or permission mode its next
+ * messages use (`""` for the default). Archiving stops its run.
  */
-export type UpdateSessionArgs = { sessionId: string, title?: string, modelChoice?: string, permissionMode?: string, };
+export type UpdateSessionArgs = { sessionId: string, title?: string, modelChoice?: string, permissionMode?: string, archived?: boolean, };
 
 /**
  * A worktree Bach created.
@@ -693,8 +697,8 @@ export type Commands = {
    */
   answer_approval: { args: AnswerApprovalArgs; output: null };
   /**
-   * Renames a session, or changes the model or permission mode its next messages use (`""` for
-   * the default).
+   * Renames a session, archives or restores it, or changes the model or permission mode its next
+   * messages use (`""` for the default). Archiving stops its run.
    */
   update_session: { args: UpdateSessionArgs; output: Session };
   /**

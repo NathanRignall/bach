@@ -158,6 +158,8 @@ impl Api {
                 ));
             }
             s.run_id = Some(run_id.clone());
+            // Talking to it again brings it back.
+            s.archived = false;
             Ok(())
         })?;
         self.sessions.append(id, Entry::User { text: prompt.clone() })?;
@@ -272,6 +274,7 @@ impl Handler for Api {
             model: None,
             context: None,
             run_id: None,
+            archived: false,
             open_approvals: vec![],
             created_at: now,
             updated_at: now,
@@ -348,7 +351,14 @@ impl Handler for Api {
         if title.as_ref().is_some_and(|t| t.is_empty()) {
             return Err(ApiError::invalid("A session needs a name."));
         }
+        if a.archived == Some(true) {
+            // An archived session isn't running anything.
+            self.runs.cancel_session(&a.session_id).await;
+        }
         self.sessions.update(&a.session_id, |s| {
+            if let Some(archived) = a.archived {
+                s.archived = archived;
+            }
             if let Some(t) = title {
                 s.title = t;
                 s.title_edited = true;

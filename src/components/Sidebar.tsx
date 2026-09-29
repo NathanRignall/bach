@@ -1,12 +1,12 @@
 import { useRef, useState } from "react";
-import { ChevronDown, ChevronRight, GitFork, ListChecks, Plus, ShieldAlert, X } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, GitFork, ListChecks, Plus, ShieldAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { Session, TaskView, macTitleBar } from "@/api";
-import { awaitingApproval, groupByProject, projectName } from "@/session";
+import { awaitingApproval, groupByProject, projectKey, projectName } from "@/session";
 import { ConnectionPicker } from "./ConnectionPicker";
 
 interface Props {
@@ -17,6 +17,7 @@ interface Props {
   onNew: () => void;
   onNewInProject: (cwd: string, agent: Session["agent"]) => void;
   onToggleProject: (key: string) => void;
+  onArchive: (id: string, archived: boolean) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onOpenCleanup: () => void;
@@ -24,9 +25,12 @@ interface Props {
   onToggleTasks: () => void;
 }
 
-export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onDelete, onRename, onOpenCleanup, tasks, onToggleTasks }: Props) {
+export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onArchive, onDelete, onRename, onOpenCleanup, tasks, onToggleTasks }: Props) {
   const runningTasks = tasks.filter((t) => t.status === "running").length;
   const [confirmDelete, setConfirmDelete] = useState<string>();
+  const [showArchived, setShowArchived] = useState(false);
+  const live = sessions.filter((s) => !s.archived);
+  const archived = sessions.filter((s) => s.archived);
   const [editing, setEditing] = useState<{ id: string; draft: string }>();
   const cancelled = useRef(false);
 
@@ -49,7 +53,7 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
       </Button>
 
       <nav className="-mx-1 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-1">
-        {groupByProject(sessions).map(([key, group]) => {
+        {groupByProject(live).map(([key, group]) => {
           const open = !collapsed.has(key) || group.some((s) => s.id === activeId);
           return (
             <Collapsible key={key} open={open} onOpenChange={() => onToggleProject(key)}>
@@ -123,6 +127,18 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
                             <span className="text-[11px] text-muted-foreground">{s.agent}</span>
                           </button>
                         )}
+                        {!confirming && (
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            className="invisible group-hover/item:visible focus-visible:visible"
+                            title="Archive session"
+                            aria-label="Archive session"
+                            onClick={() => onArchive(s.id, true)}
+                          >
+                            <Archive />
+                          </Button>
+                        )}
                         <Button
                           variant={confirming ? "destructive" : "ghost"}
                           size="xs"
@@ -146,6 +162,63 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
             </Collapsible>
           );
         })}
+        {archived.length > 0 && (
+          <Collapsible open={showArchived} onOpenChange={setShowArchived}>
+            <button
+              onClick={() => setShowArchived((v) => !v)}
+              className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs font-semibold text-muted-foreground hover:text-foreground"
+            >
+              {showArchived ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
+              <span className="min-w-0 flex-1">Archived</span>
+              <span className="font-normal">{archived.length}</span>
+            </button>
+            <CollapsibleContent>
+              <ul className="ml-2 flex flex-col gap-px">
+                {archived.map((s) => {
+                  const confirming = confirmDelete === s.id;
+                  return (
+                    <li
+                      key={s.id}
+                      className={cn("group/item flex items-center rounded-lg", s.id === activeId ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60")}
+                    >
+                      <button onClick={() => onSelect(s.id)} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm text-muted-foreground">
+                        <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                        <span className="text-[11px]">{projectName(projectKey(s.cwd))}</span>
+                      </button>
+                      {!confirming && (
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          className="invisible group-hover/item:visible focus-visible:visible"
+                          title="Restore session"
+                          aria-label="Restore session"
+                          onClick={() => onArchive(s.id, false)}
+                        >
+                          <ArchiveRestore />
+                        </Button>
+                      )}
+                      <Button
+                        variant={confirming ? "destructive" : "ghost"}
+                        size="xs"
+                        className={cn("mr-1", !confirming && "invisible group-hover/item:visible focus-visible:visible")}
+                        title="Delete session"
+                        aria-label="Delete session"
+                        onClick={() => {
+                          if (!confirming) return setConfirmDelete(s.id);
+                          setConfirmDelete(undefined);
+                          onDelete(s.id);
+                        }}
+                        onBlur={() => setConfirmDelete(undefined)}
+                      >
+                        {confirming ? "Delete?" : <X />}
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </CollapsibleContent>
+          </Collapsible>
+        )}
       </nav>
 
       <div className="flex flex-col gap-3 border-t pt-3">

@@ -54,6 +54,10 @@ pub struct Session {
     #[serde(default)]
     pub context: Option<ContextUsage>,
 
+    /// Put away: kept with its transcript, but out of the sidebar's main list.
+    #[serde(default)]
+    pub archived: bool,
+
     /// The agent run in progress, if any.
     #[serde(default)]
     pub run_id: Option<String>,
