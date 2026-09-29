@@ -53,7 +53,13 @@ impl Runs {
         let emit = {
             let (app, id) = (app.clone(), run_id.clone());
             move |event: AgentEvent| {
-                let _ = app.emit("agent-event", RunEvent { run_id: id.clone(), event });
+                let _ = app.emit(
+                    "agent-event",
+                    RunEvent {
+                        run_id: id.clone(),
+                        event,
+                    },
+                );
             }
         };
 
@@ -96,9 +102,14 @@ impl Runs {
             if !done {
                 let failed = status.map(|s| !s.success()).unwrap_or(true);
                 if failed {
-                    emit(AgentEvent::Error { message: stderr.trim().to_string() });
+                    emit(AgentEvent::Error {
+                        message: stderr.trim().to_string(),
+                    });
                 }
-                emit(AgentEvent::Done { cost_usd: None, is_error: failed });
+                emit(AgentEvent::Done {
+                    cost_usd: None,
+                    is_error: failed,
+                });
             }
             runs.lock().await.remove(&id);
         });

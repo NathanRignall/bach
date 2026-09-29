@@ -20,15 +20,21 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
     let s = |x: &Value| x.as_str().unwrap_or_default().to_string();
     match v["type"].as_str() {
         Some("system") if v["subtype"] == "init" => {
-            vec![AgentEvent::Session { id: s(&v["session_id"]) }]
+            vec![AgentEvent::Session {
+                id: s(&v["session_id"]),
+            }]
         }
         Some("assistant") | Some("user") => v["message"]["content"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|block| match block["type"].as_str()? {
-                "text" => Some(AgentEvent::Text { text: s(&block["text"]) }),
-                "thinking" => Some(AgentEvent::Thinking { text: s(&block["thinking"]) }),
+                "text" => Some(AgentEvent::Text {
+                    text: s(&block["text"]),
+                }),
+                "thinking" => Some(s(&block["thinking"]))
+                    .filter(|t| !t.is_empty())
+                    .map(|text| AgentEvent::Thinking { text }),
                 "tool_use" => Some(AgentEvent::ToolUse {
                     id: s(&block["id"]),
                     name: s(&block["name"]),

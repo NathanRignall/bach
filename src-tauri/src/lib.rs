@@ -1,4 +1,4 @@
-mod adapters;
+pub mod adapters;
 mod runs;
 
 use adapters::AgentKind;

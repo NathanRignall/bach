@@ -13,5 +13,7 @@ pub fn args(prompt: &str, session_id: Option<&str>) -> Vec<String> {
 }
 
 pub fn parse(v: &Value) -> Vec<AgentEvent> {
-    vec![AgentEvent::Raw { line: v.to_string() }]
+    vec![AgentEvent::Raw {
+        line: v.to_string(),
+    }]
 }

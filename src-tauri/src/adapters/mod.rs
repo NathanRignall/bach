@@ -46,7 +46,9 @@ impl AgentKind {
 
     pub fn parse_line(self, line: &str) -> Vec<AgentEvent> {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
-            return vec![AgentEvent::Raw { line: line.to_string() }];
+            return vec![AgentEvent::Raw {
+                line: line.to_string(),
+            }];
         };
         match self {
             AgentKind::Claude => claude::parse(&v),
@@ -61,15 +63,36 @@ impl AgentKind {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
     /// The agent's own session id, usable to resume the conversation.
-    Session { id: String },
-    Text { text: String },
-    Thinking { text: String },
-    ToolUse { id: String, name: String, input: Value },
-    ToolResult { id: String, output: String, is_error: bool },
-    Done { cost_usd: Option<f64>, is_error: bool },
-    Error { message: String },
+    Session {
+        id: String,
+    },
+    Text {
+        text: String,
+    },
+    Thinking {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
+    ToolResult {
+        id: String,
+        output: String,
+        is_error: bool,
+    },
+    Done {
+        cost_usd: Option<f64>,
+        is_error: bool,
+    },
+    Error {
+        message: String,
+    },
     /// A line we could not parse as JSON or don't understand yet.
-    Raw { line: String },
+    Raw {
+        line: String,
+    },
 }
 
 #[cfg(test)]
@@ -84,7 +107,10 @@ mod tests {
             r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok","is_error":false}]}}"#,
             r#"{"type":"result","is_error":false,"total_cost_usd":0.01}"#,
         ];
-        let events: Vec<_> = lines.iter().flat_map(|l| AgentKind::Claude.parse_line(l)).collect();
+        let events: Vec<_> = lines
+            .iter()
+            .flat_map(|l| AgentKind::Claude.parse_line(l))
+            .collect();
         assert!(matches!(&events[0], AgentEvent::Session { id } if id == "abc"));
         assert!(matches!(&events[1], AgentEvent::Text { text } if text == "hi"));
         assert!(matches!(&events[2], AgentEvent::ToolUse { name, .. } if name == "Bash"));
