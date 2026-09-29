@@ -33,6 +33,9 @@ export function useTasks(intervalMs = 3000) {
   return { tasks, error, refresh };
 }
 
+/** A dev stack can listen on many ports; show the first few and say how many more. */
+const MAX_PORTS = 6;
+
 function duration(ms: number) {
   const s = Math.max(0, Math.round(ms / 1000));
   if (s < 60) return `${s}s`;
@@ -142,7 +145,7 @@ function TaskCard({ task, onChanged }: { task: TaskView; onChanged: () => void }
         <span className="tabular-nums" title={new Date(task.startedAt).toLocaleString()}>
           {running ? `up ${duration(Date.now() - task.startedAt)}` : `ran ${duration((task.endedAt ?? Date.now()) - task.startedAt)}`}
         </span>
-        {task.ports.map((p) =>
+        {task.ports.slice(0, MAX_PORTS).map((p) =>
           host ? (
             <a key={p} href={`http://${host}:${p}`} target="_blank" rel="noopener noreferrer" className="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary hover:underline">
               :{p}
@@ -152,6 +155,11 @@ function TaskCard({ task, onChanged }: { task: TaskView; onChanged: () => void }
               :{p}
             </span>
           ),
+        )}
+        {task.ports.length > MAX_PORTS && (
+          <span className="text-xs" title={task.ports.slice(MAX_PORTS).map((p) => `:${p}`).join(" ")}>
+            +{task.ports.length - MAX_PORTS} more
+          </span>
         )}
       </div>
 

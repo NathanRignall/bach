@@ -4,7 +4,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashMap, process::Stdio, sync::Arc};
+use std::{collections::HashMap, os::unix::process::ExitStatusExt, process::Stdio, sync::Arc};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{ChildStdin, Command},
@@ -332,11 +332,36 @@ impl Runs {
             let status = child.wait().await;
             let stderr = stderr_task.await.unwrap_or_default();
             if !done {
-                let failed = status.map(|s| !s.success()).unwrap_or(true);
+                let failed = status.as_ref().map(|s| !s.success()).unwrap_or(true);
                 if failed {
-                    emit(AgentEvent::Error {
-                        message: stderr.trim().to_string(),
-                    });
+                    // Say how it ended: a run that just vanishes is impossible to diagnose.
+                    let how = match &status {
+                        Ok(s) => match (s.signal(), s.code()) {
+                            (Some(sig), _) => format!("was killed by signal {sig}"),
+                            (_, Some(code)) => format!("exited with code {code}"),
+                            _ => "ended".into(),
+                        },
+                        Err(e) => format!("could not be waited on ({e})"),
+                    };
+                    let tail: Vec<&str> = stderr
+                        .trim()
+                        .lines()
+                        .rev()
+                        .take(8)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    let message = if tail.is_empty() {
+                        format!("The agent process {how} before finishing.")
+                    } else {
+                        format!(
+                            "The agent process {how} before finishing:\n{}",
+                            tail.join("\n")
+                        )
+                    };
+                    eprintln!("run {id}: {message}");
+                    emit(AgentEvent::Error { message });
                 }
                 emit(AgentEvent::Done {
                     cost_usd: None,

@@ -35,9 +35,19 @@ pub fn args(
         a.extend(["--append-system-prompt".into(), satie.system_prompt.clone()]);
         a.extend(["--settings".into(), satie.settings.clone()]);
     }
-    if !allowed_tools.is_empty() {
+    // Reading a task's state or output changes nothing, so those never need a card; starting
+    // and stopping still do.
+    let read_only = satie
+        .iter()
+        .flat_map(|_| ["mcp__satie__task_list", "mcp__satie__task_logs"]);
+    let allowed: Vec<String> = allowed_tools
+        .iter()
+        .cloned()
+        .chain(read_only.map(String::from))
+        .collect();
+    if !allowed.is_empty() {
         a.push("--allowedTools".into());
-        a.extend(allowed_tools.iter().cloned());
+        a.extend(allowed);
     }
     a
 }

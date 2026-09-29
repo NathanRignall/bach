@@ -224,7 +224,7 @@ async fn approvals_round_trip() {
     for flag in [
         "--input-format stream-json",
         "--permission-prompt-tool stdio",
-        "--allowedTools Bash(git status *) Read",
+        "--allowedTools Bash(git status *) Read mcp__satie__task_list mcp__satie__task_logs",
     ] {
         assert!(o.args.contains(flag), "missing `{flag}` in: {}", o.args);
     }
@@ -298,7 +298,23 @@ async fn approvals_round_trip() {
         1,
         "extra suggestions leaked: {up}"
     );
-    assert!(!o.args.contains("--allowedTools"));
+    // Only Satie's read-only tools are pre-approved; starting and stopping tasks still ask.
+    assert!(
+        o.args
+            .contains("--allowedTools mcp__satie__task_list mcp__satie__task_logs"),
+        "{}",
+        o.args
+    );
+    assert!(
+        !o.args.contains("task_start") || o.args.contains("--append-system-prompt"),
+        "task_start must not be pre-approved"
+    );
+    assert!(
+        !o.args.contains("--allowedTools mcp__satie__task_start")
+            && !o.args.contains("mcp__satie__task_stop"),
+        "{}",
+        o.args
+    );
 
     // Always allow: the suggestion as given (saved to the project's settings).
     let o = scenario(&dir, BASH_REQUEST, Decision::AllowAlways, None, vec![], &[]).await;

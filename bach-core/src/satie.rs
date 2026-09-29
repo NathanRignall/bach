@@ -199,6 +199,19 @@ fn ports_of_group(pgid: u32) -> Vec<u16> {
     ports
 }
 
+/// Dev stacks open dozens of sockets: inspector ports, random high ports for internal IPC.
+/// Show the ones a person would recognise; only if a task listens on nothing else, show those.
+pub fn presentable_ports(all: Vec<u16>) -> Vec<u16> {
+    // Above this is Linux's ephemeral range, where programs get *arbitrary* ports.
+    const EPHEMERAL: u16 = 32768;
+    let named: Vec<u16> = all.iter().copied().filter(|p| *p < EPHEMERAL).collect();
+    if named.is_empty() {
+        all
+    } else {
+        named
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // The launcher and its MCP endpoint
 // ---------------------------------------------------------------------------------------------
@@ -846,6 +859,18 @@ mod tests {
                     && *pid != std::process::id()
             })
             .collect()
+    }
+
+    #[test]
+    fn presents_recognisable_ports_first() {
+        // A dev stack: named ports plus random internal ones -> only the named ones.
+        assert_eq!(
+            presentable_ports(vec![4001, 8787, 9229, 34865, 40000]),
+            vec![4001, 8787, 9229]
+        );
+        // Only random ports: those are the point of the task, so they stay.
+        assert_eq!(presentable_ports(vec![40001, 40000]), vec![40001, 40000]);
+        assert_eq!(presentable_ports(vec![]), Vec::<u16>::new());
     }
 
     #[tokio::test]
