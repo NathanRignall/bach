@@ -41,9 +41,9 @@
             pkgs.nodejs
             pkgs.pnpm
             pkgs.pkg-config
-          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
             pkgs.libiconv
-          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             pkgs.gobject-introspection
             pkgs.openssl
             pkgs.webkitgtk_4_1
@@ -55,7 +55,7 @@
           ];
 
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
-          shellHook = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+          shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
             export GIO_MODULE_DIR="${pkgs.glib-networking}/lib/gio/modules/"
             export XDG_DATA_DIRS="${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}:$XDG_DATA_DIRS"
           '';

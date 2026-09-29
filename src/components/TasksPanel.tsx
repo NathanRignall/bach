@@ -258,7 +258,7 @@ export function TasksPanel({ tasks, error, refresh, defaultCwd, onClose }: Props
 
   return (
     <aside className="flex w-96 shrink-0 flex-col border-l bg-background" aria-label="Background tasks">
-      <header className="flex items-center gap-2 border-b px-4 py-2.5">
+      <header data-tauri-drag-region className="flex h-11 shrink-0 items-center gap-2 border-b px-4">
         <h2 className="flex-1 text-sm font-semibold">Background tasks</h2>
         <Button variant="ghost" size="icon-sm" aria-label="Close tasks panel" onClick={onClose}>
           <X />

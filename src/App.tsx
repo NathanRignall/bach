@@ -4,6 +4,7 @@ import {
   AgentInfo,
   AgentKind,
   ApiError,
+  macTitleBar,
   Decision,
   LogEntry,
   Session,
@@ -300,7 +301,7 @@ export function App() {
 
   if (loading) {
     return (
-      <div className="flex h-dvh items-center justify-center gap-2 text-sm text-muted-foreground">
+      <div data-tauri-drag-region className="flex h-dvh items-center justify-center gap-2 text-sm text-muted-foreground">
         <Spinner className="size-5" /> Connecting…
       </div>
     );
@@ -337,6 +338,7 @@ export function App() {
 
       <main className="flex min-w-0 flex-1 flex-col">
         {!active && connectionError && <p className="p-6 text-sm text-destructive">{connectionError}</p>}
+        {!active && macTitleBar && <div data-tauri-drag-region className="h-11 shrink-0" />}
         {!active && (
           <NewSessionPage
             session={newDraft}

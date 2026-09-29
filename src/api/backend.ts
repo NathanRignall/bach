@@ -7,6 +7,9 @@ import type { Connection, ConnectionStatus } from "./generated/protocol";
 
 export const inTauri = "__TAURI_INTERNALS__" in window;
 
+/** The Mac app draws under the title bar (the traffic lights float over the sidebar). */
+export const macTitleBar = inTauri && /Mac/.test(navigator.userAgent);
+
 const DEFAULT_WS_URL = import.meta.env.VITE_BACH_WS ?? "ws://localhost:3421";
 
 /** The bach-server a browser page talks to; null in the desktop app. */
