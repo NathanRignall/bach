@@ -103,6 +103,7 @@ commands! {
     delete_session(DeleteSessionArgs) -> ();
 
     list_dir(ListDirArgs) -> DirListing;
+    read_image(ReadImageArgs) -> String;
     git_info(GitInfoArgs) -> GitInfo;
     git_diff(GitDiffArgs) -> GitDiff;
     list_worktrees(ListWorktreesArgs) -> Vec<WorktreeEntry>;
@@ -252,6 +253,14 @@ pub struct ListDirArgs {
     /// Defaults to the home directory.
     pub path: Option<String>,
     pub show_hidden: Option<bool>,
+}
+
+/// An image file on the backend host as a `data:` URL, so the UI can show images an agent
+/// links to by path. Only image files, up to 25 MB.
+#[derive(Debug, Deserialize, TS)]
+pub struct ReadImageArgs {
+    /// Absolute, or starting with `~`.
+    pub path: String,
 }
 
 /// Branches and state of the repository containing `path`.
