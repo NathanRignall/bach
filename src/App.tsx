@@ -21,7 +21,7 @@ import { SessionHeader } from "@/components/SessionHeader";
 import { Sidebar } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { Session, applyEvent, branchNameFor, canRun, groupByProject, isKept, isStarted, newSession, projectKey } from "@/session";
+import { Session, applyEvent, branchNameFor, canRun, groupByProject, isDraft, isStarted, newSession } from "@/session";
 
 const COLLAPSED_KEY = "bach.collapsedProjects";
 const loadCollapsed = (): Set<string> => {
@@ -146,12 +146,17 @@ export function App() {
     } catch {}
   }
 
+  /** Opens the create page, reusing the one draft rather than piling up new ones. */
   function startSession(cwd: string, agent: AgentKind) {
+    const draft = sessions.find(isDraft);
+    if (draft) {
+      patch(draft.id, (s) => ({ ...s, cwd, agent, branch: undefined, worktree: false, blocks: [] }));
+      setActiveId(draft.id);
+      return;
+    }
     const s = newSession(agent, cwd);
-    setSessions((a) => [s, ...a.filter(isKept)]);
+    setSessions((a) => [s, ...a]);
     setActiveId(s.id);
-    // Make sure the new session is visible even if its project was collapsed.
-    if (collapsed.has(projectKey(cwd))) toggleProject(projectKey(cwd));
   }
 
   async function remove(id: string) {
@@ -159,9 +164,9 @@ export function App() {
     if (s?.runId) await cancelRun(s.runId).catch(() => {});
     saved.current.delete(id);
     const rest = sessions.filter((x) => x.id !== id);
-    const next = rest.length ? rest : [newSession(s?.agent ?? "claude", s?.cwd)];
-    setSessions(next);
-    if (activeId === id) setActiveId(next[0].id);
+    const draft = rest.find(isDraft) ?? newSession(s?.agent ?? "claude", s?.cwd);
+    setSessions(rest.includes(draft) ? rest : [draft, ...rest]);
+    if (activeId === id) setActiveId(draft.id);
     await deleteSession(id).catch((e) => setConnectionError(String(e.message ?? e)));
   }
 
@@ -228,7 +233,7 @@ export function App() {
   const running = !!active?.runId;
   // A session is set up on the create page until it has started (also after a failed start).
   const isNew = !!active && !isStarted(active) && !active.workdirRemoved;
-  const recentProjects = groupByProject(sessions)
+  const recentProjects = groupByProject(sessions.filter((s) => !isDraft(s)))
     .map(([key]) => key)
     .filter((k) => k && k !== active?.cwd.trim())
     .slice(0, 5);
@@ -236,7 +241,7 @@ export function App() {
   return (
     <div className="flex h-dvh bg-background text-foreground">
       <Sidebar
-        sessions={sessions}
+        sessions={sessions.filter((s) => !isDraft(s))}
         activeId={activeId}
         collapsed={collapsed}
         onSelect={setActiveId}

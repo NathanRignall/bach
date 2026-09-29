@@ -93,8 +93,11 @@ export function branchNameFor(prompt: string): string {
 // Sessions saved before folders were mandatory may have none but can still be resumed.
 export const canRun = (s: Session) => !s.workdirRemoved && (!!s.cwd.trim() || !!s.agentSessionId);
 
-/** Empty sessions were never saved; they shouldn't pile up as the user moves around. */
-export const isKept = (s: Session) => s.blocks.length > 0 || !!s.runId;
+/**
+ * A draft has nothing sent yet. It lives on the create page and isn't listed in the sidebar,
+ * so opening the app or pressing "New session" never adds an empty entry.
+ */
+export const isDraft = (s: Session) => !isStarted(s) && !s.blocks.some((b) => b.kind === "user");
 
 /** A session's project is its working directory. */
 export const projectKey = (cwd: string) => cwd.trim().replace(/\/+$/, "");
