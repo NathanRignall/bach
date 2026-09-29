@@ -10,6 +10,8 @@ CLI in headless JSON-streaming mode and normalizing their output into one event 
     `AgentEvent`s. Claude Code is implemented and tested against real output; Codex is
     best-effort; opencode is a stub.
   - `runs.rs` — spawns/cancels agent processes and emits events.
+  - `store.rs` — SQLite session storage (`~/.local/share/bach/bach.db`, or `$BACH_DB`). Sessions
+    are saved by whichever backend is in use: the Tauri app's data dir, or the bach-server host.
   - `server.rs`, `bin/bach-server.rs` — WebSocket bridge for browser use (see below).
 - `src-tauri/` — Tauri shell exposing the same commands to the window.
 - `src/` — React frontend (sessions sidebar, transcript, composer). Uses Tauri IPC inside the

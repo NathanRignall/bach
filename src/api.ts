@@ -100,18 +100,24 @@ class Bridge {
 
 const bridge = remoteUrl ? new Bridge(remoteUrl) : null;
 
-export const listAgents = (): Promise<AgentInfo[]> =>
-  bridge ? bridge.call("list_agents") : invoke("list_agents");
+const call = <T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> =>
+  bridge ? bridge.call<T>(cmd, args) : invoke<T>(cmd, args);
+
+export const listAgents = () => call<AgentInfo[]>("list_agents");
 
 export const startRun = (args: {
   agent: AgentKind;
   prompt: string;
   cwd?: string;
   sessionId?: string;
-}): Promise<string> => (bridge ? bridge.call("start_run", args) : invoke("start_run", args));
+}) => call<string>("start_run", args);
 
-export const cancelRun = (runId: string): Promise<void> =>
-  bridge ? bridge.call("cancel_run", { runId }) : invoke("cancel_run", { runId });
+export const cancelRun = (runId: string) => call<void>("cancel_run", { runId });
+
+/** Sessions are saved by whichever backend is in use (local app data, or the bach-server host). */
+export const listSessions = () => call<unknown[]>("list_sessions");
+export const saveSession = (session: object) => call<void>("save_session", { session });
+export const deleteSession = (id: string) => call<void>("delete_session", { sessionId: id });
 
 export const onAgentEvent = (cb: (e: RunEvent) => void): Promise<() => void> =>
   bridge ? Promise.resolve(bridge.subscribe(cb)) : listen<RunEvent>("agent-event", (e) => cb(e.payload));

@@ -16,8 +16,12 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .app { display: grid; grid-template-columns: 260px 1fr; height: 100%; }
 .sidebar { background: var(--panel); border-right: 1px solid var(--border); padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .list { overflow: auto; display: flex; flex-direction: column; gap: 2px; }
-.item { display: flex; align-items: center; gap: 8px; border: 0; background: none; text-align: left; width: 100%; }
+.item { display: flex; align-items: center; border-radius: 8px; }
 .item.active, .item:hover { background: var(--user); }
+.item .open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; border: 0; background: none; text-align: left; }
+.item .del { border: 0; background: none; color: var(--dim); padding: 4px 8px; visibility: hidden; }
+.item:hover .del, .item .del.confirm { visibility: visible; }
+.item .del.confirm { color: #e5484d; }
 .item .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item .agent { color: var(--dim); font-size: 11px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
@@ -45,3 +49,16 @@ pre { background: var(--panel); border: 1px solid var(--border); border-radius: 
 .backend label { display: flex; flex-direction: column; gap: 4px; }
 .backend select, .backend input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; font-size: 12px; }
 .backend input { font-family: ui-monospace, monospace; }
+.msg.assistant.md { white-space: normal; }
+.md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md pre, .md blockquote, .md table { margin: 0 0 .8em; }
+.md h1, .md h2, .md h3, .md h4 { margin: 1.1em 0 .4em; line-height: 1.3; }
+.md h1 { font-size: 1.4em; } .md h2 { font-size: 1.2em; } .md h3, .md h4 { font-size: 1.05em; }
+.md ul, .md ol { padding-left: 1.5em; }
+.md a { color: var(--accent); }
+.md code { font-family: ui-monospace, monospace; font-size: .9em; background: var(--user); padding: .1em .35em; border-radius: 4px; }
+.md pre code { background: none; padding: 0; font-size: 12px; }
+.md blockquote { border-left: 3px solid var(--border); margin-left: 0; padding-left: 12px; color: var(--dim); }
+.md table { border-collapse: collapse; display: block; overflow-x: auto; }
+.md th, .md td { border: 1px solid var(--border); padding: 4px 10px; }
+.md hr { border: 0; border-top: 1px solid var(--border); }

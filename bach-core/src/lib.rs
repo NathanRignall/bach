@@ -2,6 +2,7 @@ pub mod adapters;
 pub mod protocol;
 pub mod runs;
 pub mod server;
+pub mod store;
 
 use adapters::AgentKind;
 use serde::Serialize;

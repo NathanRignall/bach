@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   AgentInfo,
   AgentKind,
   RunEvent,
   canSwitchBackend,
   cancelRun,
+  deleteSession,
   listAgents,
+  listSessions,
   onAgentEvent,
   remoteUrl,
+  saveSession,
   setBackend,
   startRun,
 } from "./api";
@@ -29,9 +34,11 @@ interface Session {
   blocks: Block[];
 }
 
-let counter = 0;
+// crypto.randomUUID needs a secure context, which a page opened over plain http from another host isn't.
+const newId = () => crypto.randomUUID?.() ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+
 const newSession = (agent: AgentKind, cwd = ""): Session => ({
-  id: `s${++counter}`,
+  id: newId(),
   title: "New session",
   agent,
   cwd,
@@ -77,15 +84,21 @@ export function App() {
   const [connectionError, setConnectionError] = useState<string>();
   // Events can arrive before startRun resolves and the session learns its run id.
   const early = useRef(new Map<string, RunEvent[]>());
+  // What the backend already has, so unchanged sessions aren't re-saved (a save reorders history).
+  const saved = useRef(new Map<string, Session>());
+  const [confirmDelete, setConfirmDelete] = useState<string>();
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    listAgents()
-      .then((a) => {
+    Promise.all([listAgents(), listSessions()])
+      .then(([a, stored]) => {
         setAgents(a);
-        const first = newSession(a.find((x) => x.installed)?.kind ?? "claude");
-        setSessions([first]);
-        setActiveId(first.id);
+        const old = (stored as Session[]).map((s) => ({ ...s, runId: undefined }));
+        old.forEach((s) => saved.current.set(s.id, s));
+        // Open on a fresh session; it is only saved once it has content.
+        const fresh = newSession(old[0]?.agent ?? a.find((x) => x.installed)?.kind ?? "claude", old[0]?.cwd);
+        setSessions([fresh, ...old]);
+        setActiveId(fresh.id);
       })
       .catch((e) => setConnectionError(String(e.message ?? e)));
   }, []);
@@ -105,6 +118,29 @@ export function App() {
 
   const active = sessions.find((s) => s.id === activeId);
   useEffect(() => endRef.current?.scrollIntoView({ block: "end" }), [active?.blocks.length]);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      for (const s of sessions) {
+        if (!s.blocks.length || saved.current.get(s.id) === s) continue;
+        saved.current.set(s.id, s);
+        saveSession({ ...s, runId: undefined }).catch((e) => setConnectionError(String(e.message ?? e)));
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [sessions]);
+
+  async function remove(id: string) {
+    const s = sessions.find((x) => x.id === id);
+    if (s?.runId) await cancelRun(s.runId).catch(() => {});
+    saved.current.delete(id);
+    setConfirmDelete(undefined);
+    const rest = sessions.filter((x) => x.id !== id);
+    const next = rest.length ? rest : [newSession(s?.agent ?? "claude", s?.cwd)];
+    setSessions(next);
+    if (activeId === id) setActiveId(next[0].id);
+    await deleteSession(id).catch((e) => setConnectionError(String(e.message ?? e)));
+  }
 
   const patch = (id: string, f: (s: Session) => Session) =>
     setSessions((all) => all.map((s) => (s.id === id ? f(s) : s)));
@@ -150,11 +186,21 @@ export function App() {
         </button>
         <div className="list">
           {sessions.map((s) => (
-            <button key={s.id} className={s.id === activeId ? "item active" : "item"} onClick={() => setActiveId(s.id)}>
-              <span className={s.runId ? "dot live" : "dot"} />
-              <span className="title">{s.title}</span>
-              <span className="agent">{s.agent}</span>
-            </button>
+            <div key={s.id} className={s.id === activeId ? "item active" : "item"}>
+              <button className="open" onClick={() => setActiveId(s.id)}>
+                <span className={s.runId ? "dot live" : "dot"} />
+                <span className="title">{s.title}</span>
+                <span className="agent">{s.agent}</span>
+              </button>
+              <button
+                className={confirmDelete === s.id ? "del confirm" : "del"}
+                title="Delete session"
+                onClick={() => (confirmDelete === s.id ? void remove(s.id) : setConfirmDelete(s.id))}
+                onBlur={() => setConfirmDelete(undefined)}
+              >
+                {confirmDelete === s.id ? "Delete?" : "×"}
+              </button>
+            </div>
           ))}
         </div>
         <BackendPicker />
@@ -226,7 +272,13 @@ function BlockView({ block }: { block: Block }) {
     case "user":
       return <div className="msg user">{block.text}</div>;
     case "text":
-      return <div className="msg assistant">{block.text}</div>;
+      return (
+        <div className="msg assistant md">
+          <Markdown remarkPlugins={[remarkGfm]} components={{ a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}>
+            {block.text}
+          </Markdown>
+        </div>
+      );
     case "thinking":
       return <details className="thinking"><summary>Thinking</summary>{block.text}</details>;
     case "error":

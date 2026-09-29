@@ -1,8 +1,12 @@
 //! `bach-server` — serves Bach's commands over a WebSocket on 127.0.0.1 for browser use.
 //!
 //! Reach it from another machine with `ssh -L 3421:localhost:3421 orion`.
-//! Env: BACH_PORT (default 3421), BACH_ALLOWED_ORIGINS (comma-separated, replaces defaults).
-use bach_core::server::{router, Config};
+//! Env: BACH_PORT (default 3421), BACH_ALLOWED_ORIGINS (comma-separated, replaces defaults),
+//! BACH_DB (session database, default ~/.local/share/bach/bach.db).
+use bach_core::{
+    server::{router, Config},
+    store::{default_db_path, Store},
+};
 
 #[tokio::main]
 async fn main() {
@@ -30,8 +34,11 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
         .expect("bind");
+    let db = default_db_path();
+    let store = Store::open(&db).expect("open session database");
+    eprintln!("sessions in {}", db.display());
     eprintln!("bach-server listening on ws://127.0.0.1:{port}");
-    axum::serve(listener, router(Config { allowed_origins }))
+    axum::serve(listener, router(Config { allowed_origins }, store))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })

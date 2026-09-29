@@ -5,6 +5,7 @@ use crate::{
     list_agents,
     protocol::{Envelope, Request},
     runs::{Emit, Runs},
+    store::Store,
 };
 use axum::{
     extract::{
@@ -27,12 +28,13 @@ pub struct Config {
 
 struct AppState {
     runs: Runs,
+    store: Store,
     events: broadcast::Sender<Value>,
     emit: Emit,
     config: Config,
 }
 
-pub fn router(config: Config) -> Router {
+pub fn router(config: Config, store: Store) -> Router {
     let (events, _) = broadcast::channel(1024);
     let emit: Emit = {
         let events = events.clone();
@@ -44,6 +46,7 @@ pub fn router(config: Config) -> Router {
     };
     let state = Arc::new(AppState {
         runs: Runs::default(),
+        store,
         events,
         emit,
         config,
@@ -101,8 +104,21 @@ async fn serve(socket: WebSocket, st: Arc<AppState>) {
 
     while let Some(Ok(msg)) = stream.next().await {
         let Message::Text(text) = msg else { continue };
-        let Ok(env) = serde_json::from_str::<Envelope>(&text) else {
-            continue;
+        let env = match serde_json::from_str::<Envelope>(&text) {
+            Ok(env) => env,
+            Err(e) => {
+                // Answer if we can tell which request it was, so the caller doesn't hang.
+                if let Some(id) = serde_json::from_str::<Value>(&text)
+                    .ok()
+                    .and_then(|v| v["id"].as_u64())
+                {
+                    let _ = out.send(
+                        json!({ "id": id, "ok": false, "error": format!("bad request: {e}") })
+                            .to_string(),
+                    );
+                }
+                continue;
+            }
         };
         let reply = match handle(&st, env.request).await {
             Ok(result) => json!({ "id": env.id, "ok": true, "result": result }),
@@ -128,6 +144,9 @@ async fn handle(st: &AppState, req: Request) -> Result<Value, String> {
             .start(st.emit.clone(), agent, prompt, cwd, session_id)
             .await
             .map(Value::String),
+        Request::ListSessions => st.store.list().map(Value::Array),
+        Request::SaveSession { session } => st.store.save(&session).map(|_| Value::Null),
+        Request::DeleteSession { session_id } => st.store.delete(&session_id).map(|_| Value::Null),
         Request::CancelRun { run_id } => {
             st.runs.cancel(&run_id).await;
             Ok(Value::Null)
