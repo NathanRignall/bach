@@ -273,3 +273,74 @@ fn codex_real_command_approval_and_session_rules() {
     assert!(!ev.iter().any(|e| matches!(e, AgentEvent::Approval { .. })));
     assert!(sent.contains(&json!({ "id": 0, "result": { "decision": "accept" } })));
 }
+
+/// A recorded opencode turn (1.15.10): a question, a shell command that asked first, then text.
+fn opencode(allowed: &[String]) -> (Vec<AgentEvent>, Vec<bach_core::adapters::opencode::Reply>) {
+    let mut stream = bach_core::adapters::opencode::Stream::new("ses_f10477d98ffeJX7XYmQSN2mpi4", allowed);
+    let (mut events, mut replies) = (vec![], vec![]);
+    for line in include_str!("fixtures/opencode_question_permission.jsonl").lines() {
+        let (ev, r) = stream.on_event(&serde_json::from_str(line).unwrap());
+        events.extend(ev);
+        replies.extend(r);
+    }
+    // Another session's events are none of this run's business.
+    let mut other = bach_core::adapters::opencode::Stream::new("ses_other", &[]);
+    for line in include_str!("fixtures/opencode_question_permission.jsonl").lines() {
+        assert!(other.on_event(&serde_json::from_str(line).unwrap()).0.is_empty());
+    }
+    (events, replies)
+}
+
+#[test]
+fn opencode_real_question_and_permission() {
+    let (ev, replies) = opencode(&[]);
+    assert!(replies.is_empty());
+    assert!(matches!(&ev[0], AgentEvent::Session { model: Some(m), .. } if m == "google/gemini-3.1-flash-lite"));
+
+    // The question, on the question card; its tool call isn't shown as well.
+    let question = ev.iter().find_map(|e| match e {
+        AgentEvent::Approval { tool_name, input, request_id, .. } if tool_name == "AskUserQuestion" => Some((request_id, input)),
+        _ => None,
+    });
+    let (qid, input) = question.unwrap();
+    assert_eq!(qid, "que_0efb888a2001XYSFrzu1keMd6D");
+    assert_eq!(input["questions"][0]["question"], "Do you prefer red or blue?");
+    assert_eq!(input["questions"][0]["options"][1]["label"], "Blue");
+    assert!(!ev.iter().any(|e| matches!(e, AgentEvent::ToolUse { name, .. } if name == "question")));
+
+    // The shell command asked first, offering a rule for commands like it.
+    let (input, rules) = ev
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::Approval { tool_name, input, rules, .. } if tool_name == "Shell" => Some((input, rules)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(input["command"], "echo \"Red\" > colour.txt");
+    assert_eq!(rules, &["bash(echo *)"]);
+    assert!(ev.iter().any(|e| matches!(e, AgentEvent::ToolUse { name, input, .. } if name == "Shell" && input["command"] == "echo \"Red\" > colour.txt")));
+    assert!(ev.iter().any(|e| matches!(e, AgentEvent::ToolResult { output, is_error: false, .. } if output == "(no output)")));
+
+    // Answered while the run watched: each answer is also reported back, but those were
+    // Bach's own (Runs drops them), so they come as cancellations only this once each.
+    assert_eq!(ev.iter().filter(|e| matches!(e, AgentEvent::ApprovalCancelled { .. })).count(), 2);
+
+    assert!(ev.iter().any(|e| matches!(e, AgentEvent::Delta { text, .. } if text == "Done.")));
+    assert!(ev.iter().any(|e| matches!(e, AgentEvent::Text { text, .. } if text == "Done.")));
+    // The prompt itself isn't echoed back as the agent's text.
+    assert!(!ev.iter().any(|e| matches!(e, AgentEvent::Text { text, .. } if text.starts_with("First use"))));
+    assert!(ev.iter().any(|e| matches!(e, AgentEvent::Context { used } if *used > 14000)));
+    match ev.last() {
+        Some(AgentEvent::Done { cost_usd: Some(c), is_error: false }) => assert!((c - 0.00579735).abs() < 1e-9, "{c}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn opencode_session_rules_answer_for_the_user() {
+    let (ev, replies) = opencode(&["bash(echo *)".into()]);
+    assert!(!ev.iter().any(|e| matches!(e, AgentEvent::Approval { tool_name, .. } if tool_name == "Shell")));
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].path, "/permission/per_0efb88e8d001MNLH6vBJ6Z3gDG/reply");
+    assert_eq!(replies[0].body, json!({ "reply": "once" }));
+}
