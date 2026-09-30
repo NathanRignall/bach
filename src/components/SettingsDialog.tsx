@@ -1,10 +1,10 @@
-import { Check, Monitor, Moon, Sun } from "lucide-react";
+import { Check, Contrast, Monitor, Moon, Sun } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { ACCENTS, MODES, Mode, setTheme, useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
-const MODE_ICONS: Record<Mode, typeof Sun> = { system: Monitor, light: Sun, dark: Moon };
+const MODE_ICONS: Record<Mode, typeof Sun> = { system: Monitor, light: Sun, dark: Moon, "high-contrast": Contrast };
 
 /** App preferences. The theme applies as soon as it is picked and is remembered on this device. */
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
@@ -20,7 +20,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         <div className="flex flex-col gap-5">
           <div className="flex flex-col gap-2">
             <Label id="theme-mode">Theme</Label>
-            <div role="radiogroup" aria-labelledby="theme-mode" className="grid grid-cols-3 gap-2">
+            <div role="radiogroup" aria-labelledby="theme-mode" className="grid grid-cols-2 gap-2">
               {MODES.map((m) => {
                 const Icon = MODE_ICONS[m.value];
                 const on = theme.mode === m.value;
@@ -43,9 +43,17 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             </div>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <Label id="theme-accent">Accent colour</Label>
-            <div role="radiogroup" aria-labelledby="theme-accent" className="flex flex-wrap gap-3">
+          <div className={cn("flex flex-col gap-2", theme.mode === "high-contrast" && "opacity-40")}>
+            <Label id="theme-accent">
+              Accent colour
+              {theme.mode === "high-contrast" && <span className="ml-1.5 font-normal text-muted-foreground">(unused in high contrast)</span>}
+            </Label>
+            <div
+              role="radiogroup"
+              aria-labelledby="theme-accent"
+              aria-disabled={theme.mode === "high-contrast"}
+              className={cn("flex flex-wrap gap-3", theme.mode === "high-contrast" && "pointer-events-none")}
+            >
               {ACCENTS.map((a) => {
                 const on = theme.accent === a.value;
                 return (

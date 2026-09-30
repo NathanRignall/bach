@@ -1,12 +1,13 @@
 import { useSyncExternalStore } from "react";
 
-export type Mode = "system" | "light" | "dark";
+export type Mode = "system" | "light" | "dark" | "high-contrast";
 export type Accent = "terracotta" | "blue" | "green" | "violet" | "rose";
 
 export const MODES: { value: Mode; label: string }[] = [
   { value: "system", label: "System" },
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
+  { value: "high-contrast", label: "High contrast" },
 ];
 
 /** `swatch` is what the picker shows; the real colours live in index.css under `data-accent`. */
@@ -42,9 +43,11 @@ let current = load();
 const listeners = new Set<() => void>();
 
 function apply() {
-  const dark = current.mode === "dark" || (current.mode === "system" && media.matches);
+  const hc = current.mode === "high-contrast";
+  const dark = hc || current.mode === "dark" || (current.mode === "system" && media.matches);
   const root = document.documentElement;
   root.classList.toggle("dark", dark);
+  root.classList.toggle("high-contrast", hc);
   root.dataset.accent = current.accent;
 }
 
