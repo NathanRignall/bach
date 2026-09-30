@@ -251,6 +251,9 @@ impl Conversation {
                 // Also given when resuming: the session's mode or model may have changed, and a
                 // thread first run by `codex exec` would otherwise keep its read-only sandbox.
                 let (sandbox, approval) = preset(self.mode.as_deref());
+                // Without its own sandbox nothing holds read-only back, so Codex asks before every
+                // command it doesn't know to be safe, and file changes are declined (see `on_request`).
+                let approval = if self.read_only_by_approval() { "untrusted" } else { approval };
                 let sandbox = if self.own_sandbox { sandbox } else { "danger-full-access" };
                 let mut params = json!({ "approvalPolicy": approval, "sandbox": sandbox });
                 if let Some(cwd) = &self.cwd {
@@ -329,6 +332,10 @@ impl Conversation {
             .or(p["turnId"].as_str())
             .unwrap_or_default();
         let request_id = format!("{scope}/{id}");
+        if method == "item/fileChange/requestApproval" && self.read_only_by_approval() {
+            let decline = json!({ "id": id, "result": { "decision": "decline" } });
+            return (vec![], vec![decline.to_string()]);
+        }
         let Some(ask) = self.ask(method, p) else {
             let message = format!("Bach can't answer `{method}` yet.");
             let error = json!({ "id": id, "error": { "code": -32601, "message": message } });
@@ -357,6 +364,11 @@ impl Conversation {
             }],
             vec![],
         )
+    }
+
+    /// Read-only without Codex's own sandbox (under a wrapper): kept by asking instead.
+    fn read_only_by_approval(&self) -> bool {
+        !self.own_sandbox && self.mode.as_deref() == Some("readOnly")
     }
 
     fn ask(&self, method: &str, p: &Value) -> Option<Ask> {
@@ -1258,6 +1270,18 @@ mod tests {
         let thread: Value = serde_json::from_str(&sent[1]).unwrap();
         assert_eq!(thread["params"]["sandbox"], "danger-full-access");
         assert_eq!(thread["params"]["approvalPolicy"], "on-request");
+
+        // Read-only there asks before commands it doesn't know are safe, and changes no files.
+        let mut c = Conversation::new(&Turn { prompt: "hi", permission_mode: Some("readOnly"), ..Default::default() });
+        c.own_sandbox = false;
+        let (_, sent) = c.on_line(&json!({ "id": 1, "result": {} }));
+        let thread: Value = serde_json::from_str(&sent[1]).unwrap();
+        assert_eq!(thread["params"]["approvalPolicy"], "untrusted");
+        let (ev, replies) = c.on_line(&json!({ "id": 7, "method": "item/fileChange/requestApproval",
+            "params": { "itemId": "i1", "turnId": "t1" } }));
+        assert!(ev.is_empty(), "not shown: {ev:?}");
+        let reply: Value = serde_json::from_str(&replies[0]).unwrap();
+        assert_eq!((reply["id"].clone(), reply["result"]["decision"].clone()), (json!(7), json!("decline")));
     }
 
     #[test]

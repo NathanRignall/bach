@@ -144,6 +144,7 @@ export function ConnectionBanner({ inset }: { inset: boolean }) {
           New agent turns are paused: bach-server on {host} runs agents with {describe(status.wrapper)}, but this app is set to{" "}
           {describe(wrapper)}.
         </p>
+        <p>Messages already queued still go when their session's turn ends, run as the server runs agents now.</p>
         <Relaunch ssh why="It takes the setting when it restarts." relaunch={false} />
       </Banner>
     );

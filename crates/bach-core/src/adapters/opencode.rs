@@ -421,8 +421,11 @@ impl Stream {
             directories,
             suggestions: reply,
         };
+        // Without a call there are no arguments to wait for: it goes now, and only it (others may
+        // still be waiting for theirs).
+        let Some(call) = call else { return (vec![approval], vec![]) };
         self.waiting.push(approval);
-        (call.map(|c| self.release(&c)).unwrap_or_else(|| std::mem::take(&mut self.waiting)), vec![])
+        (self.release(&call), vec![])
     }
 
     /// Approvals for call `call` that can be shown now: with the call's arguments filled in,
@@ -432,7 +435,6 @@ impl Stream {
         let (ready, keep) = std::mem::take(&mut self.waiting).into_iter().partition(|a| match a {
             AgentEvent::Approval { tool_use_id, input, .. } => {
                 tool_use_id.as_deref() == Some(call) && (!input.is_null() || known.is_some())
-                    || tool_use_id.is_none()
             }
             _ => true,
         });
@@ -657,6 +659,19 @@ mod tests {
             other => panic!("expected the approval, got {other:?}"),
         }
         assert!(matches!(&ev[1], AgentEvent::ToolUse { name, .. } if name == "mcp__playwright__browser_navigate"));
+
+        // A permission without a call goes at once, leaving others waiting for their arguments.
+        let mut stream = Stream::new("ses_1", &[], &servers);
+        assert!(stream.on_event(&tool("pending", json!({}))).0.is_empty());
+        assert!(stream.on_event(&asked).0.is_empty());
+        let (ev, _) = stream.on_event(&json!({ "type": "permission.asked", "properties": {
+            "id": "per_2", "sessionID": "ses_1", "permission": "bash",
+            "patterns": ["ls"], "metadata": {}, "always": ["ls"],
+        }}));
+        assert!(matches!(&ev[..], [AgentEvent::Approval { request_id, .. }] if request_id == "per_2"), "{ev:?}");
+        let (ev, _) = stream.on_event(&tool("running", json!({ "url": "http://127.0.0.1:5173" })));
+        assert!(matches!(&ev[0], AgentEvent::Approval { request_id, input, .. }
+            if request_id == "per_1" && input["url"] == "http://127.0.0.1:5173"), "{ev:?}");
 
         assert_eq!(stream.tool_name("chrome-devtools_new_page"), "mcp__chrome-devtools__new_page");
         assert_eq!(stream.tool_name("satie_task_start"), "mcp__satie__task_start");
