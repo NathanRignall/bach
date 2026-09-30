@@ -200,14 +200,24 @@ pub fn codex_answer(
     codex::answer(suggestions, decision, answers)
 }
 
-/// The permission modes a session of `agent` can choose (besides the agent's default).
-pub fn permission_modes(agent: AgentKind) -> &'static [&'static str] {
+/// The permission modes a session of `agent` can choose, described as they behave on this server
+/// (Codex's depend on the agent wrapper). Each adapter turns its own into the agent's settings.
+pub fn permission_modes(agent: AgentKind) -> Vec<bach_protocol::PermissionModeInfo> {
     match agent {
-        AgentKind::Claude => crate::runs::PERMISSION_MODES,
-        AgentKind::Codex => codex::PERMISSION_MODES,
-        AgentKind::Opencode => opencode::PERMISSION_MODES,
+        AgentKind::Claude => claude::permission_modes(),
+        AgentKind::Codex => codex::permission_modes(crate::wrapper::codex_sandbox()),
+        AgentKind::Opencode => opencode::permission_modes(),
     }
 }
+
+/// A mode for a picker: `id` is what the session stores.
+fn mode(id: &str, name: &str, description: &str, is_default: bool) -> bach_protocol::PermissionModeInfo {
+    bach_protocol::PermissionModeInfo { id: id.into(), name: name.into(), description: description.into(), is_default }
+}
+
+/// Satie's tools that only look, which no agent needs to ask before (each names them its own way).
+/// Starting and stopping tasks still ask.
+const SATIE_LOOK_ONLY: [&str; 4] = ["task_list", "task_logs", "port_info", "http_check"];
 
 /// The models `agent` can run, for the model picker (opencode's in folder `cwd`, whose server
 /// is started with `satie` if it isn't running).
@@ -234,7 +244,7 @@ pub fn list_agents() -> Vec<bach_protocol::AgentInfo> {
             kind,
             name: kind.display_name().into(),
             installed: crate::wrapper::installed(kind.binary()),
-            unsandboxed: kind == AgentKind::Codex && !crate::wrapper::codex_sandbox(),
+            permission_modes: permission_modes(kind),
         })
         .collect()
 }

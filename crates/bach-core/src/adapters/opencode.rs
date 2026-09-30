@@ -3,15 +3,23 @@
 //! events into [`AgentEvent`]s, approval answers into HTTP replies. Talking to the server is
 //! `crate::opencode_server`. Shapes recorded from opencode 1.15.10
 //! (tests/fixtures/opencode_*.jsonl).
-use super::AgentEvent;
+use super::{mode, AgentEvent, SATIE_LOOK_ONLY};
 use crate::attachments::SavedFile;
 use bach_protocol::{Decision, DeltaKind, ModelInfo};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
-/// The permission modes Bach offers for opencode. Anything else (none, or a mode left over from
-/// another agent) is "auto".
-pub const PERMISSION_MODES: &[&str] = &["auto", "manual", "fullAccess", "plan"];
+/// The permission modes Bach offers for opencode (see [`permission_rules`]). Anything else (none,
+/// or a mode left over from another agent) is "auto". opencode has no sandbox, so even "auto"
+/// asks before shell commands.
+pub fn permission_modes() -> Vec<bach_protocol::PermissionModeInfo> {
+    vec![
+        mode("auto", "Auto", "Edit the project; ask before shell commands", true),
+        mode("manual", "Manual", "Ask before edits and shell commands", false),
+        mode("plan", "Plan", "Create a plan before making changes", false),
+        mode("fullAccess", "Full access", "Run everything without asking", false),
+    ]
+}
 
 /// Questions show on the question card, as Claude Code's do.
 const QUESTION_TOOL: &str = "AskUserQuestion";
@@ -32,10 +40,7 @@ pub fn permission_rules(mode: Option<&str>, allowed: &[String]) -> Value {
         Some("manual") => vec![rule("edit", "*", "ask"), rule("bash", "*", "ask")],
         _ => vec![rule("bash", "*", "ask")],
     };
-    rules.extend(
-        ["satie_task_list", "satie_task_logs", "satie_port_info", "satie_http_check"]
-            .map(|tool| rule(tool, "*", "allow")),
-    );
+    rules.extend(SATIE_LOOK_ONLY.map(|t| rule(&format!("satie_{t}"), "*", "allow")));
     rules.extend(allowed.iter().filter_map(|r| {
         let (permission, pattern) = parse_rule(r)?;
         Some(rule(permission, pattern, "allow"))

@@ -2,7 +2,7 @@
 //! `jsonrpc` field). One process per turn, as with Claude Code: initialize, start or resume
 //! the thread, start the turn, answer its approval requests, and close stdin once the turn
 //! completes. Shapes recorded from codex-cli 0.146.0 (tests/fixtures/codex_*.jsonl).
-use super::{AgentEvent, Turn};
+use super::{mode, AgentEvent, Turn, SATIE_LOOK_ONLY};
 use crate::attachments::{Kind, SavedFile};
 use bach_protocol::{DeltaKind, ModelInfo};
 use serde_json::{json, Value};
@@ -10,7 +10,25 @@ use std::collections::{BTreeMap, HashMap};
 
 /// The permission modes Bach offers for Codex: its own presets, and its plan mode. Anything
 /// else (none, or a mode left over from Claude Code) is "auto".
-pub const PERMISSION_MODES: &[&str] = &["auto", "manual", "fullAccess", "plan"];
+/// Codex's permission modes (see [`preset`]). Without its own sandbox (`own_sandbox` false, under
+/// a wrapper) only the wrapper limits what it runs, and they say so.
+pub fn permission_modes(own_sandbox: bool) -> Vec<bach_protocol::PermissionModeInfo> {
+    if own_sandbox {
+        vec![
+            mode("auto", "Auto", "Edit the project; ask before anything else", true),
+            mode("manual", "Manual", "Ask before any change", false),
+            mode("plan", "Plan", "Create a plan before making changes", false),
+            mode("fullAccess", "Full access", "Run everything without asking", false),
+        ]
+    } else {
+        vec![
+            mode("auto", "Auto", "Run anything the wrapper allows; ask before risky commands like rm -rf", true),
+            mode("manual", "Manual", "Ask before edits and any command that could change something", false),
+            mode("plan", "Plan", "Create a plan first; like Auto, only the wrapper stops changes", false),
+            mode("fullAccess", "Full access", "Run anything the wrapper allows without asking; refuse risky commands", false),
+        ]
+    }
+}
 
 /// The sandbox and approval policy for a permission mode.
 ///
@@ -41,8 +59,6 @@ const INTERRUPT: u64 = 4;
 /// feature is on; Bach shows them on the question card, like Claude Code's.
 const QUESTIONS_FEATURE: &str = "default_mode_request_user_input";
 
-/// Satie's tools that only look (as Claude Code is allowed them without asking).
-const SATIE_READ_ONLY: &[&str] = &["task_list", "task_logs", "port_info", "http_check"];
 
 /// Where Codex reads its Satie token from (see [`env`]).
 const SATIE_TOKEN_ENV: &str = "BACH_SATIE_TOKEN";
@@ -104,7 +120,7 @@ pub struct Conversation {
     allowed: Vec<String>,
     /// The model chosen for the session, if any.
     choice: Option<String>,
-    /// See [`PERMISSION_MODES`].
+    /// See [`permission_modes`].
     mode: Option<String>,
     /// Whether Codex may use its own sandbox. Not under a wrapper, unless asked for: it sandboxes
     /// Codex itself, and many sandboxes can't have Codex's bubblewrap inside them, so every command
@@ -493,7 +509,7 @@ impl Conversation {
                         .unwrap_or("tool");
                     let name = format!("mcp__{server}__{tool}");
                     Ask {
-                        harmless: server == "satie" && SATIE_READ_ONLY.contains(&tool),
+                        harmless: server == "satie" && SATIE_LOOK_ONLY.contains(&tool),
                         rules: vec![name.clone()],
                         tool_name: name,
                         input: meta["tool_params"].clone(),

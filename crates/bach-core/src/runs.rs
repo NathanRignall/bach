@@ -196,15 +196,6 @@ impl Drop for AttachmentFiles {
     }
 }
 
-/// The permission modes Claude Code accepts (besides its default).
-pub const PERMISSION_MODES: &[&str] = &[
-    "acceptEdits",
-    "auto",
-    "plan",
-    "bypassPermissions",
-    "dontAsk",
-];
-
 fn valid_rule(r: &str) -> bool {
     !r.is_empty() && !r.starts_with('-') && r.len() < 500
 }
@@ -462,7 +453,7 @@ impl Runs {
             .map(|m| m.trim().to_string())
             .filter(|m| !m.is_empty() && m != "default");
         if let Some(m) = &permission_mode {
-            if !permission_modes(agent).contains(&m.as_str()) {
+            if !permission_modes(agent).iter().any(|p| p.id == *m) {
                 return Err(format!("`{m}` isn't a permission mode."));
             }
         }

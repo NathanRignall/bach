@@ -40,6 +40,20 @@ pub struct ModelInfo {
     pub default_effort: Option<String>,
 }
 
+/// A permission mode an agent can run in, for the mode picker.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionModeInfo {
+    /// What to pass as the session's permission mode.
+    pub id: String,
+    pub name: String,
+    /// What it lets the agent do, as it behaves on this server (Codex's modes mean less under a
+    /// wrapper).
+    pub description: String,
+    /// The one the agent runs in when none is chosen.
+    pub is_default: bool,
+}
+
 /// What a [`AgentEvent::Delta`] adds to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -61,18 +75,18 @@ pub struct AgentWrapper {
     pub command: String,
     /// Codex's own sandbox inside the wrapper's (`BACH_AGENT_WRAPPER_CODEX_SANDBOX`). Off, the
     /// wrapper's sandbox is the only one (many can't have Codex's inside them), and Codex's modes
-    /// are kept by asking instead (see [`AgentInfo::unsandboxed`]).
+    /// are kept by asking instead (see [`AgentInfo::permission_modes`]).
     pub codex_sandbox: bool,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentInfo {
     pub kind: AgentKind,
     pub name: String,
     pub installed: bool,
-    /// Its own sandbox is off (Codex under a wrapper): only the wrapper limits what it runs, so
-    /// its permission modes mean less, and the UI says so.
-    pub unsandboxed: bool,
+    /// The modes a session can choose, in picker order; the only ones a run accepts.
+    pub permission_modes: Vec<PermissionModeInfo>,
 }
 
 /// How the user answered an approval request.
