@@ -41,15 +41,15 @@ Planned features and known issues, roughly grouped by area.
 
 ## Worktree cleanup
 
-- [ ] **"Merged" label**: mark worktrees whose branch is already merged, so it's clear
+- [x] **"Merged" label**: mark worktrees whose branch is already merged, so it's clear
   which ones still hold unique commits.
 
 ## SSH hosts
 
-- [ ] **Host picker from SSH config**: offer a dropdown of hosts from `~/.ssh/config`
+- [x] **Host picker from SSH config**: offer a dropdown of hosts from `~/.ssh/config`
   when adding a host, keeping free text as a fallback.
 
 ## Terminal
 
-- [ ] **Theme mismatch**: the terminal sometimes renders bright white instead of
+- [x] **Theme mismatch**: the terminal sometimes renders bright white instead of
   following the app theme.

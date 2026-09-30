@@ -51,10 +51,22 @@ function apply() {
   root.dataset.accent = current.accent;
 }
 
+const notify = () => listeners.forEach((l) => l());
+
 /** Applies the saved theme, and follows the system setting while the mode is "system". */
 export function initTheme() {
   apply();
-  media.addEventListener("change", apply);
+  media.addEventListener("change", () => (apply(), notify()));
+}
+
+/**
+ * Calls `listener` after the theme has been applied to the page (so its CSS variables are current),
+ * whether the mode or accent was chosen here or the system switched while the mode is "system".
+ * For things that copy the colours, like the terminal, and so can't follow the CSS by themselves.
+ */
+export function onThemeChange(listener: () => void) {
+  listeners.add(listener);
+  return () => void listeners.delete(listener);
 }
 
 export function setTheme(patch: Partial<Theme>) {
@@ -63,7 +75,7 @@ export function setTheme(patch: Partial<Theme>) {
     localStorage.setItem(KEY, JSON.stringify(current));
   } catch {}
   apply();
-  listeners.forEach((l) => l());
+  notify();
 }
 
 export function useTheme(): Theme {

@@ -160,6 +160,7 @@ fn worktree_entry(path: &Path) -> Option<(WorktreeEntry, PathBuf)> {
         })
         .and_then(|n| n.parse().ok())
         .unwrap_or(0);
+    let merged = branch.as_deref().is_some_and(|b| is_merged(&root, b));
     let repo = root
         .file_name()
         .map_or("repo".into(), |n| n.to_string_lossy().into_owned());
@@ -169,8 +170,64 @@ fn worktree_entry(path: &Path) -> Option<(WorktreeEntry, PathBuf)> {
         branch,
         dirty,
         unmerged,
+        merged,
     };
     Some((entry, root))
+}
+
+/// Whether `branch`'s changes are already in the repository's base branch. That holds for a true
+/// merge, and also for a squash or rebase merge, which leave the commits unreachable: merging the
+/// branch into the base would then change nothing. A branch level with the base has nothing to
+/// merge yet (a fresh worktree), so it doesn't count.
+fn is_merged(root: &Path, branch: &str) -> bool {
+    let branch_ref = format!("refs/heads/{branch}");
+    let Ok(tip) = run(root, &["rev-parse", &branch_ref]) else {
+        return false;
+    };
+    // The remote's default first: local main is often stale once a PR merges on the server.
+    let mut bases = vec![];
+    if let Ok(head) = run(
+        root,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    ) {
+        bases.push(head);
+    }
+    for b in ["main", "master"] {
+        bases.push(format!("refs/heads/{b}"));
+    }
+    bases.into_iter().any(|base| {
+        if base == branch_ref || base.strip_prefix("refs/heads/") == Some(branch) {
+            return false;
+        }
+        let (Ok(base_tip), Ok(base_tree)) = (
+            run(
+                root,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{base}^{{commit}}"),
+                ],
+            ),
+            run(
+                root,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{base}^{{tree}}"),
+                ],
+            ),
+        ) else {
+            return false;
+        };
+        if base_tip == tip {
+            return false;
+        }
+        // A conflict exits non-zero, which is an Err here: not merged.
+        run(root, &["merge-tree", "--write-tree", &base, &branch_ref])
+            .is_ok_and(|tree| tree == base_tree)
+    })
 }
 
 /// Worktrees live at `<worktrees_dir>/<repo>-<hash>/<name>`.
@@ -206,12 +263,12 @@ fn remove_worktree_sync(
     }
     let (entry, root) = worktree_entry(&target).ok_or("That folder isn't a valid git worktree.")?;
 
-    if !discard && (entry.dirty || entry.unmerged > 0) {
+    if !discard && (entry.dirty || (entry.unmerged > 0 && !entry.merged)) {
         let mut why = vec![];
         if entry.dirty {
             why.push("uncommitted changes".to_string());
         }
-        if entry.unmerged > 0 {
+        if entry.unmerged > 0 && !entry.merged {
             why.push(format!(
                 "{} commit(s) that exist on no other branch",
                 entry.unmerged
@@ -743,6 +800,68 @@ mod tests {
             .contains(&"bach/dirty".to_string()));
         remove_worktree_sync(&wts, &ahead, true, true).unwrap();
         assert!(list_worktrees_sync(&wts).is_empty());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn detects_merged_branches() {
+        let (base, repo) = repo("merged");
+        let wts = base.join("wt");
+        let mk = |name: &str| {
+            let w = prepare_sync(&wts, repo.to_str().unwrap(), None, true, Some(name.into()))
+                .unwrap()
+                .workdir;
+            let w = PathBuf::from(w);
+            for i in 0..2 {
+                std::fs::write(w.join(format!("{}{i}.txt", name.replace('/', "-"))), "x").unwrap();
+                sh(&w, &["add", "."]);
+                sh(&w, &["commit", "-q", "-m", &format!("{name} {i}")]);
+            }
+        };
+        for n in ["bach/squash", "bach/rebase", "bach/real", "bach/open"] {
+            mk(n);
+        }
+        sh(&repo, &["merge", "-q", "--squash", "bach/squash"]);
+        sh(&repo, &["commit", "-q", "-m", "squashed"]);
+        sh(&repo, &["cherry-pick", "bach/rebase~1", "bach/rebase"]);
+        sh(
+            &repo,
+            &["merge", "-q", "--no-ff", "-m", "merge", "bach/real"],
+        );
+
+        prepare_sync(
+            &wts,
+            repo.to_str().unwrap(),
+            None,
+            true,
+            Some("bach/fresh".into()),
+        )
+        .unwrap();
+
+        let list = list_worktrees_sync(&wts);
+        let merged = |b: &str| {
+            list.iter()
+                .find(|e| e.branch.as_deref() == Some(b))
+                .unwrap()
+                .merged
+        };
+        // Their commits are on no other branch, but the changes are in main: safe to remove.
+        let squash = list.iter().find(|e| e.branch.as_deref() == Some("bach/squash"));
+        assert!(squash.unwrap().unmerged > 0);
+        let path = squash.unwrap().path.clone();
+        remove_worktree_sync(&wts, &path, false, true).unwrap();
+        let list = list_worktrees_sync(&wts);
+        let merged = |b: &str| {
+            list.iter()
+                .find(|e| e.branch.as_deref() == Some(b))
+                .map(|e| e.merged)
+                .unwrap_or(true)
+        };
+        assert!(merged("bach/squash"), "squash merge");
+        assert!(merged("bach/rebase"), "rebase merge");
+        assert!(merged("bach/real"), "true merge");
+        assert!(!merged("bach/open"), "still has unique changes");
+        assert!(!merged("bach/fresh"), "nothing committed yet");
         let _ = std::fs::remove_dir_all(base);
     }
 

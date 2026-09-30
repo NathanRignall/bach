@@ -21,6 +21,7 @@ export {
   restartServer,
   setAutoForward,
   setConnection,
+  sshHosts,
   stopForward,
   taskHost,
 } from "./backend";

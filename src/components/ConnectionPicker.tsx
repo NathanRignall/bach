@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Settings2 } from "lucide-react";
-import { AgentWrapper, ConnectionStatus, TaskView, getConnection, inTauri, macTitleBar, onConnection, relaunchApp, remoteUrl, restartServer, setConnection } from "@/api";
+import { AgentWrapper, ConnectionStatus, TaskView, getConnection, inTauri, macTitleBar, onConnection, relaunchApp, remoteUrl, restartServer, setConnection, sshHosts } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -212,6 +212,10 @@ function ConnectionDialog({ status, onClose }: { status: ConnectionStatus; onClo
   const [wrapper, setWrapper] = useState<AgentWrapper>(c.mode === "ssh" ? c.wrapper : { command: "", codexSandbox: false });
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const [knownHosts, setKnownHosts] = useState<string[]>([]);
+
+  // Suggestions only: any host ssh can reach works, configured or not.
+  useEffect(() => void sshHosts().then(setKnownHosts).catch(() => {}), []);
 
   async function apply() {
     setSaving(true);
@@ -254,7 +258,20 @@ function ConnectionDialog({ status, onClose }: { status: ConnectionStatus; onClo
             <>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="ssh-host">Host</Label>
-                <Input id="ssh-host" value={host} placeholder="user@host" spellCheck={false} autoFocus onChange={(e) => setHost(e.target.value)} />
+                <Input
+                  id="ssh-host"
+                  value={host}
+                  list="ssh-hosts"
+                  placeholder={knownHosts.length ? "Pick from ~/.ssh/config, or user@host" : "user@host"}
+                  spellCheck={false}
+                  autoFocus
+                  onChange={(e) => setHost(e.target.value)}
+                />
+                <datalist id="ssh-hosts">
+                  {knownHosts.map((h) => (
+                    <option key={h} value={h} />
+                  ))}
+                </datalist>
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="ssh-command">bach-server on that machine</Label>

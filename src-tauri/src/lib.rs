@@ -5,6 +5,7 @@
 //! how the connection is doing.
 mod notify;
 mod ports;
+mod ssh_config;
 mod titlebar;
 
 use bach_client::{
@@ -462,7 +463,8 @@ pub fn run() {
             open_url,
             set_auto_forward,
             titlebar::title_bar,
-            notify::notify
+            notify::notify,
+            ssh_config::ssh_hosts
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bach");
