@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "42a51e8b027eda0c";
+export const PROTOCOL = "34b418d055a4504e";
 
 /**
  * Agent-independent events the UI renders.
@@ -724,7 +724,8 @@ hitCount: number, };
 /**
  * Finds sessions, in every project and archived ones too, whose title or transcript (what the
  * user and the agent said, and the inputs of the agent's tool calls) contains all the words of
- * `query`; the last word may be a beginning. Sessions whose title matches come first, then the
+ * `query`, each anywhere in a word ("sock" finds "websocket"); the transcript is searched only when
+ * a word has 3+ characters, titles always. Sessions whose title matches come first, then the
  * most recently active. Each comes with its best matching entries, to show and open.
  */
 export type SearchSessionsArgs = { query: string, 
@@ -1130,7 +1131,8 @@ export type Commands = {
   /**
    * Finds sessions, in every project and archived ones too, whose title or transcript (what the
    * user and the agent said, and the inputs of the agent's tool calls) contains all the words of
-   * `query`; the last word may be a beginning. Sessions whose title matches come first, then the
+   * `query`, each anywhere in a word ("sock" finds "websocket"); the transcript is searched only when
+   * a word has 3+ characters, titles always. Sessions whose title matches come first, then the
    * most recently active. Each comes with its best matching entries, to show and open.
    */
   search_sessions: { args: SearchSessionsArgs; output: Array<SearchResult> };

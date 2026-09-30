@@ -44,7 +44,7 @@ const SCHEMA: i64 = 1;
 
 /// What the search index holds (`meta`'s `search_index`). Change it when `searchable` does, and
 /// the next start indexes every transcript again.
-const SEARCH_INDEX: &str = "1";
+const SEARCH_INDEX: &str = "2";
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -61,6 +61,25 @@ impl Store {
     fn init(mut conn: Connection) -> Result<Self, String> {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
+             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )
+        .map_err(err)?;
+        // An index built another way (see `SEARCH_INDEX`) can't be reused: start it over.
+        let indexed: Option<String> = conn
+            .query_row("SELECT value FROM meta WHERE key = 'search_index'", [], |r| r.get(0))
+            .optional()
+            .map_err(err)?;
+        if indexed.as_deref() != Some(SEARCH_INDEX) {
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS search_text_insert;
+                 DROP TRIGGER IF EXISTS search_text_delete;
+                 DROP TABLE IF EXISTS search_index;
+                 DROP TABLE IF EXISTS search_text;",
+            )
+            .map_err(err)?;
+        }
+        conn.execute_batch(
+            "
              CREATE TABLE IF NOT EXISTS sessions (
                  id         TEXT PRIMARY KEY,
                  data       TEXT NOT NULL,
@@ -88,7 +107,7 @@ impl Store {
              );
              CREATE INDEX IF NOT EXISTS search_text_session ON search_text (session_id);
              CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
-                 text, content = 'search_text', content_rowid = 'id', tokenize = 'unicode61 remove_diacritics 2'
+                 text, content = 'search_text', content_rowid = 'id', tokenize = 'trigram'
              );
              CREATE TRIGGER IF NOT EXISTS search_text_insert AFTER INSERT ON search_text BEGIN
                  INSERT INTO search_index (rowid, text) VALUES (new.id, new.text);
@@ -107,10 +126,6 @@ impl Store {
             tx.pragma_update(None, "user_version", SCHEMA).map_err(err)?;
             tx.commit().map_err(err)?;
         }
-        let indexed: Option<String> = conn
-            .query_row("SELECT value FROM meta WHERE key = 'search_index'", [], |r| r.get(0))
-            .optional()
-            .map_err(err)?;
         if indexed.as_deref() != Some(SEARCH_INDEX) {
             rebuild_search(&mut conn)?;
         }
@@ -213,53 +228,60 @@ impl Store {
         tx.commit().map_err(err)
     }
 
-    /// Sessions whose title or transcript contain all the words of `query` (the last may be a
-    /// beginning), title matches first and then the most recently active, at most `limit`. Each
-    /// has its best matching entries.
+    /// Sessions whose title or transcript contain all the words of `query` (anywhere in a word),
+    /// title matches first and then the most recently active, at most `limit`. Each has its best
+    /// matching entries. The transcript needs a word of 3+ characters to be searched at all.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
-        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-        let fts = match_expression(query);
-        if words.is_empty() || fts.is_empty() {
+        let title_words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        if title_words.is_empty() {
             return Ok(vec![]);
         }
+        let words = words(query);
+        let fts = match_expression(&words);
         let conn = self.0.lock().unwrap();
 
         // Transcript matches, best first. A word in every session ("the") can match far more
         // entries than anyone reads, so only the best are taken.
         let mut found: HashMap<String, (u32, Vec<SearchHit>)> = HashMap::new();
-        let mut stmt = conn
-            .prepare(
+        if !fts.is_empty() {
+            // Shorter words can't be looked up in the index; they only narrow what it finds.
+            let short: Vec<&String> = words.iter().filter(|w| w.chars().count() < MIN_INDEXED_WORD).collect();
+            let narrow: String = short.iter().map(|_| " AND instr(lower(t.text), ?) > 0").collect();
+            let sql = format!(
                 "SELECT t.session_id, t.seq, t.kind,
-                        snippet(search_index, 0, char(1), char(2), '…', 18)
+                        t.text
                  FROM search_index JOIN search_text t ON t.id = search_index.rowid
-                 WHERE search_index MATCH ?1
-                 ORDER BY rank LIMIT ?2",
-            )
-            .map_err(err)?;
-        let rows = stmt
-            .query_map(params![fts, SEARCH_ROWS], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, u64>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                ))
-            })
-            .map_err(err)?;
-        for row in rows {
-            let (session_id, seq, kind, snippet) = row.map_err(err)?;
-            let (count, hits) = found.entry(session_id).or_default();
-            *count += 1;
-            if hits.len() < HITS_PER_SESSION {
-                let kind = match kind.as_str() {
-                    "user" => SearchKind::User,
-                    "tool" => SearchKind::Tool,
-                    _ => SearchKind::Agent,
-                };
-                hits.push(SearchHit { seq, kind, snippet: snippet_parts(&snippet) });
+                 WHERE search_index MATCH ?{narrow}
+                 ORDER BY rank LIMIT {SEARCH_ROWS}"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(err)?;
+            let args: Vec<&dyn rusqlite::ToSql> = std::iter::once(&fts as &dyn rusqlite::ToSql)
+                .chain(short.iter().map(|w| *w as &dyn rusqlite::ToSql))
+                .collect();
+            let rows = stmt
+                .query_map(args.as_slice(), |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, u64>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                    ))
+                })
+                .map_err(err)?;
+            for row in rows {
+                let (session_id, seq, kind, text) = row.map_err(err)?;
+                let (count, hits) = found.entry(session_id).or_default();
+                *count += 1;
+                if hits.len() < HITS_PER_SESSION {
+                    let kind = match kind.as_str() {
+                        "user" => SearchKind::User,
+                        "tool" => SearchKind::Tool,
+                        _ => SearchKind::Agent,
+                    };
+                    hits.push(SearchHit { seq, kind, snippet: snippet(&text, &words) });
+                }
             }
         }
-        drop(stmt);
 
         let mut results = vec![];
         let mut stmt = conn
@@ -269,7 +291,7 @@ impl Store {
         for row in rows {
             let s: Session = serde_json::from_str(&row.map_err(err)?).map_err(err)?;
             let title = s.title.to_lowercase();
-            let title_match = words.iter().all(|w| title.contains(w.as_str()));
+            let title_match = title_words.iter().all(|w| title.contains(w.as_str()));
             let (hit_count, hits) = found.remove(&s.id).unwrap_or_default();
             if title_match || hit_count > 0 {
                 results.push((
@@ -362,48 +384,67 @@ impl Store {
 }
 
 /// Transcript matches read per search, before they're grouped by session.
-const SEARCH_ROWS: i64 = 400;
+const SEARCH_ROWS: usize = 400;
 const HITS_PER_SESSION: usize = 3;
 /// An entry's text is indexed up to this many characters (a file an agent wrote can be huge).
 const MAX_INDEXED: usize = 20_000;
 
-/// The FTS5 query for what was typed: every word must be there, the last one as a beginning (so
-/// results follow the typing). Words are quoted so punctuation in them can't be query syntax.
-fn match_expression(query: &str) -> String {
-    let words: Vec<&str> = query
+/// Shortest word the trigram index can look for.
+const MIN_INDEXED_WORD: usize = 3;
+
+/// The words typed (letters and digits), lowercased.
+fn words(query: &str) -> Vec<String> {
+    query
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
-        .collect();
-    let ends_in_word = query.chars().last().is_some_and(char::is_alphanumeric);
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// The FTS5 query for the words the index can look for (3+ characters), each quoted so it's
+/// never query syntax. Every one must be in the entry, anywhere in a word. Empty if none.
+fn match_expression(words: &[String]) -> String {
     words
         .iter()
-        .enumerate()
-        .map(|(i, w)| {
-            let prefix = if i + 1 == words.len() && ends_in_word { "*" } else { "" };
-            format!("\"{w}\"{prefix}")
-        })
+        .filter(|w| w.chars().count() >= MIN_INDEXED_WORD)
+        .map(|w| format!("\"{w}\""))
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-/// Splits FTS5's `snippet()` output, which marks matches with control characters 1 and 2.
-fn snippet_parts(s: &str) -> Vec<SnippetPart> {
-    let mut parts = vec![];
-    let mut inside = false;
-    let mut cur = String::new();
-    for c in s.chars() {
-        match c {
-            '\u{1}' | '\u{2}' => {
-                if !cur.is_empty() {
-                    parts.push(SnippetPart { text: std::mem::take(&mut cur), matched: inside });
-                }
-                inside = c == '\u{1}';
+/// Characters of an entry shown around a match, and how many of them come before it.
+const SNIPPET_LEN: usize = 150;
+const SNIPPET_LEAD: usize = 40;
+
+/// A stretch of `text` around the first of `words` (lowercase), with every occurrence marked.
+fn snippet(text: &str, words: &[String]) -> Vec<SnippetPart> {
+    let chars: Vec<char> = text.chars().collect();
+    let lower: Vec<char> = chars.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
+    let mut marked = vec![false; chars.len()];
+    for w in words {
+        let w: Vec<char> = w.chars().collect();
+        for i in 0..(lower.len() + 1).saturating_sub(w.len()) {
+            if lower[i..i + w.len()] == w[..] {
+                marked[i..i + w.len()].fill(true);
             }
-            c => cur.push(c),
         }
     }
-    if !cur.is_empty() {
-        parts.push(SnippetPart { text: cur, matched: inside });
+    let first = marked.iter().position(|m| *m).unwrap_or(0);
+    let start = first.saturating_sub(SNIPPET_LEAD);
+    let end = (start + SNIPPET_LEN).min(chars.len());
+    let mut parts: Vec<SnippetPart> = vec![];
+    let mut push = |c: char, matched: bool| match parts.last_mut() {
+        Some(p) if p.matched == matched => p.text.push(c),
+        _ => parts.push(SnippetPart { text: c.to_string(), matched }),
+    };
+    if start > 0 {
+        push('…', false);
+    }
+    for i in start..end {
+        push(chars[i], marked[i]);
+    }
+    if end < chars.len() {
+        push('…', false);
     }
     parts
 }
@@ -467,12 +508,9 @@ fn index_entry(conn: &Connection, session_id: &str, seq: u64, entry: &Entry) -> 
     Ok(())
 }
 
-/// Indexes every transcript from scratch.
+/// Indexes every transcript, into an empty index (see `init`).
 fn rebuild_search(conn: &mut Connection) -> Result<(), String> {
     let tx = conn.transaction().map_err(err)?;
-    // Rows first, so the triggers take them out of the index; then whatever is left of it.
-    tx.execute_batch("DELETE FROM search_text; INSERT INTO search_index (search_index) VALUES ('delete-all');")
-        .map_err(err)?;
     {
         let mut stmt = tx
             .prepare("SELECT session_id, seq, data FROM entries ORDER BY session_id, seq")
@@ -714,19 +752,30 @@ mod tests {
         assert_eq!(found(&s, "SIDEBAR"), [("a".into(), true, vec![])]);
         assert_eq!(found(&s, "the side"), [("a".into(), true, vec![])]);
         assert!(found(&s, "sidebar nothing").is_empty());
-        // Transcript: the last word may be a beginning; every word must be in the entry.
+        // Transcript: words match anywhere in a word; every word must be in the entry.
         let mut both = found(&s, "capac");
         both.iter_mut().for_each(|b| b.2.sort());
         both.sort();
         assert_eq!(both, [("a".into(), false, vec![1, reply]), ("b".into(), false, vec![1])]);
         assert_eq!(found(&s, "renamed capacitor"), [("a".into(), false, vec![reply])]);
-        // Quotes and operators in what's typed are just punctuation.
-        assert_eq!(found(&s, "\"flux\" OR capacitor -").len(), 0);
+        let mut inner = found(&s, "apacit");
+        inner.sort();
+        assert_eq!(inner.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        // Quotes and operators in what's typed are just punctuation; a short word only narrows.
+        assert_eq!(found(&s, "\"flux\" OR capacitor -").len(), 1);
+        assert!(found(&s, "flux zz").is_empty());
+        assert!(found(&s, "fl").is_empty(), "too short to search transcripts");
         assert!(found(&s, "   ").is_empty() && found(&s, "\"").is_empty());
 
         let hit = &s.search("flux", 30).unwrap()[0].hits[0];
         assert_eq!(hit.kind, SearchKind::User);
         assert!(hit.snippet.iter().any(|p| p.matched && p.text == "flux"), "{:?}", hit.snippet);
+        // A long entry is cut around the match, with every occurrence marked, in any case.
+        let long = format!("{} The FLUX here and flux there. {}", "x ".repeat(100), "y ".repeat(100));
+        let parts = snippet(&long, &["flux".into()]);
+        let shown: String = parts.iter().map(|p| p.text.as_str()).collect();
+        assert!(shown.starts_with('…') && shown.ends_with('…') && shown.chars().count() <= SNIPPET_LEN + 2);
+        assert_eq!(parts.iter().filter(|p| p.matched).map(|p| p.text.as_str()).collect::<Vec<_>>(), ["FLUX", "flux"]);
         assert_eq!(s.search("capac", 1).unwrap().len(), 1);
     }
 
@@ -749,6 +798,31 @@ mod tests {
         }
         let s = Store::open(&path).unwrap();
         assert_eq!(found(&s, "needle"), [("a".into(), false, vec![1])]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn replaces_an_index_built_the_old_way() {
+        let dir = std::env::temp_dir().join(format!("bach-store-oldindex-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("bach.db");
+        {
+            let s = Store::open(&path).unwrap();
+            s.put(&session("a")).unwrap();
+            say(&s, "a", "websocket");
+            // What an earlier version left: a word index, marked with its version.
+            let conn = s.0.lock().unwrap();
+            conn.execute_batch(
+                "DROP TRIGGER search_text_insert; DROP TRIGGER search_text_delete; DROP TABLE search_index;
+                 CREATE VIRTUAL TABLE search_index USING fts5(text, content = 'search_text', content_rowid = 'id');
+                 UPDATE meta SET value = '1' WHERE key = 'search_index';",
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(found(&s, "sock"), [("a".into(), false, vec![1])]);
+        say(&s, "a", "another websocket");
+        assert_eq!(found(&s, "sock")[0].2.len(), 2);
         let _ = std::fs::remove_dir_all(dir);
     }
 

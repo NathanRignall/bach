@@ -12,7 +12,7 @@ const SHORTCUT = isMac ? "⌘K" : "Ctrl K";
 const KIND_LABEL: Record<SearchKind, string> = { user: "You", agent: "Agent", tool: "Tool" };
 
 /** Results for what's been typed, a moment after typing stops. The previous ones stay until new ones arrive. */
-function useSearch(query: string) {
+function useSearch(query: string, refreshKey: string) {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -36,7 +36,7 @@ function useSearch(query: string) {
       stale = true;
       clearTimeout(timer);
     };
-  }, [query]);
+  }, [query, refreshKey]);
   return { results, error, busy };
 }
 
@@ -64,7 +64,9 @@ export function SessionSearch({ sessions, activeId, onOpen, focusSignal, childre
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLUListElement>(null);
   const listId = useId();
-  const { results, error, busy } = useSearch(query);
+  // New activity can change what matches, so search again when it happens.
+  const activity = sessions.reduce((latest, s) => Math.max(latest, s.updatedAt), 0) + ":" + sessions.length;
+  const { results, error, busy } = useSearch(query, activity);
 
   useEffect(() => {
     if (focusSignal > 0) {
@@ -173,10 +175,10 @@ export function SessionSearch({ sessions, activeId, onOpen, focusSignal, childre
                       title={s.title}
                     >
                       <AgentDot kind={s.agent} />
-                      <span className="min-w-0 flex-1 truncate">
+                      <span className="line-clamp-2 min-w-0 flex-1 break-words">
                         <Highlighted text={s.title} words={words} />
                       </span>
-                      <span className="max-w-[40%] shrink-0 truncate text-[11px] text-muted-foreground">{projectName(projectKey(s.cwd))}</span>
+                      <span className="max-w-[30%] shrink-0 truncate text-[11px] text-muted-foreground">{projectName(projectKey(s.cwd))}</span>
                     </div>
                     {r.hits.map((h) => {
                       const selected = active?.id === s.id && active.seq === h.seq;

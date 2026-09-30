@@ -175,7 +175,8 @@ pub struct GetSessionArgs {
 
 /// Finds sessions, in every project and archived ones too, whose title or transcript (what the
 /// user and the agent said, and the inputs of the agent's tool calls) contains all the words of
-/// `query`; the last word may be a beginning. Sessions whose title matches come first, then the
+/// `query`, each anywhere in a word ("sock" finds "websocket"); the transcript is searched only when
+/// a word has 3+ characters, titles always. Sessions whose title matches come first, then the
 /// most recently active. Each comes with its best matching entries, to show and open.
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
