@@ -318,7 +318,7 @@ function BachToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
           ) : (
             <ServerCog className="size-3.5 shrink-0 text-foreground" aria-label="Background task" />
           )}
-          <span className="font-semibold text-foreground">{verb}</span>
+          <span className="shrink-0 font-semibold whitespace-nowrap text-foreground">{verb}</span>
           {target && <span className="min-w-0 truncate font-medium text-foreground">{target}</span>}
           <span className="min-w-0 flex-1 truncate font-mono" title={detail}>
             {detail !== target ? detail : undefined}

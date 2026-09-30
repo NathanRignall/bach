@@ -13,6 +13,7 @@ How Bach works under the hood. For what it is and how to get it running, see the
 - [Approvals](#approvals)
 - [Terminals](#terminals)
 - [Background tasks (Satie)](#background-tasks-satie)
+- [Agents starting sessions](#agents-starting-sessions)
 
 ## Overview
 
@@ -42,10 +43,10 @@ When agents run on the Mac itself, the same `bach-core` backend runs inside the 
 | Path | What's there |
 | --- | --- |
 | `crates/bach-protocol/` | The wire protocol: the command table (`commands.rs`: each command's name, arguments and result), `ServerEvent`s, `ApiError { code, message }`, and the frames the WebSocket carries. |
-| `crates/bach-core/` | The engine, with no UI or transport. `api.rs` implements every command (`bach_protocol::Handler`) and broadcasts events; `adapters/` turns each CLI's output into `AgentEvent`s; `runs.rs` spawns and cancels agent processes; `sessions.rs` records every run event into the session's transcript; `store.rs` is SQLite storage; `terminals.rs` the PTYs. |
+| `crates/bach-core/` | The engine, with no UI or transport. `api.rs` implements every command (`bach_protocol::Handler`) and broadcasts events; `tools.rs` adds Bach's own tools to the agents' MCP server; `adapters/` turns each CLI's output into `AgentEvent`s; `runs.rs` spawns and cancels agent processes; `sessions.rs` records every run event into the session's transcript; `store.rs` is SQLite storage; `terminals.rs` the PTYs. |
 | `crates/bach-server/` | The server binary: `serve` (a private Unix socket for the app, a WebSocket for browsers; one server per database), `attach` (stdin/stdout to that socket, starting the server if needed) and `restart` (replace a running server with this binary's). |
 | `crates/bach-client/` | The app's side of a remote connection: runs `ssh <host> bach-server attach`, checks the protocol, matches replies, reconnects; `forward.rs` adds port forwards. |
-| `crates/satie/` | Satie, the background-task launcher. Knows nothing about Bach: callers get an MCP token by granting a `Scope` (a project, and an owner recorded on its tasks). `lib.rs` is the launcher, `mcp.rs` the agents' MCP server, `store.rs` its own database. |
+| `crates/satie/` | Satie, the background-task launcher. Knows nothing about Bach: callers get an MCP token by granting a `Scope` (a project, and an owner recorded on its tasks). `lib.rs` is the launcher, `mcp.rs` the agents' MCP server (which embedders can add tools to and rename), `store.rs` its own database. |
 | `crates/satie-protocol/` | Satie's wire types (tasks, `TaskEvent`s, log chunks, command arguments). |
 | `src-tauri/` | Tauri shell: one `rpc` command, routed to a backend inside the app or to `bach-client`; events on the `bach` channel, connection status on `bach-connection`. |
 | `src/` | React frontend (Tailwind v4, shadcn/ui on Base UI, `base-nova` style). `src/api/` is the typed client and `transport.ts` carries it over Tauri IPC or the WebSocket; `session.ts` folds transcript entries into rendered blocks; theme tokens are in `index.css`. |
@@ -180,7 +181,7 @@ dies when the turn ends. **Satie** is Bach's launcher for things that must keep 
   in a database, so they survive turns, agents and a `bach-server` restart. On startup Satie finds
   them again and notices ones that ended. Starting the same command in the same folder again
   replaces its earlier finished runs.
-- Agents reach it as an MCP server (`satie`, loopback only, one bearer token per run):
+- Agents reach it through Bach's MCP server (`bach`, loopback only, one bearer token per run):
   `task_start` (optionally waiting for ports or a URL), `task_list`, `task_logs`, `task_stop`, plus
   process-compose projects. Agents only see their own project's tasks. Claude Code also gets a
   system-prompt note and a hook that refuses Bash `run_in_background`, pointing it at
@@ -192,3 +193,18 @@ dies when the turn ends. **Satie** is Bach's launcher for things that must keep 
 
 Satie keeps its database and task files in `tasks/` next to the session database
 (`~/.local/share/bach/tasks/satie.db`). Unix only (`setsid`, `/proc` for ports).
+
+## Agents starting sessions
+
+Satie's MCP server is the only one agents get. Bach adds its own tools to it through
+`satie::Tools` and serves it as `bach`, so Satie stays free of anything Bach-specific. A tool call
+arrives with its grant's `Scope`; its owner is the calling run, which leads back to the calling
+session.
+
+`start_session` (`crates/bach-core/src/tools.rs`) starts a new session in the caller's project
+with a prompt: the same agent, model, permission mode and effort unless it asks for another agent
+or model, and by default in a new worktree branched from the branch the caller started from
+(in the project folder itself with `worktree: false`, without switching its branch). It appears in
+the sidebar like any other session. Agents ask before calling it, like `task_start`: it starts
+another agent that spends usage and works on the machine; "Allow for this session" lets one
+session hand off freely.

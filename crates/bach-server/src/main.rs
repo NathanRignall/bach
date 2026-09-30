@@ -87,7 +87,7 @@ async fn serve(paths: Paths) {
         }
     };
     eprintln!("sessions in {}", paths.db.display());
-    eprintln!("satie (MCP) on {}", api.satie().url());
+    eprintln!("agents' MCP server (bach) on {}", api.satie().url());
 
     let socket = {
         let (paths, api) = (Paths::for_db(paths.db.clone()), api.clone());
