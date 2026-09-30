@@ -1,8 +1,10 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, FileDiff as FileDiffIcon, RefreshCw } from "lucide-react";
 import { DiffHunk, FileDiff, FileStatus, GitDiff, Session, gitDiff, onReconnect } from "@/api";
+import { FileTree } from "@/components/FileTree";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { type Token, renderLine, useHighlight } from "@/lib/highlight";
 import { cn } from "@/lib/utils";
 
 /** Uncommitted changes, or everything on the session's branch since it left its base branch. */
@@ -97,7 +99,26 @@ const splitPath = (p: string) => {
   return { dir: i < 0 ? "" : p.slice(0, i + 1), name: p.slice(i + 1) };
 };
 
-function Hunk({ hunk }: { hunk: DiffHunk }) {
+/**
+ * A file's diff as the two documents it shows parts of: the old side (context and deleted
+ * lines) and the new side (context and added lines), hunk after hunk. Highlighting these rather
+ * than line by line keeps multi-line strings and comments coloured right, within a hunk at least.
+ * `at[h][i]` is where hunk `h`'s line `i` is: which side, and which of its lines.
+ */
+function diffSides(file: FileDiff) {
+  const old: string[] = [];
+  const now: string[] = [];
+  const at = file.hunks.map((h) =>
+    h.lines.map((l): [side: 0 | 1, line: number] => {
+      if (l.kind === "delete") return [0, old.push(l.text) - 1];
+      if (l.kind === "context") old.push(l.text);
+      return [1, now.push(l.text) - 1];
+    }),
+  );
+  return { docs: [old.join("\n"), now.join("\n")], at };
+}
+
+function Hunk({ hunk, at, tokens }: { hunk: DiffHunk; at?: [0 | 1, number][]; tokens?: Token[][][] }) {
   return (
     <>
       <tr className="bg-sky-500/8 text-muted-foreground">
@@ -105,32 +126,51 @@ function Hunk({ hunk }: { hunk: DiffHunk }) {
           {hunk.header}
         </td>
       </tr>
-      {hunk.lines.map((l, i) => (
-        <tr
-          key={i}
-          className={cn(
-            l.kind === "add" && "bg-emerald-500/12 dark:bg-emerald-400/12",
-            l.kind === "delete" && "bg-red-500/12 dark:bg-red-400/12",
-          )}
-        >
-          <td className="w-px min-w-10 border-r border-border/60 px-2 text-right align-top text-muted-foreground/70 select-none">{l.old ?? ""}</td>
-          <td className="w-px min-w-10 border-r border-border/60 px-2 text-right align-top text-muted-foreground/70 select-none">{l.new ?? ""}</td>
-          <td className="pr-4 whitespace-pre">
-            <span
-              className={cn(
-                "inline-block w-5 text-center select-none",
-                l.kind === "add" && "text-emerald-600 dark:text-emerald-400",
-                l.kind === "delete" && "text-destructive",
-              )}
-            >
-              {l.kind === "add" ? "+" : l.kind === "delete" ? "-" : " "}
-            </span>
-            {l.text}
-            {l.noNewline && <span className="ml-2 text-[10px] text-muted-foreground select-none" title="No newline at end of file">⏎̸</span>}
-          </td>
-        </tr>
-      ))}
+      {hunk.lines.map((l, i) => {
+        const where = at?.[i];
+        return (
+          <tr
+            key={i}
+            className={cn(
+              l.kind === "add" && "bg-emerald-500/12 dark:bg-emerald-400/12",
+              l.kind === "delete" && "bg-red-500/12 dark:bg-red-400/12",
+            )}
+          >
+            <td className="w-px min-w-10 border-r border-border/60 px-2 text-right align-top text-muted-foreground/70 select-none">{l.old ?? ""}</td>
+            <td className="w-px min-w-10 border-r border-border/60 px-2 text-right align-top text-muted-foreground/70 select-none">{l.new ?? ""}</td>
+            <td className="pr-4 whitespace-pre">
+              <span
+                className={cn(
+                  "inline-block w-5 text-center select-none",
+                  l.kind === "add" && "text-emerald-600 dark:text-emerald-400",
+                  l.kind === "delete" && "text-destructive",
+                )}
+              >
+                {l.kind === "add" ? "+" : l.kind === "delete" ? "-" : " "}
+              </span>
+              {renderLine(l.text, where && tokens?.[where[0]][where[1]])}
+              {l.noNewline && <span className="ml-2 text-[10px] text-muted-foreground select-none" title="No newline at end of file">⏎̸</span>}
+            </td>
+          </tr>
+        );
+      })}
     </>
+  );
+}
+
+function DiffLines({ file }: { file: FileDiff }) {
+  const sides = useMemo(() => diffSides(file), [file]);
+  const tokens = useHighlight(file.path, sides.docs)?.docs;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse font-mono text-xs leading-5 [tab-size:4]">
+        <tbody>
+          {file.hunks.map((h, i) => (
+            <Hunk key={i} hunk={h} at={sides.at[i]} tokens={tokens} />
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -158,15 +198,7 @@ function FileCard({ file, open, onToggle }: { file: FileDiff; open: boolean; onT
         (empty ? (
           <p className="px-3 py-3 text-xs text-muted-foreground">{empty}</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse font-mono text-xs leading-5 [tab-size:4]">
-              <tbody>
-                {file.hunks.map((h, i) => (
-                  <Hunk key={i} hunk={h} />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DiffLines file={file} />
         ))}
     </section>
   );
@@ -182,7 +214,7 @@ export function DiffView({ session, state, mode, onMode }: { session: Session; s
   const base = diffBase(session);
   // Files toggled away from how they start (see `startsOpen`), by path.
   const [toggled, setToggled] = useState(new Set<string>());
-  useEffect(() => setToggled(new Set()), [session.id, mode]);
+  useEffect(() => (setToggled(new Set()), setSelected(undefined)), [session.id, mode]);
 
   const files = diff?.files ?? [];
   const isOpen = (f: FileDiff) => startsOpen(f) !== toggled.has(f.path);
@@ -192,7 +224,10 @@ export function DiffView({ session, state, mode, onMode }: { session: Session; s
       next.has(path) ? next.delete(path) : next.add(path);
       return next;
     });
+  // The file last picked in the tree.
+  const [selected, setSelected] = useState<string>();
   const reveal = (f: FileDiff) => {
+    setSelected(f.path);
     if (!isOpen(f)) toggle(f.path);
     requestAnimationFrame(() => document.getElementById(`diff-${f.path}`)?.scrollIntoView({ block: "start" }));
   };
@@ -257,26 +292,19 @@ export function DiffView({ session, state, mode, onMode }: { session: Session; s
         <Empty>{mode === "branch" && base ? `No changes since ${base}.` : "No uncommitted changes."}</Empty>
       ) : (
         <div className="flex min-h-0 flex-1">
-          <nav className="hidden w-64 shrink-0 overflow-y-auto border-r py-2 md:block" aria-label="Changed files">
-            {files.map((f) => {
-              const { dir, name } = splitPath(f.path);
-              return (
-                <button
-                  key={f.path}
-                  type="button"
-                  onClick={() => reveal(f)}
-                  title={f.path}
-                  className="flex w-full items-center gap-2 px-3 py-1 text-left text-xs hover:bg-muted"
-                >
-                  <StatusLetter file={f} />
-                  <span className="min-w-0 flex-1 truncate">
-                    <span className={cn(f.status === "deleted" && "line-through")}>{name}</span>
-                    {dir && <span className="ml-1.5 text-muted-foreground">{dir.slice(0, -1)}</span>}
-                  </span>
-                  <Counts additions={f.additions} deletions={f.deletions} />
-                </button>
-              );
-            })}
+          <nav className="hidden w-64 shrink-0 overflow-y-auto border-r md:block" aria-label="Changed files">
+            <FileTree
+              files={files}
+              selected={selected}
+              onSelect={reveal}
+              label="Changed files"
+              decorate={(f) => ({
+                before: <StatusLetter file={f} />,
+                after: <Counts additions={f.additions} deletions={f.deletions} />,
+                className: cn(f.status === "deleted" && "line-through"),
+                title: f.oldPath ? `${f.oldPath} → ${f.path}` : f.path,
+              })}
+            />
           </nav>
           <div className="min-w-0 flex-1 overflow-y-auto">
             <div className="flex flex-col gap-3 p-4 select-text">

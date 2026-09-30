@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "382c021c2ad258d2";
+export const PROTOCOL = "24b4661a8f6e4071";
 
 /**
  * Agent-independent events the UI renders.
@@ -222,6 +222,23 @@ export type ErrorCode = "invalid" | "not_found" | "unavailable" | "failed";
 
 export type ExitStatus = { code: number | null, };
 
+/**
+ * A file in a session's folder, for the file viewer.
+ */
+export type FileContent = { 
+/**
+ * Relative to the session's folder.
+ */
+path: string, 
+/**
+ * Size in bytes.
+ */
+size: number, 
+/**
+ * The file's text; none for binary files and files too large to show.
+ */
+text: string | null, binary: boolean, };
+
 export type FileDiff = { path: string, 
 /**
  * Where a renamed file was.
@@ -235,6 +252,19 @@ untracked: boolean, binary: boolean, additions: number, deletions: number,
  * Empty for binary files, and for files too large to show (`omitted`).
  */
 hunks: Array<DiffHunk>, omitted: boolean, };
+
+/**
+ * The files in a session's folder, for the file browser.
+ */
+export type FileList = { 
+/**
+ * Paths relative to the folder, `/`-separated, sorted.
+ */
+files: Array<string>, 
+/**
+ * There were more files than are listed.
+ */
+truncated: boolean, };
 
 export type FileStatus = "added" | "modified" | "deleted" | "renamed";
 
@@ -333,6 +363,12 @@ export type ListDirArgs = {
  * Defaults to the home directory.
  */
 path?: string, showHidden?: boolean, };
+
+/**
+ * The files in a session's folder (its worktree, or its project folder): those git doesn't
+ * ignore, or outside a repository, all but `.git` folders. Up to 20,000.
+ */
+export type ListFilesArgs = { sessionId: string, };
 
 /**
  * The models an agent can run. Codex and opencode are asked for their current lists (kept for
@@ -488,6 +524,16 @@ export type QueuedMessage = { id: string, text: string,
  * images could be). A file's name is a parameter: `data:application/pdf;name=a.pdf;base64,…`.
  */
 images?: Array<string>, };
+
+/**
+ * A file in a session's folder, for reading. Text files up to 1 MB come with their text.
+ */
+export type ReadFileArgs = { sessionId: string, 
+/**
+ * Relative to the session's folder, and inside it: `..`, absolute paths and symlinks that
+ * lead out are refused.
+ */
+path: string, };
 
 /**
  * An image file on the backend host as a `data:` URL, so the UI can show images an agent
@@ -946,6 +992,15 @@ export type Commands = {
    * links to by path. Only image files, up to 25 MB.
    */
   read_image: { args: ReadImageArgs; output: string };
+  /**
+   * The files in a session's folder (its worktree, or its project folder): those git doesn't
+   * ignore, or outside a repository, all but `.git` folders. Up to 20,000.
+   */
+  list_files: { args: ListFilesArgs; output: FileList };
+  /**
+   * A file in a session's folder, for reading. Text files up to 1 MB come with their text.
+   */
+  read_file: { args: ReadFileArgs; output: FileContent };
   /**
    * Branches and state of the repository containing `path`.
    */

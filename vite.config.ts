@@ -8,4 +8,6 @@ export default defineConfig({
   resolve: { alias: { "@": path.resolve(import.meta.dirname, "./src") } },
   clearScreen: false,
   server: { port: 3420, strictPort: true, host: "0.0.0.0" },
+  // The highlight worker loads each language's parser when first needed, which needs ES modules.
+  worker: { format: "es" },
 });

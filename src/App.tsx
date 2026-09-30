@@ -35,6 +35,7 @@ import { NewSessionPage } from "@/components/NewSessionPage";
 import { SessionHeader, SessionView } from "@/components/SessionHeader";
 import { DiffMode, DiffView, diffBase, useDiff } from "@/components/DiffView";
 import { ConnectionBanner, pausedReason, useConnection } from "@/components/ConnectionPicker";
+import { FileBrowser } from "@/components/FileBrowser";
 import { SIDEBAR_WIDTH, Sidebar } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -197,6 +198,7 @@ export function App() {
   const transcript = activeId ? transcripts.current.get(activeId) : undefined;
   const live = (activeId && drafts.current.get(activeId)) || emptyLive;
   const showChanges = !!active && view === "changes";
+  const showFiles = !!active && view === "files";
   const diff = useDiff(active, diffMode, showChanges);
 
   // Each session opens on its chat; a worktree's changes are compared with where it branched from.
@@ -238,7 +240,7 @@ export function App() {
 
   // Re-pin to the bottom when switching sessions, then follow growth of the content (new
   // blocks, sub-agent steps, an expanded card) for as long as the reader hasn't scrolled up.
-  const chatShown = !!active && !showChanges;
+  const chatShown = !!active && view === "chat";
   useEffect(() => {
     const content = contentRef.current;
     if (!content) return;
@@ -473,7 +475,8 @@ export function App() {
           <>
             <SessionHeader session={active} inset={!sidebarOpen} view={view} onView={setView} changedFiles={diff.diff?.files.length} />
             {showChanges && <DiffView session={active} state={diff} mode={diffMode} onMode={setDiffMode} />}
-            {!showChanges && (
+            {showFiles && <FileBrowser key={active.id} session={active} />}
+            {view === "chat" && (
             <>
 
             <TranscriptContext.Provider

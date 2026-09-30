@@ -315,3 +315,51 @@
     --tw-prose-invert-th-borders: var(--border);
     --tw-prose-invert-td-borders: var(--border);
 }
+
+/* Syntax highlighting (lib/highlight.tsx): token classes from the highlight worker. Warm and
+   fairly muted, so code sits in the app's palette; lighter and a touch softer in dark mode. */
+:root {
+    --syntax-keyword: oklch(0.5 0.16 330);
+    --syntax-string: oklch(0.5 0.12 145);
+    --syntax-escape: oklch(0.55 0.14 175);
+    --syntax-comment: oklch(0.6 0.015 70);
+    --syntax-constant: oklch(0.56 0.14 50);
+    --syntax-type: oklch(0.5 0.1 195);
+    --syntax-function: oklch(0.5 0.14 260);
+    --syntax-property: oklch(0.48 0.08 235);
+    --syntax-tag: oklch(0.54 0.16 25);
+    --syntax-meta: oklch(0.55 0.1 85);
+}
+.dark {
+    --syntax-keyword: oklch(0.76 0.12 330);
+    --syntax-string: oklch(0.78 0.11 140);
+    --syntax-escape: oklch(0.78 0.1 180);
+    --syntax-comment: oklch(0.6 0.015 70);
+    --syntax-constant: oklch(0.8 0.11 60);
+    --syntax-type: oklch(0.78 0.09 195);
+    --syntax-function: oklch(0.78 0.1 255);
+    --syntax-property: oklch(0.8 0.06 230);
+    --syntax-tag: oklch(0.74 0.13 25);
+    --syntax-meta: oklch(0.8 0.09 90);
+}
+:root.dark.high-contrast {
+    --syntax-comment: oklch(0.72 0 0);
+}
+.tok-keyword,
+.tok-heading { color: var(--syntax-keyword); }
+.tok-string,
+.tok-inserted { color: var(--syntax-string); }
+.tok-escape { color: var(--syntax-escape); }
+.tok-comment { color: var(--syntax-comment); font-style: italic; }
+.tok-constant { color: var(--syntax-constant); }
+.tok-type { color: var(--syntax-type); }
+.tok-function { color: var(--syntax-function); }
+.tok-property { color: var(--syntax-property); }
+.tok-tag,
+.tok-deleted { color: var(--syntax-tag); }
+.tok-meta { color: var(--syntax-meta); }
+.tok-link { color: var(--syntax-function); text-decoration: underline; }
+.tok-heading,
+.tok-strong { font-weight: 600; }
+.tok-emphasis { font-style: italic; }
+.tok-invalid { color: var(--destructive); }

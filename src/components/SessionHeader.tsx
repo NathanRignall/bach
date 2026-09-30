@@ -1,15 +1,16 @@
-import { Brain, Cpu, FileDiff, GitBranch, GitFork, MessageSquare } from "lucide-react";
+import { Brain, Cpu, FileDiff, FolderTree, GitBranch, GitFork, MessageSquare } from "lucide-react";
 import { Session, macTitleBar } from "@/api";
 import { cn } from "@/lib/utils";
 
 /** What the session's main area shows. */
-export type SessionView = "chat" | "changes";
+export type SessionView = "chat" | "changes" | "files";
 
-/** Switches between the conversation and the session's changes. */
+/** Switches between the conversation, the session's changes and its files. */
 function ViewSwitcher({ view, onView, changedFiles }: { view: SessionView; onView: (v: SessionView) => void; changedFiles?: number }) {
   const tabs = [
     { id: "chat", label: "Chat", icon: MessageSquare },
     { id: "changes", label: "Changes", icon: FileDiff },
+    { id: "files", label: "Files", icon: FolderTree },
   ] as const;
   return (
     <div className="flex shrink-0 rounded-lg bg-muted p-0.5" role="tablist" aria-label="Session view">
@@ -20,7 +21,7 @@ function ViewSwitcher({ view, onView, changedFiles }: { view: SessionView; onVie
           role="tab"
           aria-selected={view === id}
           onClick={() => onView(id)}
-          title={id === "changes" ? "Changes (Ctrl/Cmd+Shift+D)" : "Chat (Ctrl/Cmd+Shift+D)"}
+          title={id === "files" ? "Files in the session's folder" : `${label} (Ctrl/Cmd+Shift+D)`}
           className={cn(
             "flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium",
             view === id ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground",
@@ -37,7 +38,7 @@ function ViewSwitcher({ view, onView, changedFiles }: { view: SessionView; onVie
   );
 }
 
-/** Where a started session runs, and the switch between its chat and its changes. */
+/** Where a started session runs, and the switch between its chat, changes and files. */
 export function SessionHeader({
   session,
   inset,

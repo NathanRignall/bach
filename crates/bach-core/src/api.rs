@@ -182,6 +182,19 @@ fn permission_mode(m: Option<String>) -> Option<String> {
 }
 
 impl Api {
+    /// The folder session `id` works in: its worktree, or its project folder.
+    fn session_folder(&self, id: &str) -> Result<String, ApiError> {
+        let s = self.sessions.get(id)?;
+        if s.workdir_removed {
+            return Err(ApiError::invalid("This session's worktree was removed."));
+        }
+        let folder = s.workdir.unwrap_or(s.cwd);
+        if folder.trim().is_empty() {
+            return Err(ApiError::invalid("This session has no project folder."));
+        }
+        Ok(folder)
+    }
+
     /// Sends `prompt` (and `images`) to session `id`'s agent: records it, marks the session
     /// running and starts the run. A run that can't start is recorded as failed. While the agent
     /// is busy, the message is queued instead.
@@ -614,6 +627,20 @@ impl Handler for Api {
     async fn read_image(&self, a: ReadImageArgs) -> Result<String, ApiError> {
         let path = a.path;
         tokio::task::spawn_blocking(move || crate::fs::read_image(&path))
+            .await
+            .map_err(|e| ApiError::failed(e.to_string()))?
+    }
+
+    async fn list_files(&self, a: ListFilesArgs) -> Result<FileList, ApiError> {
+        let root = self.session_folder(&a.session_id)?;
+        tokio::task::spawn_blocking(move || crate::fs::list_files(&root))
+            .await
+            .map_err(|e| ApiError::failed(e.to_string()))?
+    }
+
+    async fn read_file(&self, a: ReadFileArgs) -> Result<FileContent, ApiError> {
+        let root = self.session_folder(&a.session_id)?;
+        tokio::task::spawn_blocking(move || crate::fs::read_file(&root, &a.path))
             .await
             .map_err(|e| ApiError::failed(e.to_string()))?
     }
