@@ -646,6 +646,7 @@ impl Handler for Api {
                 project: Some(a.cwd),
                 owner: None,
                 ports: vec![],
+                interactive: None,
             })
             .map_err(satie_error)
     }

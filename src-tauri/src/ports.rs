@@ -220,12 +220,13 @@ impl Ports {
     }
 }
 
-/// Records a task's listening ports while it runs.
+/// Records a task's listening ports while it runs, if the user is meant to open them: a task
+/// only the agent uses (`interactive: false`, e.g. a server for tests) isn't forwarded.
 fn track(tasks: &mut HashMap<String, BTreeSet<u16>>, task: &Value) {
     let Some(id) = task["id"].as_str() else {
         return;
     };
-    if task["status"] == "running" {
+    if task["status"] == "running" && task["interactive"] != false {
         let ports = task["ports"]
             .as_array()
             .into_iter()
@@ -235,5 +236,23 @@ fn track(tasks: &mut HashMap<String, BTreeSet<u16>>, task: &Value) {
         tasks.insert(id.to_string(), ports);
     } else {
         tasks.remove(id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn only_interactive_running_tasks_are_forwarded() {
+        let mut tasks = HashMap::new();
+        track(&mut tasks, &json!({ "id": "dev", "status": "running", "ports": [5173] }));
+        track(&mut tasks, &json!({ "id": "tests", "status": "running", "interactive": false, "ports": [5174] }));
+        track(&mut tasks, &json!({ "id": "old", "status": "running", "interactive": true, "ports": [3000] }));
+        assert_eq!(tasks.keys().collect::<BTreeSet<_>>(), BTreeSet::from([&"dev".to_string(), &"old".to_string()]));
+
+        track(&mut tasks, &json!({ "id": "dev", "status": "stopped", "ports": [] }));
+        assert!(!tasks.contains_key("dev"));
     }
 }

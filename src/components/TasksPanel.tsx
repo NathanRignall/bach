@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Ban, CheckCircle2, ScrollText, Square, Trash2, X, XCircle } from "lucide-react";
+import { AlertTriangle, Ban, CheckCircle2, Eye, EyeOff, ScrollText, Square, Trash2, X, XCircle } from "lucide-react";
 import { Forwarding, TaskStatus, TaskView, listTasks, onReconnect, onTaskEvent, removeTask, stopTask } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { ComposeProcesses } from "./ComposeProcesses";
 import { LogViewer } from "./LogViewer";
 import { ResizeHandle } from "./ResizeHandle";
 import { PortLink, useForwarding } from "./Ports";
+import { isBoolean, useStored } from "@/lib/layout";
 import { projectName } from "@/session";
 
 /** Background tasks on the backend host: listed once, then kept current by the backend's task events. */
@@ -55,7 +56,7 @@ function duration(ms: number) {
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
-const STATUS: Record<TaskStatus, string> = {
+export const STATUS: Record<TaskStatus, string> = {
   running: "Running",
   exited: "Finished",
   failed: "Failed",
@@ -63,7 +64,7 @@ const STATUS: Record<TaskStatus, string> = {
   lost: "Lost",
 };
 
-function StatusIcon({ task }: { task: TaskView }) {
+export function StatusIcon({ task }: { task: TaskView }) {
   switch (task.status) {
     case "running":
       return <Spinner className="size-4 text-primary" aria-label="Running" />;
@@ -127,6 +128,11 @@ function TaskCard({
 
       <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
         {task.project && <Badge variant="outline">{projectName(task.project)}</Badge>}
+        {!task.interactive && (
+          <Badge variant="outline" title="Only the agent uses it, so its ports aren't forwarded automatically">
+            Not interactive
+          </Badge>
+        )}
         <span className="tabular-nums" title={new Date(task.startedAt).toLocaleString()}>
           {running ? `up ${duration(now - task.startedAt)}` : `ran ${duration((task.endedAt ?? now) - task.startedAt)}`}
         </span>
@@ -197,30 +203,54 @@ interface Props {
   error?: string;
   refresh: () => void;
   onClose: () => void;
+  /** The task (and compose process) whose log is open, if any. */
+  viewing?: TaskLogView;
+  onViewing: (v?: TaskLogView) => void;
+}
+
+export interface TaskLogView {
+  id: string;
+  process?: string;
 }
 
 /** Everything Satie is running (or has run) on the backend host. */
-export function TasksPanel({ width, onWidth, tasks, error, refresh, onClose }: Props) {
-  const [viewing, setViewing] = useState<{ id: string; process?: string }>();
+export function TasksPanel({ width, onWidth, tasks, error, refresh, onClose, viewing, onViewing: setViewing }: Props) {
   const viewed = tasks.find((t) => t.id === viewing?.id);
   const forwarding = useForwarding();
-  const finished = tasks.filter((t) => t.status !== "running");
+  // Tasks only agents use (test servers) are hidden unless asked for.
+  const [showAgentOnly, setShowAgentOnly] = useStored("bach.tasksShowNonInteractive", false, isBoolean);
+  const agentOnly = tasks.filter((t) => !t.interactive).length;
+  const shown = showAgentOnly ? tasks : tasks.filter((t) => t.interactive);
+  const finished = shown.filter((t) => t.status !== "running");
 
   return (
     <aside style={{ width }} className="relative flex shrink-0 flex-col border-l bg-background" aria-label="Background tasks">
       <ResizeHandle width={width} onWidth={onWidth} min={TASKS_WIDTH.min} max={TASKS_WIDTH.max} edge="left" reset={TASKS_WIDTH.default} label="Resize background tasks" />
       <header data-tauri-drag-region className="flex h-(--title-bar-height) shrink-0 items-center gap-2 border-b px-4">
-        <h2 className="flex-1 text-sm font-semibold">Background tasks</h2>
+        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Background tasks</h2>
+        {agentOnly > 0 && (
+          <Button
+            variant="ghost"
+            size="xs"
+            className="text-muted-foreground"
+            aria-pressed={showAgentOnly}
+            title={`${agentOnly} not interactive (only agents use ${agentOnly === 1 ? "it" : "them"}): ${showAgentOnly ? "hide" : "show"}`}
+            onClick={() => setShowAgentOnly(!showAgentOnly)}
+          >
+            {showAgentOnly ? <Eye data-icon="inline-start" /> : <EyeOff data-icon="inline-start" />}
+            {showAgentOnly ? `Hide ${agentOnly}` : `${agentOnly} hidden`}
+          </Button>
+        )}
         {finished.length > 0 && (
           <Button
             variant="ghost"
             size="xs"
             className="text-muted-foreground"
-            title="Remove every task that isn't running"
+            title="Remove every task shown that isn't running"
             onClick={() => void Promise.allSettled(finished.map((t) => removeTask(t.id))).then(refresh)}
           >
             <Trash2 data-icon="inline-start" />
-            Clear finished
+            Clear
           </Button>
         )}
         <Button variant="ghost" size="icon-sm" aria-label="Close tasks panel" onClick={onClose}>
@@ -230,13 +260,15 @@ export function TasksPanel({ width, onWidth, tasks, error, refresh, onClose }: P
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {error && <p className="mb-2 text-xs text-destructive">{error}</p>}
-        {tasks.length === 0 && !error && (
+        {shown.length === 0 && !error && (
           <p className="p-6 text-center text-sm text-muted-foreground">
-            No background tasks. Agents start them with Satie's tools.
+            {tasks.length === 0
+              ? "No background tasks. Agents start them with Satie's tools."
+              : `Only tasks agents use for themselves: ${agentOnly} not interactive, hidden.`}
           </p>
         )}
         <ul className="flex flex-col gap-2">
-          {tasks.map((t) => (
+          {shown.map((t) => (
             <TaskCard key={t.id} task={t} forwarding={forwarding} onChanged={refresh} onOpenViewer={(process) => setViewing({ id: t.id, process })} />
           ))}
         </ul>

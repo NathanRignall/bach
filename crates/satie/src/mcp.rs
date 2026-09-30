@@ -25,6 +25,7 @@ pub(crate) fn router(satie: Satie) -> Router {
 
 impl Satie {
     pub(crate) fn tools() -> Value {
+        let interactive = json!({ "type": "boolean", "description": "Default true: the user will open it (a dev server to browse to), so the app forwards its ports to their computer. Set false for a task only you use, such as a server for tests or headless browser checks: it is still listed, but its ports are not forwarded automatically." });
         let id = json!({ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] });
         json!([
             {
@@ -40,7 +41,8 @@ impl Satie {
                         "port": { "type": "integer", "description": "Shorthand for a single entry in `ports`" },
                         "ready_url": { "type": "string", "description": "A local http://localhost:PORT/... URL that must answer before the task counts as ready; the response status is reported" },
                         "ready_status": { "type": "integer", "description": "Exact status `ready_url` must return (default: anything below 500)" },
-                        "timeout_seconds": { "type": "integer", "description": "How long to wait for `ports` / `ready_url` (default 30, at most 120)" }
+                        "timeout_seconds": { "type": "integer", "description": "How long to wait for `ports` / `ready_url` (default 30, at most 120)" },
+                        "interactive": interactive.clone()
                     },
                     "required": ["command"]
                 }
@@ -56,7 +58,8 @@ impl Satie {
                         "cwd": { "type": "string", "description": "Working directory; defaults to the project folder" },
                         "ports": { "type": "array", "items": { "type": "integer" }, "description": "TCP ports the project should be listening on; wait for them too" },
                         "timeout_seconds": { "type": "integer", "description": "How long to wait for the processes (default 60, at most 300)" },
-                        "shell": { "type": "string", "description": "Command prefix that enters the project's environment, e.g. `nix develop .#sim --command`; empty for none. Default: `direnv exec .` with an .envrc, `nix develop --command` with only a flake.nix" }
+                        "shell": { "type": "string", "description": "Command prefix that enters the project's environment, e.g. `nix develop .#sim --command`; empty for none. Default: `direnv exec .` with an .envrc, `nix develop --command` with only a flake.nix" },
+                        "interactive": interactive
                     },
                     "required": ["file"]
                 }
@@ -113,6 +116,9 @@ impl Satie {
         );
         if let Some(code) = t.exit_code {
             s += &format!(" (exit code {code})");
+        }
+        if !t.interactive {
+            s += ", not interactive";
         }
         if t.status == TaskStatus::Running {
             s += &format!(", pid {}", t.pid);
@@ -282,6 +288,7 @@ impl Satie {
                     project: scope.project.clone(),
                     owner: scope.owner.clone(),
                     ports: ports.clone(),
+                    interactive: args["interactive"].as_bool(),
                 })
                 .map_err(|e| e.to_string())?;
                 let probe = self
@@ -337,6 +344,7 @@ impl Satie {
                             project: scope.project.clone(),
                             owner: scope.owner.clone(),
                             ports: ports.clone(),
+                            interactive: args["interactive"].as_bool(),
                             ..Default::default()
                         },
                     })

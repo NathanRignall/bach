@@ -103,6 +103,8 @@ pub struct StartTask {
     pub owner: Option<String>,
     /// Ports it is expected to listen on.
     pub ports: Vec<u16>,
+    /// False for a task only the agent uses (see [`Task::interactive`]); by default it's the user's.
+    pub interactive: Option<bool>,
 }
 
 /// An HTTP check a task must pass to count as ready.
@@ -534,6 +536,7 @@ impl Satie {
             log_path: log_path.to_string_lossy().into_owned(),
             expected_ports: req.ports,
             compose_file,
+            interactive: req.interactive.unwrap_or(true),
             id: id.clone(),
         };
         self.inner.tasks.lock().unwrap().insert(id, task.clone());
