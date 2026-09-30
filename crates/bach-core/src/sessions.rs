@@ -5,7 +5,7 @@ use crate::{
     store::Store,
 };
 use bach_protocol::{
-    AgentEvent, ApiError, ContextUsage, Entry, LogEntry, PlanUsage, RunOutcome, ServerEvent, Session,
+    AgentEvent, ApiError, ContextUsage, Entry, LogEntry, PlanUsage, RunOutcome, SearchResult, ServerEvent, Session,
     SessionEvent,
 };
 use std::sync::Arc;
@@ -50,6 +50,10 @@ impl Sessions {
 
     pub fn entries(&self, id: &str, after: u64) -> Result<Vec<LogEntry>, ApiError> {
         Ok(self.store.entries(id, after)?)
+    }
+
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, ApiError> {
+        Ok(self.store.search(query, limit)?)
     }
 
     /// Saves a session without telling anyone yet (see [`announce`](Self::announce)).

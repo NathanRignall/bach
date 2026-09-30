@@ -1,9 +1,13 @@
 //! SQLite persistence for sessions: one row per [`Session`], and each session's transcript as
 //! numbered [`LogEntry`] rows.
-use bach_protocol::{AgentKind, Entry, LogEntry, PlanUsage, Session};
+use bach_protocol::{
+    AgentEvent, AgentKind, Entry, LogEntry, PlanUsage, SearchHit, SearchKind, SearchResult, Session,
+    SnippetPart,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -38,6 +42,10 @@ fn err(e: impl std::fmt::Display) -> String {
 /// JSON, transcript included.
 const SCHEMA: i64 = 1;
 
+/// What the search index holds (`meta`'s `search_index`). Change it when `searchable` does, and
+/// the next start indexes every transcript again.
+const SEARCH_INDEX: &str = "1";
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self, String> {
         if let Some(dir) = path.parent() {
@@ -68,7 +76,26 @@ impl Store {
              CREATE TABLE IF NOT EXISTS meta (
                  key   TEXT PRIMARY KEY,
                  value TEXT NOT NULL
-             );",
+             );
+             -- What search looks through: the text of transcript entries (see `searchable`), and a
+             -- full-text index over it that the triggers keep current.
+             CREATE TABLE IF NOT EXISTS search_text (
+                 id         INTEGER PRIMARY KEY,
+                 session_id TEXT NOT NULL,
+                 seq        INTEGER NOT NULL,
+                 kind       TEXT NOT NULL,
+                 text       TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS search_text_session ON search_text (session_id);
+             CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
+                 text, content = 'search_text', content_rowid = 'id', tokenize = 'unicode61 remove_diacritics 2'
+             );
+             CREATE TRIGGER IF NOT EXISTS search_text_insert AFTER INSERT ON search_text BEGIN
+                 INSERT INTO search_index (rowid, text) VALUES (new.id, new.text);
+             END;
+             CREATE TRIGGER IF NOT EXISTS search_text_delete AFTER DELETE ON search_text BEGIN
+                 INSERT INTO search_index (search_index, rowid, text) VALUES ('delete', old.id, old.text);
+             END;",
         )
         .map_err(err)?;
         let version: i64 = conn
@@ -79,6 +106,13 @@ impl Store {
             migrate_frontend_sessions(&tx)?;
             tx.pragma_update(None, "user_version", SCHEMA).map_err(err)?;
             tx.commit().map_err(err)?;
+        }
+        let indexed: Option<String> = conn
+            .query_row("SELECT value FROM meta WHERE key = 'search_index'", [], |r| r.get(0))
+            .optional()
+            .map_err(err)?;
+        if indexed.as_deref() != Some(SEARCH_INDEX) {
+            rebuild_search(&mut conn)?;
         }
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
@@ -137,6 +171,7 @@ impl Store {
             params![id, log.seq, log.at, serde_json::to_string(&log.entry).map_err(err)?],
         )
         .map_err(err)?;
+        index_entry(&tx, id, log.seq, &log.entry)?;
         s.last_seq = log.seq;
         s.updated_at = s.updated_at.max(log.at);
         put(&tx, &s)?;
@@ -171,9 +206,81 @@ impl Store {
         let tx = conn.transaction().map_err(err)?;
         tx.execute("DELETE FROM entries WHERE session_id = ?1", params![id])
             .map_err(err)?;
+        tx.execute("DELETE FROM search_text WHERE session_id = ?1", params![id])
+            .map_err(err)?;
         tx.execute("DELETE FROM sessions WHERE id = ?1", params![id])
             .map_err(err)?;
         tx.commit().map_err(err)
+    }
+
+    /// Sessions whose title or transcript contain all the words of `query` (the last may be a
+    /// beginning), title matches first and then the most recently active, at most `limit`. Each
+    /// has its best matching entries.
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        let fts = match_expression(query);
+        if words.is_empty() || fts.is_empty() {
+            return Ok(vec![]);
+        }
+        let conn = self.0.lock().unwrap();
+
+        // Transcript matches, best first. A word in every session ("the") can match far more
+        // entries than anyone reads, so only the best are taken.
+        let mut found: HashMap<String, (u32, Vec<SearchHit>)> = HashMap::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.session_id, t.seq, t.kind,
+                        snippet(search_index, 0, char(1), char(2), '…', 18)
+                 FROM search_index JOIN search_text t ON t.id = search_index.rowid
+                 WHERE search_index MATCH ?1
+                 ORDER BY rank LIMIT ?2",
+            )
+            .map_err(err)?;
+        let rows = stmt
+            .query_map(params![fts, SEARCH_ROWS], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, u64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(err)?;
+        for row in rows {
+            let (session_id, seq, kind, snippet) = row.map_err(err)?;
+            let (count, hits) = found.entry(session_id).or_default();
+            *count += 1;
+            if hits.len() < HITS_PER_SESSION {
+                let kind = match kind.as_str() {
+                    "user" => SearchKind::User,
+                    "tool" => SearchKind::Tool,
+                    _ => SearchKind::Agent,
+                };
+                hits.push(SearchHit { seq, kind, snippet: snippet_parts(&snippet) });
+            }
+        }
+        drop(stmt);
+
+        let mut results = vec![];
+        let mut stmt = conn
+            .prepare("SELECT data FROM sessions ORDER BY updated_at DESC")
+            .map_err(err)?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(err)?;
+        for row in rows {
+            let s: Session = serde_json::from_str(&row.map_err(err)?).map_err(err)?;
+            let title = s.title.to_lowercase();
+            let title_match = words.iter().all(|w| title.contains(w.as_str()));
+            let (hit_count, hits) = found.remove(&s.id).unwrap_or_default();
+            if title_match || hit_count > 0 {
+                results.push((
+                    title_match,
+                    SearchResult { session_id: s.id, title_match, hits, hit_count },
+                ));
+            }
+        }
+        // Stable: the recency order from the query stays within each group.
+        results.sort_by_key(|(title_match, _)| !title_match);
+        Ok(results.into_iter().map(|(_, r)| r).take(limit).collect())
     }
 
     /// After a restart no run is live: forgets the runs sessions were in, and the approvals they
@@ -252,6 +359,142 @@ impl Store {
             .execute_batch("DROP TABLE IF EXISTS tasks")
             .map_err(err)
     }
+}
+
+/// Transcript matches read per search, before they're grouped by session.
+const SEARCH_ROWS: i64 = 400;
+const HITS_PER_SESSION: usize = 3;
+/// An entry's text is indexed up to this many characters (a file an agent wrote can be huge).
+const MAX_INDEXED: usize = 20_000;
+
+/// The FTS5 query for what was typed: every word must be there, the last one as a beginning (so
+/// results follow the typing). Words are quoted so punctuation in them can't be query syntax.
+fn match_expression(query: &str) -> String {
+    let words: Vec<&str> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let ends_in_word = query.chars().last().is_some_and(char::is_alphanumeric);
+    words
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let prefix = if i + 1 == words.len() && ends_in_word { "*" } else { "" };
+            format!("\"{w}\"{prefix}")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Splits FTS5's `snippet()` output, which marks matches with control characters 1 and 2.
+fn snippet_parts(s: &str) -> Vec<SnippetPart> {
+    let mut parts = vec![];
+    let mut inside = false;
+    let mut cur = String::new();
+    for c in s.chars() {
+        match c {
+            '\u{1}' | '\u{2}' => {
+                if !cur.is_empty() {
+                    parts.push(SnippetPart { text: std::mem::take(&mut cur), matched: inside });
+                }
+                inside = c == '\u{1}';
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        parts.push(SnippetPart { text: cur, matched: inside });
+    }
+    parts
+}
+
+/// What of a transcript entry search looks through: what the user and the agent said, and the
+/// inputs of the agent's tool calls (as the words in them, not JSON).
+fn searchable(entry: &Entry) -> Vec<(&'static str, String)> {
+    let mut found = vec![];
+    match entry {
+        Entry::User { text, .. } => found.push(("user", text.clone())),
+        Entry::Agent { event: AgentEvent::Text { text, .. }, .. } => found.push(("agent", text.clone())),
+        Entry::Agent { event: AgentEvent::ToolUse { name, input, .. }, .. } => {
+            let mut text = name.clone();
+            collect_strings(input, &mut text);
+            found.push(("tool", text));
+        }
+        Entry::Imported { blocks } => {
+            for b in blocks.as_array().into_iter().flatten() {
+                let kind = match b["kind"].as_str() {
+                    Some("user") => "user",
+                    Some("text") => "agent",
+                    _ => continue,
+                };
+                if let Some(text) = b["text"].as_str() {
+                    found.push((kind, text.to_string()));
+                }
+            }
+        }
+        _ => {}
+    }
+    found.retain(|(_, t)| !t.trim().is_empty());
+    for (_, t) in &mut found {
+        if let Some((i, _)) = t.char_indices().nth(MAX_INDEXED) {
+            t.truncate(i);
+        }
+    }
+    found
+}
+
+/// Appends every string in `v` (values, not keys) to `out`, one per line.
+fn collect_strings(v: &Value, out: &mut String) {
+    match v {
+        Value::String(s) => {
+            out.push('\n');
+            out.push_str(s);
+        }
+        Value::Array(a) => a.iter().for_each(|v| collect_strings(v, out)),
+        Value::Object(o) => o.values().for_each(|v| collect_strings(v, out)),
+        _ => {}
+    }
+}
+
+fn index_entry(conn: &Connection, session_id: &str, seq: u64, entry: &Entry) -> Result<(), String> {
+    for (kind, text) in searchable(entry) {
+        conn.execute(
+            "INSERT INTO search_text (session_id, seq, kind, text) VALUES (?1, ?2, ?3, ?4)",
+            params![session_id, seq, kind, text],
+        )
+        .map_err(err)?;
+    }
+    Ok(())
+}
+
+/// Indexes every transcript from scratch.
+fn rebuild_search(conn: &mut Connection) -> Result<(), String> {
+    let tx = conn.transaction().map_err(err)?;
+    // Rows first, so the triggers take them out of the index; then whatever is left of it.
+    tx.execute_batch("DELETE FROM search_text; INSERT INTO search_index (search_index) VALUES ('delete-all');")
+        .map_err(err)?;
+    {
+        let mut stmt = tx
+            .prepare("SELECT session_id, seq, data FROM entries ORDER BY session_id, seq")
+            .map_err(err)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?, r.get::<_, String>(2)?)))
+            .map_err(err)?;
+        for row in rows {
+            let (session_id, seq, data) = row.map_err(err)?;
+            // An entry this version can't read has nothing to find in it.
+            if let Ok(entry) = serde_json::from_str::<Entry>(&data) {
+                index_entry(&tx, &session_id, seq, &entry)?;
+            }
+        }
+    }
+    tx.execute(
+        "INSERT INTO meta (key, value) VALUES ('search_index', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![SEARCH_INDEX],
+    )
+    .map_err(err)?;
+    tx.commit().map_err(err)
 }
 
 fn get(conn: &Connection, id: &str) -> Result<Option<Session>, String> {
@@ -422,6 +665,91 @@ mod tests {
 
         s.delete("a").unwrap();
         assert!(s.get("a").unwrap().is_none() && s.entries("a", 0).unwrap().is_empty());
+    }
+
+    fn say(s: &Store, id: &str, text: &str) -> u64 {
+        let e = Entry::Agent {
+            run_id: "r".into(),
+            event: AgentEvent::Text { text: text.into(), parent: None },
+        };
+        s.append(id, e).unwrap().unwrap().0.seq
+    }
+
+    fn found(s: &Store, q: &str) -> Vec<(String, bool, Vec<u64>)> {
+        s.search(q, 30)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.session_id, r.title_match, r.hits.iter().map(|h| h.seq).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn searches_titles_and_transcripts_across_sessions() {
+        let s = Store::in_memory().unwrap();
+        let mut a = session("a");
+        a.title = "Fix the Sidebar".into();
+        let mut b = session("b");
+        b.title = "Other".into();
+        s.put(&a).unwrap();
+        s.put(&b).unwrap();
+        s.append("a", Entry::User { text: "please rename the flux capacitor".into(), images: vec![] }).unwrap();
+        let reply = say(&s, "a", "Renamed it; the capacitor works.");
+        s.append(
+            "b",
+            Entry::Agent {
+                run_id: "r".into(),
+                event: AgentEvent::ToolUse {
+                    id: "t".into(),
+                    name: "Bash".into(),
+                    input: json!({"command": "grep -r capacitor src", "description": "look"}),
+                    parent: None,
+                },
+            },
+        )
+        .unwrap();
+        // Not searched: reasoning and tool output.
+        s.append("b", Entry::Agent { run_id: "r".into(), event: AgentEvent::Thinking { text: "capacitor?".into() } }).unwrap();
+
+        // Titles: any case, in the middle of a word, every word needed.
+        assert_eq!(found(&s, "SIDEBAR"), [("a".into(), true, vec![])]);
+        assert_eq!(found(&s, "the side"), [("a".into(), true, vec![])]);
+        assert!(found(&s, "sidebar nothing").is_empty());
+        // Transcript: the last word may be a beginning; every word must be in the entry.
+        let mut both = found(&s, "capac");
+        both.iter_mut().for_each(|b| b.2.sort());
+        both.sort();
+        assert_eq!(both, [("a".into(), false, vec![1, reply]), ("b".into(), false, vec![1])]);
+        assert_eq!(found(&s, "renamed capacitor"), [("a".into(), false, vec![reply])]);
+        // Quotes and operators in what's typed are just punctuation.
+        assert_eq!(found(&s, "\"flux\" OR capacitor -").len(), 0);
+        assert!(found(&s, "   ").is_empty() && found(&s, "\"").is_empty());
+
+        let hit = &s.search("flux", 30).unwrap()[0].hits[0];
+        assert_eq!(hit.kind, SearchKind::User);
+        assert!(hit.snippet.iter().any(|p| p.matched && p.text == "flux"), "{:?}", hit.snippet);
+        assert_eq!(s.search("capac", 1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_search_index_follows_deletes_and_is_rebuilt_from_transcripts() {
+        let dir = std::env::temp_dir().join(format!("bach-store-search-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("bach.db");
+        {
+            let s = Store::open(&path).unwrap();
+            s.put(&session("a")).unwrap();
+            s.put(&session("b")).unwrap();
+            say(&s, "a", "needle in a");
+            say(&s, "b", "needle in b");
+            s.delete("b").unwrap();
+            assert_eq!(found(&s, "needle").len(), 1);
+            // An index from another version, or a lost one.
+            let conn = s.0.lock().unwrap();
+            conn.execute_batch("DELETE FROM search_text; DELETE FROM meta WHERE key = 'search_index';").unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(found(&s, "needle"), [("a".into(), false, vec![1])]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

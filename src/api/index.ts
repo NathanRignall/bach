@@ -77,6 +77,8 @@ export const getUsage = () => call("get_usage");
 
 export const listSessions = () => call("list_sessions");
 export const getSession = (sessionId: string, afterSeq?: number) => call("get_session", { sessionId, afterSeq });
+/** Sessions whose title or transcript match `query`, with snippets of where. */
+export const searchSessions = (query: string, limit?: number) => call("search_sessions", { query, limit });
 export const startSession = (args: Args<"start_session">) => call("start_session", args);
 export const sendMessage = (sessionId: string, prompt: string, images: string[] = []) =>
   call("send_message", { sessionId, prompt, images });

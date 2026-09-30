@@ -23,7 +23,7 @@ Planned features and known issues, roughly grouped by area.
   an approval is waiting or an agent asks a question.
 - [x] **Status in the sidebar**: show whether each session is working, waiting on you,
   done or failed.
-- [ ] **Search**: find past sessions by title or transcript text.
+- [x] **Search**: find past sessions by title or transcript text.
 - [ ] **Fork or rewind**: branch a session from an earlier message to try another
   approach, with the worktree as it was at that point.
 - [ ] **Hand off to another agent**: continue a session's task with a different agent

@@ -45,6 +45,7 @@ import { useAttention } from "@/lib/notifications";
 import {
   NewSession,
   Transcript,
+  blockOfEntry,
   addDelta,
   applyEntries,
   awaitingApproval,
@@ -115,6 +116,10 @@ export function App() {
   const [diffMode, setDiffMode] = useState<DiffMode>("uncommitted");
   // The commit shown while browsing the branch's commits.
   const [diffCommit, setDiffCommit] = useState<string>();
+  // A search hit to scroll to once its session's transcript is shown, and a counter that asks the
+  // sidebar's search field for focus.
+  const [reveal, setReveal] = useState<{ id: string; seq: number }>();
+  const [searchFocus, setSearchFocus] = useState(0);
 
   /** Fetches a session's transcript, or the part of it after what's already here. */
   async function fetchTranscript(id: string) {
@@ -259,7 +264,28 @@ export function App() {
     return () => ro.disconnect();
   }, [activeId, chatShown]);
 
-  // Cmd/Ctrl+B hides and shows the sidebar; Cmd/Ctrl+Shift+D switches between chat and changes.
+  // Scrolls to a search hit (instead of the latest message) once its transcript is loaded, and
+  // flashes the message. Declared after the re-pin above so that this scroll comes last.
+  useEffect(() => {
+    if (!reveal || reveal.id !== activeId || !chatShown || !transcript) return;
+    const i = blockOfEntry(transcript.blocks, reveal.seq);
+    const el = contentRef.current?.querySelector(`[data-block="${i}"]`)?.firstElementChild;
+    setReveal(undefined);
+    if (!el) return;
+    stick.current = false;
+    setShowJump(true);
+    el.scrollIntoView({ block: "center" });
+    lastTop.current = scrollRef.current?.scrollTop ?? 0;
+    el.animate(
+      [
+        { outline: "2px solid color-mix(in oklab, var(--primary) 70%, transparent)", outlineOffset: "4px" },
+        { outline: "2px solid transparent", outlineOffset: "4px" },
+      ],
+      { duration: 1800, easing: "ease-out" },
+    );
+  }, [reveal, activeId, chatShown, transcript?.seq]);
+
+  // Cmd/Ctrl+B hides and shows the sidebar, Cmd/Ctrl+K searches sessions; Cmd/Ctrl+Shift+D switches between chat and changes.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
@@ -267,6 +293,10 @@ export function App() {
       if (!e.shiftKey && key === "b") {
         e.preventDefault();
         setSidebarOpen(!sidebarOpen);
+      } else if (!e.shiftKey && key === "k") {
+        e.preventDefault();
+        setSidebarOpen(true);
+        setSearchFocus((n) => n + 1);
       } else if (e.shiftKey && key === "d") {
         e.preventDefault();
         setView((v) => (v === "chat" ? "changes" : "chat"));
@@ -436,7 +466,11 @@ export function App() {
         sessions={sessions}
         activeId={activeId}
         collapsed={collapsed}
-        onSelect={setActiveId}
+        onSelect={(id, seq) => {
+          setActiveId(id);
+          setReveal(seq === undefined ? undefined : { id, seq });
+        }}
+        searchFocus={searchFocus}
         onNew={() => startSession(active?.cwd ?? newDraft.cwd, active?.agent ?? newDraft.agent)}
         onNewInProject={startSession}
         onToggleProject={toggleProject}
@@ -514,7 +548,10 @@ export function App() {
                     </p>
                   )}
                   {blocks.map((b, i) => (
-                    <BlockView key={i} block={b} live={running} />
+                    // Takes no space of its own; it only lets a search hit find the block.
+                    <div key={i} data-block={i} className="contents">
+                      <BlockView block={b} live={running} />
+                    </div>
                   ))}
                   {running && live.thinking && <BlockView block={{ kind: "thinking", text: live.thinking.text, streaming: true }} live />}
                   {running && live.text && <BlockView block={{ kind: "text", text: live.text.text }} live />}

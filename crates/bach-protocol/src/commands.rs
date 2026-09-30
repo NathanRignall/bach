@@ -8,7 +8,7 @@
 //! arguments are a struct named after it with an `Args` suffix; its doc comment documents the
 //! command.
 use crate::{
-    AgentInfo, AgentKind, ApiError, ModelInfo, Decision, DirListing, FileContent, FileList, GitDiff, GitInfo, GitLog, BranchStatus, CommitInfo, PlanUsage, Session,
+    AgentInfo, AgentKind, ApiError, ModelInfo, Decision, DirListing, FileContent, FileList, GitDiff, GitInfo, GitLog, BranchStatus, CommitInfo, PlanUsage, SearchResult, Session,
     SessionLog, TerminalInfo, TerminalSnapshot, WorktreeEntry,
 };
 use bach_tasks_protocol::{
@@ -94,6 +94,7 @@ commands! {
 
     list_sessions(ListSessionsArgs) -> Vec<Session>;
     get_session(GetSessionArgs) -> SessionLog;
+    search_sessions(SearchSessionsArgs) -> Vec<SearchResult>;
     start_session(StartSessionArgs) -> Session;
     send_message(SendMessageArgs) -> Session;
     send_queued(SendQueuedArgs) -> Session;
@@ -170,6 +171,19 @@ pub struct ListSessionsArgs {}
 pub struct GetSessionArgs {
     pub session_id: String,
     pub after_seq: Option<u64>,
+}
+
+/// Finds sessions, in every project and archived ones too, whose title or transcript (what the
+/// user and the agent said, and the inputs of the agent's tool calls) contains all the words of
+/// `query`; the last word may be a beginning. Sessions whose title matches come first, then the
+/// most recently active. Each comes with its best matching entries, to show and open.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(optional_fields)]
+pub struct SearchSessionsArgs {
+    pub query: String,
+    /// At most this many sessions (default 30).
+    pub limit: Option<u32>,
 }
 
 /// Creates a session and sends its first message. Readies where it runs first: switches `cwd` to
