@@ -150,6 +150,11 @@ pub struct FileContent {
     /// The file's text; none for binary files and files too large to show.
     pub text: Option<String>,
     pub binary: bool,
+    /// Identifies the contents that were read (a hash of them; empty without `text`), to tell
+    /// `write_file` what the edit started from.
+    pub version: String,
+    /// `text` can be edited and written back: it's all valid UTF-8 (else it was read lossily).
+    pub editable: bool,
 }
 
 /// A commit, for the history list.

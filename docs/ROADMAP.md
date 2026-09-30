@@ -10,7 +10,7 @@ Planned features and known issues, roughly grouped by area.
 - [x] **File tree**: show changed files as a directory tree, not a flat list.
 - [x] **File browser**: browse and view any file in the worktree, not just changed
   ones, with the same tree and highlighting.
-- [ ] **Manual edits**: edit code directly in the diff view.
+- [x] **Manual edits**: edit code directly in the diff view.
 - [x] **Commit from the diff**: stage files or hunks, write a message and commit
   without leaving the diff view.
 - [x] **Commit history**: browse the branch's commits and open each one's diff.

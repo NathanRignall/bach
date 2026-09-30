@@ -15,6 +15,9 @@ pub enum ErrorCode {
     Unavailable,
     /// It was tried and didn't work; `message` says why.
     Failed,
+    /// What it would change was changed by someone else since the caller last looked (a file
+    /// edited on disk); retrying with the caller's overwrite flag set replaces it anyway.
+    Conflict,
 }
 
 /// Every command fails with one of these.

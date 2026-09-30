@@ -173,6 +173,22 @@ fn check_message(prompt: &str, attachments: &[String]) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// `prompt`, led by a note of the files the user edited by hand since the agent's last message.
+fn edit_note(edited: &[String], prompt: &str) -> String {
+    const SHOWN: usize = 20;
+    if edited.is_empty() {
+        return prompt.to_string();
+    }
+    let mut files: Vec<_> = edited.iter().take(SHOWN).map(|f| format!("`{f}`")).collect();
+    if edited.len() > SHOWN {
+        files.push(format!("and {} more", edited.len() - SHOWN));
+    }
+    format!(
+        "[Note from Bach: since your last message the user edited these files by hand, so read them again before relying on what you remember of them: {}.]\n\n{prompt}",
+        files.join(", ")
+    )
+}
+
 /// No choice, "", and "default" all mean the agent's default model.
 fn model_choice(m: Option<String>) -> Option<String> {
     m.map(|m| m.trim().to_string())
@@ -214,6 +230,9 @@ pub(crate) struct Launcher {
     git: Git,
     /// Queued messages claimed when a run finished, to launch once its process has exited.
     next: mpsc::UnboundedSender<Next>,
+    /// Files the user edited by hand in each session since its agent last heard of it, in order.
+    /// Kept in memory only: the note is for the next message, so a restart may drop it.
+    edited: Arc<Mutex<std::collections::HashMap<String, Vec<String>>>>,
 }
 
 /// A queued message taken off the queue as its session's run finished: the session is marked
@@ -234,6 +253,7 @@ impl Launcher {
             runs,
             git,
             next,
+            edited: Arc::default(),
         };
         let worker = this.clone();
         tokio::spawn(async move {
@@ -592,6 +612,15 @@ impl Launcher {
         self.launch(id, s, run_id, text, images, None).await
     }
 
+    /// Remembers that the user edited `path` by hand in session `id`.
+    fn note_edit(&self, id: &str, path: &str) {
+        let mut all = self.edited.lock().unwrap();
+        let files = all.entry(id.to_string()).or_default();
+        if !files.iter().any(|f| f == path) {
+            files.push(path.to_string());
+        }
+    }
+
     /// Records `prompt` (and `images`) and starts run `run_id` of session `s`, which is already
     /// marked running. Before the agent touches anything, the worktree is saved as it is (see
     /// [`crate::snapshots`]), so the session can be forked from this message.
@@ -623,12 +652,17 @@ impl Launcher {
             }
         }
         let fork = s.pending_fork.clone();
+        // What the agent would otherwise miss: it reads files as they are, not what changed.
+        let edited = self.edited.lock().unwrap().remove(id).unwrap_or_default();
         let req = RunRequest {
             agent: s.agent,
-            prompt: match &preamble {
-                Some(p) => format!("{p}\n\n{prompt}"),
-                None => prompt.clone(),
-            },
+            prompt: edit_note(
+                &edited,
+                &match &preamble {
+                    Some(p) => format!("{p}\n\n{prompt}"),
+                    None => prompt.clone(),
+                },
+            ),
             images,
             cwd: s.workdir.clone().or(Some(s.cwd.clone())),
             session_id: s.agent_session_id.clone().filter(|_| fork.is_none()),
@@ -643,6 +677,10 @@ impl Launcher {
         match self.runs.start(self.recorder(id), req).await {
             Ok(_) => self.sessions.get(id),
             Err(message) => {
+                // The agent still hasn't been told.
+                for path in &edited {
+                    self.note_edit(id, path);
+                }
                 self.sessions.append(
                     id,
                     Entry::Failed {
@@ -913,6 +951,18 @@ impl Handler for Api {
         tokio::task::spawn_blocking(move || crate::fs::read_file(&root, &a.path))
             .await
             .map_err(|e| ApiError::failed(e.to_string()))?
+    }
+
+    async fn write_file(&self, a: WriteFileArgs) -> Result<FileContent, ApiError> {
+        let root = self.session_folder(&a.session_id)?;
+        let path = a.path.clone();
+        let file = tokio::task::spawn_blocking(move || {
+            crate::fs::write_file(&root, &a.path, &a.text, &a.expected_version, a.overwrite.unwrap_or(false))
+        })
+        .await
+        .map_err(|e| ApiError::failed(e.to_string()))??;
+        self.launcher.note_edit(&a.session_id, &path);
+        Ok(file)
     }
 
     async fn git_info(&self, a: GitInfoArgs) -> Result<GitInfo, ApiError> {

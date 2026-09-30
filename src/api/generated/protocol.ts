@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "ee0bd272eafe0a9d";
+export const PROTOCOL = "d8b77ce302e03668";
 
 /**
  * Agent-independent events the UI renders.
@@ -268,7 +268,7 @@ images?: Array<string>, } | { "type": "agent", runId: string, event: AgentEvent,
 /**
  * What kind of failure an [`ApiError`] is, for code that reacts to it. People read `message`.
  */
-export type ErrorCode = "invalid" | "not_found" | "unavailable" | "failed";
+export type ErrorCode = "invalid" | "not_found" | "unavailable" | "failed" | "conflict";
 
 export type ExitStatus = { code: number | null, };
 
@@ -287,7 +287,16 @@ size: number,
 /**
  * The file's text; none for binary files and files too large to show.
  */
-text: string | null, binary: boolean, };
+text: string | null, binary: boolean, 
+/**
+ * Identifies the contents that were read (a hash of them; empty without `text`), to tell
+ * `write_file` what the edit started from.
+ */
+version: string, 
+/**
+ * `text` can be edited and written back: it's all valid UTF-8 (else it was read lossily).
+ */
+editable: boolean, };
 
 export type FileDiff = { path: string, 
 /**
@@ -1162,6 +1171,30 @@ unmerged: number,
  */
 merged: boolean, };
 
+/**
+ * Replaces the text of an existing text file in a session's folder (on the backend host), for
+ * edits made by hand. Returns the file as written. The agent is told about the edit with its next
+ * message.
+ */
+export type WriteFileArgs = { sessionId: string, 
+/**
+ * Relative to the session's folder, as for `read_file`.
+ */
+path: string, 
+/**
+ * The file's new text.
+ */
+text: string, 
+/**
+ * The `version` of the file the edit started from. If the file on disk is no longer that
+ * (the agent changed it, say), nothing is written and the command fails with code `conflict`.
+ */
+expectedVersion: string, 
+/**
+ * Write even when the file changed since `expectedVersion`.
+ */
+overwrite?: boolean, };
+
 export type Commands = {
   /**
    * The agent CLIs Bach knows, and which are installed on the backend host.
@@ -1266,6 +1299,12 @@ export type Commands = {
    * A file in a session's folder, for reading. Text files up to 1 MB come with their text.
    */
   read_file: { args: ReadFileArgs; output: FileContent };
+  /**
+   * Replaces the text of an existing text file in a session's folder (on the backend host), for
+   * edits made by hand. Returns the file as written. The agent is told about the edit with its next
+   * message.
+   */
+  write_file: { args: WriteFileArgs; output: FileContent };
   /**
    * Branches and state of the repository containing `path`.
    */
