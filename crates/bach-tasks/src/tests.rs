@@ -1,7 +1,8 @@
 //! bach-tasks' tests: real processes, real ports, a real MCP client over HTTP.
     use super::*;
     use std::path::Path;
-    use crate::process::{proc_stat, session_of, signal_session, task_alive};
+    use crate::process::{session_of, signal_session, task_alive};
+    use crate::sys;
     use serde_json::{json, Value};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -49,16 +50,11 @@
 
     /// Any process whose command line contains `needle`.
     fn procs_matching(needle: &str) -> Vec<u32> {
-        std::fs::read_dir("/proc")
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        sys::all_pids()
+            .into_iter()
             .filter(|pid| {
-                std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|c| {
-                    String::from_utf8_lossy(&c)
-                        .replace('\0', " ")
-                        .contains(needle)
-                }) && proc_stat(*pid).is_some_and(|(st, _)| st != 'Z')
+                sys::argv(*pid).join(" ").contains(needle)
+                    && sys::stat(*pid).is_some_and(|s| !s.zombie)
                     && *pid != std::process::id()
             })
             .collect()
@@ -680,8 +676,9 @@
             procs_matching(&format!("http.server {port}"))
                 .into_iter()
                 .filter(|pid| {
-                    std::fs::read(format!("/proc/{pid}/cmdline"))
-                        .is_ok_and(|c| c.starts_with(b"python3"))
+                    sys::argv(*pid)
+                        .first()
+                        .is_some_and(|a| a.rsplit('/').next().unwrap().starts_with("python3"))
                 })
                 .collect::<Vec<u32>>()
         };
@@ -712,9 +709,8 @@
     }
 
     fn proc_group(pid: u32) -> u32 {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
-        let rest = &stat[stat.rfind(')').unwrap() + 2..];
-        rest.split(' ').nth(2).unwrap().parse().unwrap()
+        // SAFETY: plain getpgid(2).
+        unsafe { libc::getpgid(pid as i32) as u32 }
     }
 
     #[tokio::test]
