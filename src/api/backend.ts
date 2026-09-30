@@ -29,6 +29,9 @@ export const setConnection = (connection: Connection) => invoke<void>("set_conne
 /** Restarts bach-server on the SSH host (the installed build replaces a stale one), then reconnects. */
 export const restartServer = () => invoke<void>("restart_server");
 
+/** Host aliases from this computer's ~/.ssh/config (the app's, not the backend's). */
+export const sshHosts = () => invoke<string[]>("ssh_hosts");
+
 /** Starts the desktop app over. */
 export const relaunchApp = () => invoke<void>("relaunch");
 
