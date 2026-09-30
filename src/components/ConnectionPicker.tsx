@@ -28,6 +28,16 @@ function hint(error: string, host: string) {
 
 const where = (s: ConnectionStatus) => (s.connection.mode === "local" ? "this computer" : s.connection.host);
 
+/** "ws://localhost:3421" -> "Agents local"; anything else -> "Agents on <host>", for the browser (non-Tauri) label. */
+function remoteLabel(url: string) {
+  try {
+    const hostname = new URL(url).hostname;
+    return hostname === "localhost" || hostname === "127.0.0.1" ? "Agents local" : `Agents on ${hostname}`;
+  } catch {
+    return `Agents on ${url}`;
+  }
+}
+
 /** Where the desktop app's agents run, how that connection is doing, and a way to change it. */
 export function ConnectionPicker({ tasks }: { tasks: TaskView[] }) {
   const [status, setStatus] = useState<ConnectionStatus>();
@@ -39,7 +49,17 @@ export function ConnectionPicker({ tasks }: { tasks: TaskView[] }) {
     return onConnection(setStatus);
   }, []);
 
-  if (!inTauri) return <p className="text-xs text-muted-foreground">Agents on {remoteUrl}</p>;
+  if (!inTauri)
+    return (
+      <div className="flex items-center gap-1 pl-1.5 text-xs">
+        <span className="flex size-3.5 shrink-0 items-center justify-center" aria-hidden>
+          <span className="size-2 rounded-full bg-sky-500" />
+        </span>
+        <span className="min-w-0 flex-1 truncate text-muted-foreground" title={remoteUrl ?? undefined}>
+          {remoteLabel(remoteUrl ?? "")}
+        </span>
+      </div>
+    );
   if (!status) return null;
 
   const dot = { connected: "bg-emerald-500", connecting: "animate-pulse bg-amber-500", disconnected: "bg-destructive" }[status.state];
