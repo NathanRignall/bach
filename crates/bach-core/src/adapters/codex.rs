@@ -2,14 +2,27 @@
 //! `jsonrpc` field). One process per turn, as with Claude Code: initialize, start or resume
 //! the thread, start the turn, answer its approval requests, and close stdin once the turn
 //! completes. Shapes recorded from codex-cli 0.146.0 (tests/fixtures/codex_*.jsonl).
-use super::AgentEvent;
+use super::{AgentEvent, Turn};
+use bach_protocol::{DeltaKind, ModelInfo};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 
-/// Codex edits the project on its own and asks before anything beyond it (network, other
-/// folders, `.git`). Without this, `codex` defaults to a read-only sandbox.
-const SANDBOX: &str = "workspace-write";
-const APPROVAL_POLICY: &str = "on-request";
+/// The permission modes Bach offers for Codex: its own presets, and its plan mode. Anything
+/// else (none, or a mode left over from Claude Code) is "auto".
+pub const PERMISSION_MODES: &[&str] = &["auto", "readOnly", "fullAccess", "plan"];
+
+/// The sandbox and approval policy for a permission mode.
+///
+/// "auto": Codex edits the project on its own and asks before anything beyond it (network,
+/// other folders, `.git`); without a sandbox given, `codex` would default to read-only. Plan
+/// mode runs the same way; Codex itself holds back from changing things while planning.
+fn preset(mode: Option<&str>) -> (&'static str, &'static str) {
+    match mode {
+        Some("readOnly") => ("read-only", "on-request"),
+        Some("fullAccess") => ("danger-full-access", "never"),
+        _ => ("workspace-write", "on-request"),
+    }
+}
 
 /// The session rule "allow for this session" grants for file changes.
 const EDIT_RULE: &str = "Edit";
@@ -26,8 +39,48 @@ const INTERRUPT: u64 = 4;
 /// feature is on; Bach shows them on the question card, like Claude Code's.
 const QUESTIONS_FEATURE: &str = "default_mode_request_user_input";
 
-pub fn args() -> Vec<String> {
-    vec!["app-server".into(), "--enable".into(), QUESTIONS_FEATURE.into()]
+/// Satie's tools that only look (as Claude Code is allowed them without asking).
+const SATIE_READ_ONLY: &[&str] = &["task_list", "task_logs", "port_info", "http_check"];
+
+/// Where Codex reads its Satie token from (see [`env`]).
+const SATIE_TOKEN_ENV: &str = "BACH_SATIE_TOKEN";
+
+/// What Codex is told about Satie. Its shell commands end with the turn, like Claude Code's.
+const SATIE_GUIDANCE: &str = "Anything that must keep running after your turn ends (dev servers, simulations, watchers, \
+long jobs) has to be started with the `satie` MCP tool `task_start`, not from a shell command (a trailing `&`, `nohup`, \
+`setsid`, tmux or screen): every process a shell command starts is stopped when the turn ends. `task_start` keeps the \
+process running on its own, shows it to the user in the Tasks panel, and `task_logs`, `task_list` and `task_stop` manage it. \
+Pass `port` when the process serves on one, so the call waits until it is up. For a process-compose project use \
+`compose_start` with the compose file instead of running process-compose yourself: each of its processes then gets its own \
+state and log, and `task_process` restarts one without the rest.";
+
+/// `-c` values are TOML; a JSON string is also a TOML basic string.
+fn toml_string(s: &str) -> String {
+    serde_json::to_string(s).expect("a string serializes")
+}
+
+/// `satie` adds Bach's background-task launcher as the `satie` MCP server, with guidance on
+/// when to use it. The token itself goes in the environment ([`env`]), not the command line.
+pub fn args(satie: Option<&satie::Grant>) -> Vec<String> {
+    let mut a: Vec<String> = vec!["app-server".into(), "--enable".into(), QUESTIONS_FEATURE.into()];
+    if let Some(grant) = satie {
+        for setting in [
+            format!("mcp_servers.satie.url={}", toml_string(&grant.url)),
+            format!("mcp_servers.satie.bearer_token_env_var={}", toml_string(SATIE_TOKEN_ENV)),
+            format!("developer_instructions={}", toml_string(SATIE_GUIDANCE)),
+        ] {
+            a.extend(["-c".into(), setting]);
+        }
+    }
+    a
+}
+
+/// The environment Codex needs on top of Bach's: the Satie token, when it has Satie.
+pub fn env(satie: Option<&satie::Grant>) -> Vec<(&'static str, String)> {
+    satie
+        .map(|g| (SATIE_TOKEN_ENV, g.token.clone()))
+        .into_iter()
+        .collect()
 }
 
 /// One turn's conversation with the app server.
@@ -38,6 +91,11 @@ pub struct Conversation {
     cwd: Option<String>,
     /// Session rules approved earlier: requests they cover are accepted without asking.
     allowed: Vec<String>,
+    /// The model chosen for the session, if any.
+    choice: Option<String>,
+    /// See [`PERMISSION_MODES`].
+    mode: Option<String>,
+    /// The model the thread runs (chosen, or Codex's default).
     model: Option<String>,
     /// Whether the model's context window has been reported (it doesn't change mid-turn).
     window_sent: bool,
@@ -50,12 +108,14 @@ pub struct Conversation {
 
 /// What an approval card for one of Codex's requests shows, and what its reply needs.
 struct Ask {
-    tool_name: &'static str,
+    tool_name: String,
     input: Value,
     description: Option<String>,
     rules: Vec<String>,
     directories: Vec<String>,
     reply: Value,
+    /// Allowed without asking (Satie calls that only read).
+    harmless: bool,
 }
 
 fn request(id: u64, method: &str, params: Value) -> String {
@@ -83,19 +143,15 @@ fn shell_rule(command: &str) -> String {
 }
 
 impl Conversation {
-    pub fn new(
-        prompt: &str,
-        images: &[String],
-        thread_id: Option<&str>,
-        cwd: Option<&str>,
-        allowed: &[String],
-    ) -> Self {
+    pub fn new(turn: &Turn) -> Self {
         Self {
-            prompt: prompt.into(),
-            images: images.to_vec(),
-            thread_id: thread_id.map(String::from),
-            cwd: cwd.map(String::from),
-            allowed: allowed.to_vec(),
+            prompt: turn.prompt.into(),
+            images: turn.image_files.to_vec(),
+            thread_id: turn.session_id.map(String::from),
+            cwd: turn.cwd.map(String::from),
+            allowed: turn.allowed_tools.to_vec(),
+            choice: turn.model.map(String::from),
+            mode: turn.permission_mode.map(String::from),
             model: None,
             window_sent: false,
             turn_id: None,
@@ -109,7 +165,11 @@ impl Conversation {
         vec![request(
             INITIALIZE,
             "initialize",
-            json!({ "clientInfo": { "name": "bach", "title": "Bach", "version": env!("CARGO_PKG_VERSION") } }),
+            // The experimental API is what lets a turn run in plan mode.
+            json!({
+                "clientInfo": { "name": "bach", "title": "Bach", "version": env!("CARGO_PKG_VERSION") },
+                "capabilities": { "experimentalApi": true },
+            }),
         )]
     }
 
@@ -155,11 +215,15 @@ impl Conversation {
         let result = &v["result"];
         match id {
             Some(INITIALIZE) => {
-                // Also given when resuming: a thread first run by `codex exec` would otherwise
-                // keep its read-only sandbox.
-                let mut params = json!({ "approvalPolicy": APPROVAL_POLICY, "sandbox": SANDBOX });
+                // Also given when resuming: the session's mode or model may have changed, and a
+                // thread first run by `codex exec` would otherwise keep its read-only sandbox.
+                let (sandbox, approval) = preset(self.mode.as_deref());
+                let mut params = json!({ "approvalPolicy": approval, "sandbox": sandbox });
                 if let Some(cwd) = &self.cwd {
                     params["cwd"] = json!(cwd);
+                }
+                if let Some(model) = &self.choice {
+                    params["model"] = json!(model);
                 }
                 let method = match &self.thread_id {
                     Some(id) => {
@@ -189,16 +253,21 @@ impl Conversation {
                         .iter()
                         .map(|p| json!({ "type": "localImage", "path": p })),
                 );
+                let mut params = json!({ "threadId": id, "input": input });
+                // Always said, so leaving plan mode takes effect on a resumed thread too.
+                if let Some(model) = &self.model {
+                    let mode = if self.mode.as_deref() == Some("plan") { "plan" } else { "default" };
+                    params["collaborationMode"] = json!({
+                        "mode": mode,
+                        "settings": { "model": model, "reasoning_effort": null, "developer_instructions": null },
+                    });
+                }
                 (
                     vec![AgentEvent::Session {
                         id: id.clone(),
                         model: self.model.clone(),
                     }],
-                    vec![request(
-                        TURN,
-                        "turn/start",
-                        json!({ "threadId": id, "input": input }),
-                    )],
+                    vec![request(TURN, "turn/start", params)],
                 )
             }
             Some(TURN) => {
@@ -226,17 +295,20 @@ impl Conversation {
             let error = json!({ "id": id, "error": { "code": -32601, "message": message } });
             return (vec![], vec![error.to_string()]);
         };
-        if !ask.rules.is_empty() && ask.rules.iter().all(|r| self.allowed.contains(r)) {
-            return (vec![], vec![reply(id, json!({ "decision": "accept" }))]);
-        }
-        self.requests.insert(id.to_string(), request_id.clone());
         let mut suggestions = ask.reply;
         suggestions["rpcId"] = id.clone();
+        // Harmless, or covered by a rule approved earlier this session: allowed without asking.
+        if ask.harmless || (!ask.rules.is_empty() && ask.rules.iter().all(|r| self.allowed.contains(r))) {
+            let accept = answer(&suggestions, bach_protocol::Decision::Allow, None)
+                .expect("allowing needs no answers");
+            return (vec![], vec![accept]);
+        }
+        self.requests.insert(id.to_string(), request_id.clone());
         (
             vec![AgentEvent::Approval {
                 request_id,
                 tool_use_id: item_id,
-                tool_name: ask.tool_name.into(),
+                tool_name: ask.tool_name,
                 input: ask.input,
                 description: ask.description,
                 reason: p["reason"].as_str().map(String::from),
@@ -258,7 +330,7 @@ impl Conversation {
                     input["cwd"] = json!(cwd);
                 }
                 Ask {
-                    tool_name: "Shell",
+                    tool_name: "Shell".into(),
                     input,
                     description: None,
                     rules: vec![shell_rule(&command)],
@@ -269,6 +341,7 @@ impl Conversation {
                         "amendment": p["proposedExecpolicyAmendment"],
                         "available": p["availableDecisions"],
                     }),
+                    harmless: false,
                 }
             }
             "item/fileChange/requestApproval" => {
@@ -278,12 +351,13 @@ impl Conversation {
                     .cloned()
                     .unwrap_or(json!([]));
                 Ask {
-                    tool_name: "Edit",
+                    tool_name: "Edit".into(),
                     input: file_change_input(&changes),
                     description: None,
                     rules: vec![EDIT_RULE.to_string()],
                     directories: vec![],
                     reply: json!({ "kind": "fileChange" }),
+                    harmless: false,
                 }
             }
             // More access than the sandbox gives: the network, or folders outside the project.
@@ -314,7 +388,7 @@ impl Conversation {
                     input["read"] = json!(read);
                 }
                 Ask {
-                    tool_name: "Permissions",
+                    tool_name: "Permissions".into(),
                     input,
                     description: (!asks.is_empty()).then(|| format!("Let Codex {}", asks.join(" and "))),
                     // Granted for this turn only: Bach has no rule for it. The folders are in
@@ -322,6 +396,7 @@ impl Conversation {
                     rules: vec![],
                     directories: vec![],
                     reply: json!({ "kind": "permissions", "permissions": granted(wanted) }),
+                    harmless: false,
                 }
             }
             // Codex's own questions for the user (its request_user_input tool).
@@ -343,36 +418,58 @@ impl Conversation {
                     })
                     .collect();
                 Ask {
-                    tool_name: QUESTION_TOOL,
+                    tool_name: QUESTION_TOOL.into(),
                     input: json!({ "questions": questions }),
                     description: None,
                     rules: vec![],
                     directories: vec![],
                     reply: json!({ "kind": "questions", "ids": ids }),
+                    harmless: false,
                 }
             }
-            // A form an MCP server wants filled in, asked as questions, or a page to visit.
+            // A form an MCP server wants filled in, asked as questions, or a page to visit. Codex
+            // also asks this way before it calls an MCP tool.
             "mcpServer/elicitation/request" => {
                 let server = s(&p["serverName"]);
                 let message = s(&p["message"]);
-                if p["mode"] == "url" {
+                let meta = &p["_meta"];
+                if meta["codex_approval_kind"] == "mcp_tool_call" {
+                    // Only the message names the tool: `…run tool "task_start"?`
+                    let tool = message
+                        .split('"')
+                        .nth(1)
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or("tool");
+                    let name = format!("mcp__{server}__{tool}");
                     Ask {
-                        tool_name: "Open link",
+                        harmless: server == "satie" && SATIE_READ_ONLY.contains(&tool),
+                        rules: vec![name.clone()],
+                        tool_name: name,
+                        input: meta["tool_params"].clone(),
+                        description: None,
+                        directories: vec![],
+                        reply: json!({ "kind": "mcpTool", "persist": meta["persist"] }),
+                    }
+                } else if p["mode"] == "url" {
+                    Ask {
+                        tool_name: "Open link".into(),
                         input: json!({ "path": p["url"], "server": server }),
                         description: Some(message),
                         rules: vec![],
                         directories: vec![],
                         reply: json!({ "kind": "elicitation", "fields": {} }),
+                        harmless: false,
                     }
                 } else {
                     let (questions, fields) = form_questions(&message, &p["requestedSchema"]);
                     Ask {
-                        tool_name: QUESTION_TOOL,
+                        tool_name: QUESTION_TOOL.into(),
                         input: json!({ "questions": questions }),
                         description: None,
                         rules: vec![],
                         directories: vec![],
                         reply: json!({ "kind": "elicitation", "fields": fields }),
+                        harmless: false,
                     }
                 }
             }
@@ -450,7 +547,8 @@ impl Conversation {
                     parent: None,
                 }]
             }
-            ("item/completed", Some("agentMessage")) => {
+            // A plan mode turn's plan is its answer.
+            ("item/completed", Some("agentMessage" | "plan")) => {
                 let text = s(&item["text"]);
                 if text.is_empty() {
                     return vec![];
@@ -519,19 +617,98 @@ impl Conversation {
                 .map(|request_id| AgentEvent::ApprovalCancelled { request_id })
                 .into_iter()
                 .collect(),
-            ("item/agentMessage/delta", _) => {
+            // Things still being written: the message, the reasoning, a command's output.
+            ("item/agentMessage/delta", _)
+            | ("item/plan/delta", _)
+            | ("item/reasoning/summaryTextDelta", _)
+            | ("item/reasoning/textDelta", _)
+            | ("item/commandExecution/outputDelta", _) => {
+                let kind = match method {
+                    "item/agentMessage/delta" | "item/plan/delta" => DeltaKind::Text,
+                    "item/commandExecution/outputDelta" => DeltaKind::Output,
+                    _ => DeltaKind::Thinking,
+                };
                 let text = s(&p["delta"]);
                 if text.is_empty() {
                     return vec![];
                 }
-                vec![AgentEvent::TextDelta {
+                vec![AgentEvent::Delta {
                     id: s(&p["itemId"]),
+                    kind,
                     text,
+                }]
+            }
+            // A new part of the reasoning summary starts a new paragraph.
+            ("item/reasoning/summaryPartAdded", _) if p["summaryIndex"].as_u64() > Some(0) => {
+                vec![AgentEvent::Delta {
+                    id: s(&p["itemId"]),
+                    kind: DeltaKind::Thinking,
+                    text: "\n\n".into(),
                 }]
             }
             _ => vec![],
         }
     }
+}
+
+/// Asks a short-lived app server for the models the user's Codex can run (its `model/list`).
+pub async fn list_models() -> Result<Vec<ModelInfo>, String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let mut child = tokio::process::Command::new("codex")
+        .arg("app-server")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("couldn't start `codex`: {e}"))?;
+    let mut stdin = child.stdin.take().expect("piped");
+    let lines = [
+        request(INITIALIZE, "initialize", json!({ "clientInfo": { "name": "bach", "title": "Bach", "version": env!("CARGO_PKG_VERSION") } })),
+        json!({ "method": "initialized" }).to_string(),
+        request(2, "model/list", json!({})),
+    ];
+    for line in lines {
+        stdin
+            .write_all(format!("{line}\n").as_bytes())
+            .await
+            .map_err(|e| format!("couldn't ask Codex for its models: {e}"))?;
+    }
+    let mut out = BufReader::new(child.stdout.take().expect("piped")).lines();
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while let Ok(Some(line)) = out.next_line().await {
+            let v: Value = serde_json::from_str(&line).unwrap_or_default();
+            if v["id"] == 2 {
+                return Some(v);
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+    .ok_or("Codex didn't list its models.")?;
+    if let Some(m) = answer["error"]["message"].as_str() {
+        return Err(format!("Codex couldn't list its models: {m}"));
+    }
+    Ok(models_from(&answer["result"]))
+}
+
+/// The visible models in a `model/list` result.
+fn models_from(result: &Value) -> Vec<ModelInfo> {
+    result["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["hidden"] != true)
+        .map(|m| ModelInfo {
+            id: s(&m["model"]),
+            name: m["displayName"].as_str().unwrap_or(m["model"].as_str().unwrap_or_default()).into(),
+            description: s(&m["description"]),
+            is_default: m["isDefault"] == true,
+        })
+        .filter(|m| !m.id.is_empty())
+        .collect()
 }
 
 /// `a.rs, b.rs`
@@ -589,6 +766,18 @@ pub fn answer(
                 out.insert(id.into(), json!({ "answers": [answer] }));
             }
             json!({ "answers": out })
+        }
+        ("mcpTool", Deny) => json!({ "action": "decline", "content": null, "_meta": null }),
+        // "For this session" and "always" are remembered by Codex when it offers them.
+        ("mcpTool", _) => {
+            let persist = match decision {
+                AllowSession => Some("session"),
+                AllowAlways => Some("always"),
+                _ => None,
+            }
+            .filter(|p| suggestions["persist"].as_array().is_some_and(|a| a.iter().any(|x| x == p)));
+            let meta = persist.map(|p| json!({ "persist": p })).unwrap_or(Value::Null);
+            json!({ "action": "accept", "content": {}, "_meta": meta })
         }
         ("elicitation", Deny) => json!({ "action": "decline", "content": null, "_meta": null }),
         ("elicitation", _) => {
@@ -751,7 +940,12 @@ mod tests {
 
     fn conversation(allowed: &[&str]) -> Conversation {
         let allowed: Vec<String> = allowed.iter().map(|r| r.to_string()).collect();
-        Conversation::new("hi", &[], Some("t1"), None, &allowed)
+        Conversation::new(&Turn {
+            prompt: "hi",
+            session_id: Some("t1"),
+            allowed_tools: &allowed,
+            ..Default::default()
+        })
     }
 
     /// The approval a request from Codex becomes, and what the conversation sent back at once.
@@ -869,6 +1063,49 @@ mod tests {
         assert_eq!(answered(s, Decision::Deny, &[]).unwrap()["result"]["action"], "decline");
     }
 
+    /// Codex asking before it calls an MCP tool (recorded from 0.146.0, trimmed).
+    fn tool_call(id: u64, tool: &str) -> Value {
+        json!({ "id": id, "method": "mcpServer/elicitation/request", "params": {
+            "threadId": "t1", "turnId": "u1", "serverName": "satie", "mode": "form",
+            "message": format!("Allow the satie MCP server to run tool \"{tool}\"?"),
+            "requestedSchema": { "type": "object", "properties": {} },
+            "_meta": { "codex_approval_kind": "mcp_tool_call", "persist": ["session", "always"],
+                       "tool_params": { "command": "python3 -m http.server 3977", "port": 3977 } },
+        }})
+    }
+
+    #[test]
+    fn mcp_tool_calls_are_approvals() {
+        let mut c = conversation(&[]);
+        let (ev, replies) = ask(&mut c, tool_call(4, "task_start"));
+        assert!(replies.is_empty());
+        let Some(AgentEvent::Approval { tool_name, input, rules, .. }) = &ev else { panic!() };
+        assert_eq!(tool_name, "mcp__satie__task_start");
+        assert_eq!(input["port"], 3977);
+        assert_eq!(rules, &["mcp__satie__task_start"]);
+
+        let s = suggestions(&ev);
+        let reply = |d| answered(s, d, &[]).unwrap()["result"].clone();
+        assert_eq!(reply(Decision::Allow), json!({ "action": "accept", "content": {}, "_meta": null }));
+        assert_eq!(reply(Decision::AllowSession)["_meta"], json!({ "persist": "session" }));
+        assert_eq!(reply(Decision::AllowAlways)["_meta"], json!({ "persist": "always" }));
+        assert_eq!(reply(Decision::Deny)["action"], "decline");
+        assert!(answered(s, Decision::Allow, &[("x", "y")]).is_err());
+
+        // Looking at tasks needs no card; nor does a tool approved earlier this session.
+        for (mut c, tool) in [(conversation(&[]), "task_logs"), (conversation(&["mcp__satie__task_start"]), "task_start")] {
+            let (ev, replies) = ask(&mut c, tool_call(5, tool));
+            assert!(ev.is_none(), "{tool}");
+            let r: Value = serde_json::from_str(&replies[0]).unwrap();
+            assert_eq!(r, json!({ "id": 5, "result": { "action": "accept", "content": {}, "_meta": null } }));
+        }
+    }
+
+    #[test]
+    fn no_satie_no_mcp_server() {
+        assert_eq!(args(None), ["app-server", "--enable", QUESTIONS_FEATURE]);
+    }
+
     #[test]
     fn requests_codex_withdraws_are_cancelled() {
         let mut c = conversation(&[]);
@@ -891,10 +1128,69 @@ mod tests {
     }
 
     #[test]
-    fn message_text_streams() {
+    fn text_reasoning_and_output_stream() {
         let mut c = conversation(&[]);
-        let (ev, _) = c.on_line(&json!({ "method": "item/agentMessage/delta", "params": { "itemId": "m1", "delta": "Hel" } }));
-        assert!(matches!(&ev[..], [AgentEvent::TextDelta { id, text }] if id == "m1" && text == "Hel"));
+        let mut delta = |method: &str, params: Value| match &c.on_line(&json!({ "method": method, "params": params })).0[..] {
+            [AgentEvent::Delta { id, kind, text }] => Some((id.clone(), *kind, text.clone())),
+            [] => None,
+            other => panic!("{other:?}"),
+        };
+        let d = |id: &str, kind, text: &str| Some((id.to_string(), kind, text.to_string()));
+        assert_eq!(delta("item/agentMessage/delta", json!({ "itemId": "m1", "delta": "Hel" })), d("m1", DeltaKind::Text, "Hel"));
+        assert_eq!(delta("item/commandExecution/outputDelta", json!({ "itemId": "c1", "delta": "ok\n" })), d("c1", DeltaKind::Output, "ok\n"));
+        assert_eq!(delta("item/reasoning/summaryTextDelta", json!({ "itemId": "r1", "delta": "Plan", "summaryIndex": 0 })), d("r1", DeltaKind::Thinking, "Plan"));
+        // The first part needs no break; later ones start a paragraph.
+        assert_eq!(delta("item/reasoning/summaryPartAdded", json!({ "itemId": "r1", "summaryIndex": 0 })), None);
+        assert_eq!(delta("item/reasoning/summaryPartAdded", json!({ "itemId": "r1", "summaryIndex": 1 })), d("r1", DeltaKind::Thinking, "\n\n"));
+        assert_eq!(delta("item/agentMessage/delta", json!({ "itemId": "m1", "delta": "" })), None);
+    }
+
+    /// The requests a new turn sends for `model` and `mode`: the thread's, then the turn's.
+    fn opening(model: Option<&str>, mode: Option<&str>) -> (Value, Value) {
+        let mut c = Conversation::new(&Turn { prompt: "hi", model, permission_mode: mode, ..Default::default() });
+        let init: Value = serde_json::from_str(&c.opening()[0]).unwrap();
+        assert_eq!(init["params"]["capabilities"]["experimentalApi"], true);
+        let (_, sent) = c.on_line(&json!({ "id": 1, "result": {} }));
+        let thread: Value = serde_json::from_str(&sent[1]).unwrap();
+        let (_, sent) = c.on_line(&json!({ "id": 2, "result": { "thread": { "id": "t1" }, "model": "gpt-x" } }));
+        (thread["params"].clone(), serde_json::from_str::<Value>(&sent[0]).unwrap()["params"].clone())
+    }
+
+    #[test]
+    fn permission_modes_and_models() {
+        let modes = |mode| {
+            let (thread, turn) = opening(None, mode);
+            (
+                thread["sandbox"].as_str().unwrap().to_string(),
+                thread["approvalPolicy"].as_str().unwrap().to_string(),
+                turn["collaborationMode"]["mode"].as_str().unwrap().to_string(),
+            )
+        };
+        let m = |a: &str, b: &str, c: &str| (a.to_string(), b.to_string(), c.to_string());
+        assert_eq!(modes(None), m("workspace-write", "on-request", "default"));
+        // A mode left over from Claude Code means the default.
+        assert_eq!(modes(Some("acceptEdits")), m("workspace-write", "on-request", "default"));
+        assert_eq!(modes(Some("readOnly")), m("read-only", "on-request", "default"));
+        assert_eq!(modes(Some("fullAccess")), m("danger-full-access", "never", "default"));
+        assert_eq!(modes(Some("plan")), m("workspace-write", "on-request", "plan"));
+
+        // A chosen model is asked for; plan mode names the thread's model either way.
+        let (thread, turn) = opening(Some("gpt-y"), None);
+        assert_eq!(thread["model"], "gpt-y");
+        assert_eq!(turn["collaborationMode"]["settings"]["model"], "gpt-x");
+        let (thread, _) = opening(None, None);
+        assert!(thread.get("model").is_none());
+    }
+
+    #[test]
+    fn lists_visible_models() {
+        let models = models_from(&json!({ "data": [
+            { "model": "gpt-a", "displayName": "GPT A", "description": "fast", "hidden": false, "isDefault": true },
+            { "model": "gpt-old", "displayName": "Old", "description": "", "hidden": true, "isDefault": false },
+            { "model": "gpt-b", "displayName": null, "description": "big", "hidden": false, "isDefault": false },
+        ]}));
+        let got: Vec<_> = models.iter().map(|m| (m.id.as_str(), m.name.as_str(), m.is_default)).collect();
+        assert_eq!(got, [("gpt-a", "GPT A", true), ("gpt-b", "gpt-b", false)]);
     }
 
     #[test]

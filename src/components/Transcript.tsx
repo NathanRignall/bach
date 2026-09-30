@@ -21,6 +21,8 @@ export interface TranscriptActions {
   retry?: (text?: string, images?: string[]) => void;
   /** The agent the transcript is with. */
   agent?: AgentKind;
+  /** Output so far of tool calls still running, by call id. */
+  outputs?: Record<string, string>;
   /** Satie's tasks, so a Satie tool call can show the live state of the task it touched. */
   tasks?: TaskView[];
   forwarding?: Forwarding | null;
@@ -92,8 +94,9 @@ export function BlockView({ block, live }: { block: Block; live: boolean }) {
       );
 
     case "thinking":
+      // Open while it's being written, so it can be followed.
       return (
-        <Collapsible>
+        <Collapsible defaultOpen={block.streaming}>
           <CollapsibleTrigger className={summaryClass}>
             <ChevronRight className={chevron} />
             <Brain className="size-3.5" />
@@ -211,6 +214,9 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
 
 function ToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
   const pending = block.output === undefined;
+  const { outputs } = useContext(TranscriptContext);
+  // The last few lines while it runs, so a long command shows it's getting somewhere.
+  const partial = pending && live ? outputs?.[block.id]?.trimEnd().split("\n").slice(-6).join("\n") : undefined;
   return (
     <div>
     <Collapsible>
@@ -239,6 +245,7 @@ function ToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
         )}
       </CollapsibleContent>
     </Collapsible>
+    {partial && <pre className={preClass + " mt-2 max-h-32"} aria-label="Output so far">{partial}</pre>}
     {!!block.images?.length && <Images images={block.images} alt={`Image from ${toolLabel(block.name)}`} className="mt-2" />}
     </div>
   );
@@ -466,7 +473,10 @@ function describeInput(input: unknown): { main?: string; rest?: string } {
 
 /** Where "Always allow" keeps the rule, or nothing when the agent has no lasting rule for it. */
 function alwaysSavesTo(agent: AgentKind, toolName: string): string | undefined {
-  if (agent === "codex") return toolName === "Edit" ? undefined : "Adds the command to Codex's own rules (~/.codex/rules)";
+  if (agent === "codex") {
+    if (toolName === "Edit") return undefined;
+    return toolName.startsWith("mcp__") ? "Codex stops asking for this tool (its own config)" : "Adds the command to Codex's own rules (~/.codex/rules)";
+  }
   return "Saves to this project's settings";
 }
 

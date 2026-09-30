@@ -1,5 +1,5 @@
 //! Runs recorded output of the real CLIs through the adapters.
-use bach_core::adapters::{codex_answer, AgentCli, AgentEvent, AgentKind, Conversation};
+use bach_core::adapters::{codex_answer, AgentCli, AgentEvent, AgentKind, Conversation, Turn};
 use bach_protocol::Decision;
 use serde_json::{json, Value};
 
@@ -192,7 +192,7 @@ fn claude_reports_context_and_usage_limits() {
 /// what Bach wrote back, in order.
 fn codex(fixture: &str, allowed: &[String]) -> (Vec<AgentEvent>, Vec<Value>) {
     let (mut c, opening) =
-        Conversation::new(AgentKind::Codex, "hi", &[], &[], None, Some("/tmp/codex-test/ws"), allowed);
+        Conversation::new(AgentKind::Codex, &Turn { prompt: "hi", cwd: Some("/tmp/codex-test/ws"), allowed_tools: allowed, ..Default::default() });
     let mut sent: Vec<Value> = opening.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
     let mut events = vec![];
     for line in fixture.lines() {

@@ -24,6 +24,30 @@ impl AgentKind {
     }
 }
 
+/// A model an agent can run, for the model picker.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    /// What to pass as the session's model choice.
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// The one the agent uses when none is chosen.
+    pub is_default: bool,
+}
+
+/// What a [`AgentEvent::Delta`] adds to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum DeltaKind {
+    /// The message being written.
+    Text,
+    /// The agent's reasoning.
+    Thinking,
+    /// The output of a running tool call (`id` is the call's).
+    Output,
+}
+
 #[derive(Clone, Debug, Serialize, TS)]
 pub struct AgentInfo {
     pub kind: AgentKind,
@@ -64,9 +88,10 @@ pub enum AgentEvent {
         parent: Option<String>,
     },
     Thinking { text: String },
-    /// More of the message `id` as it is written. Only for showing it live: the whole message
-    /// follows as `Text`, and deltas aren't kept in the transcript.
-    TextDelta { id: String, text: String },
+    /// More of something still being written: a message, the reasoning, or a tool's output
+    /// (`id` is the message's, or the tool call's). Only for showing it live: the whole of it
+    /// follows as `Text`, `Thinking` or `ToolResult`, and deltas aren't kept in the transcript.
+    Delta { id: String, kind: DeltaKind, text: String },
     ToolUse {
         id: String,
         name: String,

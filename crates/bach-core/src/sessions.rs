@@ -133,11 +133,12 @@ impl Sessions {
                 });
                 return;
             }
-            AgentEvent::TextDelta { id: message, text } => {
-                self.send(SessionEvent::TextDelta {
+            AgentEvent::Delta { id: of, kind, text } => {
+                self.send(SessionEvent::Delta {
                     session_id: id.into(),
                     run_id,
-                    id: message,
+                    id: of,
+                    kind,
                     text,
                 });
                 return;

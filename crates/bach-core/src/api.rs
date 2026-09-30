@@ -33,6 +33,8 @@ pub struct Api {
     events: broadcast::Sender<ServerEvent>,
     /// Passes Satie's task events on while anyone is subscribed.
     task_events: Mutex<Option<JoinHandle<()>>>,
+    /// Each agent's models, as last listed, and when.
+    models: Mutex<std::collections::HashMap<AgentKind, (std::time::Instant, Vec<ModelInfo>)>>,
 }
 
 impl Api {
@@ -69,6 +71,7 @@ impl Api {
             satie,
             events,
             task_events: Mutex::default(),
+            models: Mutex::default(),
         }
     }
 
@@ -310,14 +313,15 @@ impl Launcher {
             images,
             cwd: s.workdir.clone().or(Some(s.cwd.clone())),
             session_id: s.agent_session_id.clone(),
+            // opencode takes neither yet.
             model: s
                 .model_choice
                 .clone()
-                .filter(|_| s.agent == AgentKind::Claude),
+                .filter(|_| s.agent != AgentKind::Opencode),
             permission_mode: s
                 .permission_mode
                 .clone()
-                .filter(|_| s.agent == AgentKind::Claude),
+                .filter(|_| s.agent != AgentKind::Opencode),
             allowed_tools: s.allow_rules.clone(),
             session_key: Some(id.to_string()),
             run_id: Some(run_id.clone()),
@@ -377,6 +381,24 @@ fn satie_error(e: satie::Error) -> ApiError {
 impl Handler for Api {
     async fn list_agents(&self, _: ListAgentsArgs) -> Result<Vec<AgentInfo>, ApiError> {
         Ok(list_agents())
+    }
+
+    async fn list_models(&self, a: ListModelsArgs) -> Result<Vec<ModelInfo>, ApiError> {
+        // Asking Codex takes a second or so, and its list rarely changes.
+        const FRESH: Duration = Duration::from_secs(30 * 60);
+        if let Some((at, models)) = self.models.lock().unwrap().get(&a.agent) {
+            if at.elapsed() < FRESH {
+                return Ok(models.clone());
+            }
+        }
+        let models = crate::adapters::list_models(a.agent)
+            .await
+            .map_err(ApiError::failed)?;
+        self.models
+            .lock()
+            .unwrap()
+            .insert(a.agent, (std::time::Instant::now(), models.clone()));
+        Ok(models)
     }
 
     async fn get_usage(&self, _: GetUsageArgs) -> Result<Option<PlanUsage>, ApiError> {

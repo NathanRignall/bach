@@ -1,12 +1,13 @@
 // Sessions are kept by the backend: `Session` (generated) says what a session is and where it
 // stands, and its transcript is a list of entries. This folds those entries into the blocks the
 // transcript renders.
-import type { AgentEvent, AgentKind, Decision, Entry, LogEntry, Session } from "./api";
+import type { AgentEvent, AgentKind, Decision, DeltaKind, Entry, LogEntry, Session } from "./api";
 
 export type Block =
   | { kind: "user"; text: string; /** Sent with it, as `data:` URLs. */ images?: string[] }
   | { kind: "text"; text: string }
-  | { kind: "thinking"; text: string }
+  /** `streaming`: still being written (a live draft, not from the transcript). */
+  | { kind: "thinking"; text: string; streaming?: boolean }
   | ToolBlock
   | ApprovalBlock
   | { kind: "error"; text: string; /** The message that failed to start, so Retry resends that one. */ retryText?: string }
@@ -132,8 +133,8 @@ function applyAgentEvent(blocks: Block[], e: AgentEvent, at: number): Block[] {
       return place(blocks, e.parent, (l) => [...l, { kind: "text", text: e.text }]);
     case "thinking":
       return [...blocks, { kind: "thinking", text: e.text }];
-    // Shown live, never kept (see App's drafts).
-    case "text_delta":
+    // Shown live, never kept (see `Live`).
+    case "delta":
       return blocks;
     case "tool_use":
       return place(blocks, e.parent, (l) => [...l, { kind: "tool", id: e.id, name: e.name, input: e.input, startedAt: at }]);
@@ -215,3 +216,50 @@ export function applyEntries(t: Transcript, entries: LogEntry[]): Transcript {
 }
 
 export const emptyTranscript: Transcript = { blocks: [], seq: 0 };
+
+/** What a session's agent is still writing: shown live until the finished entry replaces it. */
+export interface Live {
+  text?: { id: string; text: string };
+  thinking?: { id: string; text: string };
+  /** Output so far of running tool calls, by call id. */
+  outputs: Record<string, string>;
+}
+
+export const emptyLive: Live = { outputs: {} };
+
+/** Adds a delta; a new message or reasoning (another id) starts over. */
+export function addDelta(l: Live, d: { id: string; kind: DeltaKind; text: string }): Live {
+  const grow = (cur?: { id: string; text: string }) => ({ id: d.id, text: cur?.id === d.id ? cur.text + d.text : d.text });
+  switch (d.kind) {
+    case "text":
+      return { ...l, text: grow(l.text) };
+    case "thinking":
+      return { ...l, thinking: grow(l.thinking) };
+    case "output":
+      return { ...l, outputs: { ...l.outputs, [d.id]: (l.outputs[d.id] ?? "") + d.text } };
+  }
+}
+
+/** Drops what a transcript entry finishes: the message, the reasoning, a tool's output, or everything when a run starts or ends. */
+export function settle(l: Live, e: Entry): Live {
+  if (e.type === "user") return emptyLive;
+  if (e.type !== "agent") return l;
+  const ev = e.event;
+  switch (ev.type) {
+    case "text":
+      return ev.parent ? l : { ...l, text: undefined };
+    case "thinking":
+      return { ...l, thinking: undefined };
+    case "tool_result": {
+      if (!(ev.id in l.outputs)) return l;
+      const { [ev.id]: _, ...outputs } = l.outputs;
+      return { ...l, outputs };
+    }
+    case "done":
+    case "cancelled":
+    case "error":
+      return emptyLive;
+    default:
+      return l;
+  }
+}

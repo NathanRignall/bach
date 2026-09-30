@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "ee028e2a59d9ff40";
+export const PROTOCOL = "da2b095e8fd1508f";
 
 /**
  * Agent-independent events the UI renders.
@@ -10,7 +10,7 @@ export type AgentEvent = { "type": "session", id: string,
 /**
  * The model the agent reports using for this run.
  */
-model?: string, } | { "type": "text", text: string, parent?: string, } | { "type": "thinking", text: string, } | { "type": "text_delta", id: string, text: string, } | { "type": "tool_use", id: string, name: string, input: JsonValue, parent?: string, } | { "type": "tool_result", id: string, output: string, isError: boolean, 
+model?: string, } | { "type": "text", text: string, parent?: string, } | { "type": "thinking", text: string, } | { "type": "delta", id: string, kind: DeltaKind, text: string, } | { "type": "tool_use", id: string, name: string, input: JsonValue, parent?: string, } | { "type": "tool_result", id: string, output: string, isError: boolean, 
 /**
  * Images the tool returned (e.g. a browser screenshot), as `data:` URLs.
  */
@@ -140,6 +140,11 @@ export type Decision = "allow" | "allow_session" | "allow_always" | "deny";
  * Deletes a session and stops its run (its background tasks keep going).
  */
 export type DeleteSessionArgs = { sessionId: string, };
+
+/**
+ * What a [`AgentEvent::Delta`] adds to.
+ */
+export type DeltaKind = "text" | "thinking" | "output";
 
 export type DiffHunk = { 
 /**
@@ -298,6 +303,12 @@ export type ListDirArgs = {
 path?: string, showHidden?: boolean, };
 
 /**
+ * The models an agent can run. Codex is asked for its current list (kept for a while);
+ * Claude Code's are its aliases.
+ */
+export type ListModelsArgs = { agent: AgentKind, };
+
+/**
  * Every session, most recently active first (without transcripts).
  */
 export type ListSessionsArgs = Record<symbol, never>;
@@ -347,6 +358,19 @@ seq: number,
  * When it was recorded (ms since the epoch).
  */
 at: number, entry: Entry, };
+
+/**
+ * A model an agent can run, for the model picker.
+ */
+export type ModelInfo = { 
+/**
+ * What to pass as the session's model choice.
+ */
+id: string, name: string, description: string, 
+/**
+ * The one the agent uses when none is chosen.
+ */
+isDefault: boolean, };
 
 /**
  * Starts your shell in a terminal on the backend host.
@@ -548,7 +572,7 @@ lastSeq: number, };
 /**
  * A change to sessions, pushed to every client.
  */
-export type SessionEvent = { "type": "changed", session: Session, } | { "type": "entry", sessionId: string, entry: LogEntry, } | { "type": "text_delta", sessionId: string, runId: string, id: string, text: string, } | { "type": "deleted", sessionId: string, };
+export type SessionEvent = { "type": "changed", session: Session, } | { "type": "entry", sessionId: string, entry: LogEntry, } | { "type": "delta", sessionId: string, runId: string, id: string, kind: DeltaKind, text: string, } | { "type": "deleted", sessionId: string, };
 
 /**
  * A session with (part of) its transcript.
@@ -783,6 +807,11 @@ export type Commands = {
    * The agent CLIs Bach knows, and which are installed on the backend host.
    */
   list_agents: { args: ListAgentsArgs; output: Array<AgentInfo> };
+  /**
+   * The models an agent can run. Codex is asked for its current list (kept for a while);
+   * Claude Code's are its aliases.
+   */
+  list_models: { args: ListModelsArgs; output: Array<ModelInfo> };
   /**
    * The account's usage limits as last reported by an agent run (none before the first run).
    */

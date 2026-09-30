@@ -1,5 +1,5 @@
 use super::AgentEvent;
-use bach_protocol::{LimitWindow, PlanUsage};
+use bach_protocol::{DeltaKind, LimitWindow, PlanUsage};
 use satie::Grant;
 use serde_json::{json, Value};
 
@@ -116,6 +116,22 @@ pub fn args(
         a.extend(allowed);
     }
     a
+}
+
+/// Claude Code's model aliases (`--model`), which follow the latest of each family.
+pub fn models() -> Vec<bach_protocol::ModelInfo> {
+    [
+        ("opus", "Opus", "Most capable, for hard problems"),
+        ("sonnet", "Sonnet", "Fast and capable for everyday work"),
+        ("haiku", "Haiku", "Fastest, for small tasks"),
+    ]
+    .map(|(id, name, description)| bach_protocol::ModelInfo {
+        id: id.into(),
+        name: name.into(),
+        description: description.into(),
+        is_default: false,
+    })
+    .into()
 }
 
 /// One line of stream-json input: a user turn. Images (`data:` URLs) go first as base64 image
@@ -247,20 +263,23 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
     let opt = |x: &Value| x.as_str().map(str::to_string);
     let num = |x: &Value| x.as_u64();
     match v["type"].as_str() {
-        // Only the main conversation's text streams; the whole block follows as a message.
+        // Only the main conversation streams; the whole block follows as a message. Thinking
+        // often arrives without its text (summarised or redacted), leaving nothing to show.
         Some("stream_event") => {
             let e = &v["event"];
-            match (e["type"].as_str(), e["delta"]["type"].as_str()) {
-                (Some("content_block_delta"), Some("text_delta"))
-                    if v["parent_tool_use_id"].is_null() =>
-                {
-                    vec![AgentEvent::TextDelta {
-                        id: format!("{}", e["index"]),
-                        text: s(&e["delta"]["text"]),
-                    }]
-                }
-                _ => vec![],
+            let (kind, text) = match e["delta"]["type"].as_str() {
+                Some("text_delta") => (DeltaKind::Text, s(&e["delta"]["text"])),
+                Some("thinking_delta") => (DeltaKind::Thinking, s(&e["delta"]["thinking"])),
+                _ => return vec![],
+            };
+            if e["type"] != "content_block_delta" || !v["parent_tool_use_id"].is_null() || text.is_empty() {
+                return vec![];
             }
+            vec![AgentEvent::Delta {
+                id: format!("{}", e["index"]),
+                kind,
+                text,
+            }]
         }
         Some("system") => match v["subtype"].as_str() {
             Some("init") => vec![AgentEvent::Session {

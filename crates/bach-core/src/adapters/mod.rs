@@ -18,8 +18,8 @@ pub trait AgentCli: Copy {
     /// `model` is only honoured by Claude Code so far (`--model`, e.g. `opus` or a full id),
     /// as is `permission_mode` (`--permission-mode`, e.g. `acceptEdits` or `auto`).
     ///
-    /// `satie` adds Bach's background-task launcher as an MCP server, with guidance and a hook
-    /// steering the agent to it (Claude Code only).
+    /// `satie` adds Bach's background-task launcher as an MCP server, with guidance steering the
+    /// agent to it (Claude Code, which also gets a hook, and Codex).
     ///
     /// `allowed_tools` are permission rules (e.g. `Bash(tmux ls *)`) approved earlier in the
     /// session; only Claude Code takes them.
@@ -47,6 +47,9 @@ pub trait AgentCli: Copy {
     fn images_as_files(self) -> bool;
 
     fn parse_line(self, line: &str) -> Vec<AgentEvent>;
+
+    /// Environment variables the agent needs set (secrets kept off its command line).
+    fn env(self, satie: Option<&Grant>) -> Vec<(&'static str, String)>;
 }
 
 impl AgentCli for AgentKind {
@@ -72,7 +75,7 @@ impl AgentCli for AgentKind {
             AgentKind::Claude => {
                 claude::args(session_id, model, permission_mode, allowed_tools, satie)
             }
-            AgentKind::Codex => codex::args(),
+            AgentKind::Codex => codex::args(satie),
             AgentKind::Opencode => opencode::args(prompt, image_files, session_id, model),
         }
     }
@@ -89,6 +92,13 @@ impl AgentCli for AgentKind {
         self != AgentKind::Claude
     }
 
+    fn env(self, satie: Option<&Grant>) -> Vec<(&'static str, String)> {
+        match self {
+            AgentKind::Codex => codex::env(satie),
+            _ => vec![],
+        }
+    }
+
     fn parse_line(self, line: &str) -> Vec<AgentEvent> {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             return vec![AgentEvent::Raw {
@@ -98,10 +108,27 @@ impl AgentCli for AgentKind {
         match self {
             AgentKind::Claude => claude::parse(&v),
             // Codex's lines only make sense within their conversation; this reads one alone.
-            AgentKind::Codex => codex::Conversation::new("", &[], None, None, &[]).on_line(&v).0,
+            AgentKind::Codex => codex::Conversation::new(&Turn::default()).on_line(&v).0,
             AgentKind::Opencode => opencode::parse(&v),
         }
     }
+}
+
+/// What one turn of an agent is asked to do, and how.
+#[derive(Default)]
+pub struct Turn<'a> {
+    pub prompt: &'a str,
+    /// `data:` URLs (Claude Code).
+    pub images: &'a [String],
+    /// The same images saved as files (the others).
+    pub image_files: &'a [String],
+    /// The agent's own session id, to continue.
+    pub session_id: Option<&'a str>,
+    pub cwd: Option<&'a str>,
+    /// Permission rules approved earlier in the session.
+    pub allowed_tools: &'a [String],
+    pub model: Option<&'a str>,
+    pub permission_mode: Option<&'a str>,
 }
 
 /// One run's exchange with the agent process over stdin/stdout.
@@ -113,26 +140,17 @@ pub enum Conversation {
 }
 
 impl Conversation {
-    /// `images` are `data:` URLs (Claude Code) and `image_files` the same images saved as files
-    /// (the others).
-    pub fn new(
-        agent: AgentKind,
-        prompt: &str,
-        images: &[String],
-        image_files: &[String],
-        session_id: Option<&str>,
-        cwd: Option<&str>,
-        allowed_tools: &[String],
-    ) -> (Self, Vec<String>) {
+    /// The conversation, and the first lines to send.
+    pub fn new(agent: AgentKind, turn: &Turn) -> (Self, Vec<String>) {
         match agent {
             AgentKind::Codex => {
-                let c = codex::Conversation::new(prompt, image_files, session_id, cwd, allowed_tools);
+                let c = codex::Conversation::new(turn);
                 let opening = c.opening();
                 (Self::Codex(Box::new(c)), opening)
             }
             _ => (
                 Self::Lines(agent),
-                agent.stdin_prompt(prompt, images).into_iter().collect(),
+                agent.stdin_prompt(turn.prompt, turn.images).into_iter().collect(),
             ),
         }
     }
@@ -177,6 +195,24 @@ pub fn codex_answer(
     answers: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<String, String> {
     codex::answer(suggestions, decision, answers)
+}
+
+/// The permission modes a session of `agent` can choose (besides the agent's default).
+pub fn permission_modes(agent: AgentKind) -> &'static [&'static str] {
+    match agent {
+        AgentKind::Claude => crate::runs::PERMISSION_MODES,
+        AgentKind::Codex => codex::PERMISSION_MODES,
+        AgentKind::Opencode => &[],
+    }
+}
+
+/// The models `agent` can run, for the model picker.
+pub async fn list_models(agent: AgentKind) -> Result<Vec<bach_protocol::ModelInfo>, String> {
+    match agent {
+        AgentKind::Claude => Ok(claude::models()),
+        AgentKind::Codex => codex::list_models().await,
+        AgentKind::Opencode => Ok(vec![]),
+    }
 }
 
 /// The agent CLIs Bach knows, and whether each is on the backend host's PATH.
@@ -264,12 +300,18 @@ mod tests {
         let delta = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" I'm Claude"}},"session_id":"s","parent_tool_use_id":null,"uuid":"u"}"#;
         assert!(matches!(
             &AgentKind::Claude.parse_line(delta)[..],
-            [AgentEvent::TextDelta { id, text }] if id == "1" && text == " I'm Claude"
+            [AgentEvent::Delta { id, kind: bach_protocol::DeltaKind::Text, text }] if id == "1" && text == " I'm Claude"
         ));
         let sub = delta.replace(r#""parent_tool_use_id":null"#, r#""parent_tool_use_id":"t1""#);
         assert!(AgentKind::Claude.parse_line(&sub).is_empty());
+        // Thinking streams too, when its text is given at all.
         let thinking = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}},"parent_tool_use_id":null}"#;
         assert!(AgentKind::Claude.parse_line(thinking).is_empty());
+        let thinking = thinking.replace(r#""thinking":"""#, r#""thinking":"Hmm""#);
+        assert!(matches!(
+            &AgentKind::Claude.parse_line(&thinking)[..],
+            [AgentEvent::Delta { kind: bach_protocol::DeltaKind::Thinking, text, .. }] if text == "Hmm"
+        ));
         assert!(AgentKind::Claude
             .args("hi", &[], None, None, None, &[], None)
             .contains(&"--include-partial-messages".to_string()));

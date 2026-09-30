@@ -1,7 +1,7 @@
 // The typed client for Bach's backend. Commands, their arguments and results, and every type they
 // use are generated from Rust (crates/bach-protocol) into ./generated/protocol.ts.
 import { remoteUrl } from "./backend";
-import type { Commands, PlanUsage, ProcessAction, ServerEvent, SessionEvent, TaskEvent, TerminalEvent } from "./generated/protocol";
+import type { AgentKind, Commands, PlanUsage, ProcessAction, ServerEvent, SessionEvent, TaskEvent, TerminalEvent } from "./generated/protocol";
 import { SocketTransport, TauriTransport, type Transport } from "./transport";
 
 export * from "./generated/protocol";
@@ -71,6 +71,7 @@ export const onSessionEvent = (cb: (e: SessionEvent) => void) =>
 
 // Shorthands for the commands the UI uses most.
 export const listAgents = () => call("list_agents");
+export const listModels = (agent: AgentKind) => call("list_models", { agent });
 export const getUsage = () => call("get_usage");
 
 export const listSessions = () => call("list_sessions");
