@@ -14,6 +14,8 @@ interface Props {
   images: string[];
   onImages: (images: string[]) => void;
   onSend: () => void;
+  /** Why no new turn can start right now, if so. */
+  paused?: string;
   starting: boolean;
   recentProjects: string[];
   onChange: (patch: Partial<Session>) => void;
@@ -23,7 +25,7 @@ interface Props {
 }
 
 /** Where a session is set up: the chat input with the project folder and branch beside it. */
-export function NewSessionPage({ session, agents, draft, onDraft, images, onImages, onSend, starting, recentProjects, onChange, error, indicator }: Props) {
+export function NewSessionPage({ session, agents, draft, onDraft, images, onImages, onSend, paused, starting, recentProjects, onChange, error, indicator }: Props) {
   const git = useGitInfo(session, onChange);
   const hasFolder = !!session.cwd.trim();
   const setProject = (cwd: string) => onChange({ cwd, branch: undefined, worktree: false, newBranch: undefined });
@@ -52,7 +54,7 @@ export function NewSessionPage({ session, agents, draft, onDraft, images, onImag
           onStop={() => {}}
           running={false}
           starting={starting}
-          blockedReason={hasFolder ? undefined : "Choose a project folder first"}
+          blockedReason={hasFolder ? paused : "Choose a project folder first"}
           placeholder={hasFolder ? "Message the agent…" : "Choose a project folder, then describe the task…"}
           agents={agents}
           agent={session.agent}

@@ -35,6 +35,8 @@ pub struct Server {
     /// Runs using it right now, and when it was last used: an idle server is stopped.
     runs: Arc<AtomicUsize>,
     last_used: Arc<std::sync::Mutex<Instant>>,
+    /// Its Satie token, scoped to its folder; revoked once the server is gone.
+    satie: Option<Arc<satie::Grant>>,
 }
 
 /// Held by a run while it uses a server, so the server isn't stopped under it.
@@ -84,15 +86,21 @@ async fn stop_idle() {
     }
 }
 
-/// Runs `opencode serve` until its stdin (Bach's pipe) closes.
-const SUPERVISE: &str = "opencode serve --port 0 --hostname 127.0.0.1 & pid=$!; \
-    cat > /dev/null; kill $pid 2>/dev/null; wait $pid";
+/// Runs `opencode serve` (through the wrapper, if any) until its stdin (Bach's pipe) closes.
+fn supervise() -> String {
+    format!(
+        "{} serve --port 0 --hostname 127.0.0.1 & pid=$!; \
+        cat > /dev/null; kill $pid 2>/dev/null; wait $pid",
+        crate::wrapper::shell_command("opencode")
+    )
+}
 
 /// What a run sees when the server has gone away; its turn is over.
 pub const LOST: &str = "bach.server.lost";
 
-/// The server for folder `dir`, starting it there if it isn't running.
-pub async fn server(dir: &str) -> Result<Server, String> {
+/// The server for folder `dir`, starting it there if it isn't running. `satie`, if given, is
+/// offered to it as the `satie` MCP server (see [`Server::offer_satie`]).
+pub async fn server(dir: &str, satie: Option<&satie::Satie>) -> Result<Server, String> {
     let mut all = servers().lock().await;
     if let Some((s, _)) = all.get(dir) {
         if s.alive.load(Ordering::SeqCst) {
@@ -100,19 +108,23 @@ pub async fn server(dir: &str) -> Result<Server, String> {
             return Ok(s.clone());
         }
     }
-    let (server, lifeline) = start(dir).await?;
+    let (server, lifeline) = start(dir, satie).await?;
     all.insert(dir.to_string(), (server.clone(), lifeline));
     Ok(server)
 }
 
-async fn start(dir: &str) -> Result<(Server, Lifeline), String> {
-    if which::which("opencode").is_err() {
+async fn start(dir: &str, satie: Option<&satie::Satie>) -> Result<(Server, Lifeline), String> {
+    if !crate::wrapper::installed("opencode") {
         return Err("opencode isn't installed on the machine running the agents.".into());
     }
     let password = uuid::Uuid::new_v4().to_string();
+    let grant = satie.map(|s| {
+        Arc::new(s.grant(satie::Scope { project: Some(dir.to_string()), owner: None }))
+    });
     let mut child = Command::new("sh")
-        .args(["-c", SUPERVISE])
+        .args(["-c", &supervise()])
         .env("OPENCODE_SERVER_PASSWORD", &password)
+        .envs(crate::runs::no_proxy_for_loopback())
         .current_dir(dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -150,6 +162,7 @@ async fn start(dir: &str) -> Result<(Server, Lifeline), String> {
         alive: Arc::new(AtomicBool::new(true)),
         runs: Arc::default(),
         last_used: Arc::new(std::sync::Mutex::new(Instant::now())),
+        satie: grant,
     };
     // One stream of every project's events, passed on to the runs.
     let s = server.clone();
@@ -172,6 +185,28 @@ impl Server {
     pub fn lease(&self) -> Lease {
         self.runs.fetch_add(1, Ordering::SeqCst);
         Lease(self.clone())
+    }
+
+    /// Adds Satie as the `satie` MCP server for folder `dir`, unless opencode already has it,
+    /// and returns the names of the folder's MCP servers. Added over HTTP rather than in its
+    /// config: opencode may be a wrapper that sets `OPENCODE_CONFIG_CONTENT` itself, and a
+    /// folder's MCP servers go if opencode reloads it, so this is checked every turn. The server
+    /// lasts across runs, so its token is the folder's, not a run's.
+    pub async fn offer_satie(&self, dir: &str) -> Result<Vec<String>, String> {
+        let names = |status: &Value| -> Vec<String> {
+            status.as_object().into_iter().flatten().map(|(k, _)| k.clone()).collect()
+        };
+        let status = self.get("/mcp", Some(dir)).await?;
+        let Some(grant) = &self.satie else { return Ok(names(&status)) };
+        if status["satie"]["status"] == "connected" {
+            return Ok(names(&status));
+        }
+        let body = serde_json::json!({ "name": "satie", "config": {
+            "type": "remote",
+            "url": grant.url,
+            "headers": { "Authorization": format!("Bearer {}", grant.token) },
+        }});
+        Ok(names(&self.post("/mcp", dir, &body).await?))
     }
 
     fn touch(&self) {
@@ -251,8 +286,8 @@ impl Server {
 
 /// The models opencode can run in folder `dir` (its configured providers', the project's own
 /// included), as `provider/model`.
-pub async fn list_models(dir: &str) -> Result<Vec<ModelInfo>, String> {
-    let server = server(dir).await?;
+pub async fn list_models(dir: &str, satie: Option<&satie::Satie>) -> Result<Vec<ModelInfo>, String> {
+    let server = server(dir, satie).await?;
     let providers = server.get("/config/providers", Some(dir)).await?;
     let config = server.get("/config", Some(dir)).await.unwrap_or_default();
     Ok(opencode::models_from(&providers, config["model"].as_str()))

@@ -10,16 +10,17 @@ use std::collections::{BTreeMap, HashMap};
 
 /// The permission modes Bach offers for Codex: its own presets, and its plan mode. Anything
 /// else (none, or a mode left over from Claude Code) is "auto".
-pub const PERMISSION_MODES: &[&str] = &["auto", "readOnly", "fullAccess", "plan"];
+pub const PERMISSION_MODES: &[&str] = &["auto", "manual", "fullAccess", "plan"];
 
 /// The sandbox and approval policy for a permission mode.
 ///
 /// "auto": Codex edits the project on its own and asks before anything beyond it (network,
-/// other folders, `.git`); without a sandbox given, `codex` would default to read-only. Plan
-/// mode runs the same way; Codex itself holds back from changing things while planning.
+/// other folders, `.git`); without a sandbox given, `codex` would default to read-only.
+/// "manual": asks before any change, as the other agents' manual modes do. Plan mode runs as
+/// "auto"; Codex itself holds back from changing things while planning.
 fn preset(mode: Option<&str>) -> (&'static str, &'static str) {
     match mode {
-        Some("readOnly") => ("read-only", "on-request"),
+        Some("manual") => ("read-only", "on-request"),
         Some("fullAccess") => ("danger-full-access", "never"),
         _ => ("workspace-write", "on-request"),
     }
@@ -63,14 +64,22 @@ fn toml_string(s: &str) -> String {
 /// `satie` adds Bach's background-task launcher as the `satie` MCP server, with guidance on
 /// when to use it. The token itself goes in the environment ([`env`]), not the command line.
 pub fn args(satie: Option<&satie::Grant>) -> Vec<String> {
+    args_with(satie, crate::wrapper::active())
+}
+
+/// Codex keeps only the last `developer_instructions` it is given, wherever they come from. A
+/// wrapper may put its own there (describing its sandbox), and those must stand: under one,
+/// Satie's tool descriptions are what steer Codex to it.
+fn args_with(satie: Option<&satie::Grant>, wrapped: bool) -> Vec<String> {
     let mut a: Vec<String> = vec!["app-server".into(), "--enable".into(), QUESTIONS_FEATURE.into()];
     if let Some(grant) = satie {
-        for setting in [
-            format!("mcp_servers.satie.url={}", toml_string(&grant.url)),
+        a.extend(["-c".into(), format!("mcp_servers.satie.url={}", toml_string(&grant.url))]);
+        a.extend([
+            "-c".into(),
             format!("mcp_servers.satie.bearer_token_env_var={}", toml_string(SATIE_TOKEN_ENV)),
-            format!("developer_instructions={}", toml_string(SATIE_GUIDANCE)),
-        ] {
-            a.extend(["-c".into(), setting]);
+        ]);
+        if !wrapped {
+            a.extend(["-c".into(), format!("developer_instructions={}", toml_string(SATIE_GUIDANCE))]);
         }
     }
     a
@@ -97,6 +106,12 @@ pub struct Conversation {
     choice: Option<String>,
     /// See [`PERMISSION_MODES`].
     mode: Option<String>,
+    /// Whether Codex may use its own sandbox. Not under a wrapper, unless asked for: it sandboxes
+    /// Codex itself, and many sandboxes can't have Codex's bubblewrap inside them, so every command
+    /// would fail. Without it Codex is told the sandbox is external, and runs anything the wrapper
+    /// allows: "auto" and "plan" ask only before commands Codex thinks are dangerous (`rm -rf`),
+    /// "fullAccess" refuses those, and "manual" asks before everything else too.
+    own_sandbox: bool,
     /// Reasoning effort for the turn, if chosen.
     effort: Option<String>,
     /// The model the thread runs (chosen, or Codex's default).
@@ -171,6 +186,7 @@ impl Conversation {
             allowed: turn.allowed_tools.to_vec(),
             choice: turn.model.map(String::from),
             mode: turn.permission_mode.map(String::from),
+            own_sandbox: crate::wrapper::codex_sandbox(),
             effort: turn.effort.map(String::from),
             model: None,
             window_sent: false,
@@ -238,6 +254,11 @@ impl Conversation {
                 // Also given when resuming: the session's mode or model may have changed, and a
                 // thread first run by `codex exec` would otherwise keep its read-only sandbox.
                 let (sandbox, approval) = preset(self.mode.as_deref());
+                // Without its own sandbox, manual is kept by asking: before every command Codex
+                // doesn't know to be safe, and every edit.
+                let manual = !self.own_sandbox && self.mode.as_deref() == Some("manual");
+                let approval = if manual { "untrusted" } else { approval };
+                let sandbox = if self.own_sandbox { sandbox } else { "danger-full-access" };
                 let mut params = json!({ "approvalPolicy": approval, "sandbox": sandbox });
                 if let Some(cwd) = &self.cwd {
                     params["cwd"] = json!(cwd);
@@ -276,6 +297,11 @@ impl Conversation {
                         .map(|f| json!({ "type": "localImage", "path": f.path })),
                 );
                 let mut params = json!({ "threadId": id, "input": input });
+                // Under a wrapper: sandboxed, just not by Codex. Only a turn can say so (a thread
+                // takes the plain modes), and the network is the wrapper's to allow.
+                if !self.own_sandbox {
+                    params["sandboxPolicy"] = json!({ "type": "externalSandbox", "networkAccess": "enabled" });
+                }
                 if let Some(effort) = &self.effort {
                     params["effort"] = json!(effort);
                 }
@@ -679,7 +705,9 @@ impl Conversation {
 /// Asks a short-lived app server for the models the user's Codex can run (its `model/list`).
 pub async fn list_models() -> Result<Vec<ModelInfo>, String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    let mut child = tokio::process::Command::new("codex")
+    let program = crate::wrapper::command("codex");
+    let mut child = tokio::process::Command::new(&program[0])
+        .args(&program[1..])
         .arg("app-server")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -1197,6 +1225,19 @@ mod tests {
         (thread["params"].clone(), serde_json::from_str::<Value>(&sent[0]).unwrap()["params"].clone())
     }
 
+    #[tokio::test]
+    async fn leaves_a_wrappers_instructions_alone() {
+        let dir = std::env::temp_dir().join(format!("bach-codex-args-{}", std::process::id()));
+        let satie = satie::Satie::start("127.0.0.1:0".parse().unwrap(), dir.clone()).await.unwrap();
+        let grant = satie.grant(satie::Scope::default());
+        let has = |a: &[String], key: &str| a.iter().any(|x| x.starts_with(key));
+        let direct = args_with(Some(&grant), false);
+        assert!(has(&direct, "mcp_servers.satie.url=") && has(&direct, "developer_instructions="));
+        let wrapped = args_with(Some(&grant), true);
+        assert!(has(&wrapped, "mcp_servers.satie.url=") && !has(&wrapped, "developer_instructions="));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn permission_modes_and_models() {
         let modes = |mode| {
@@ -1211,7 +1252,7 @@ mod tests {
         assert_eq!(modes(None), m("workspace-write", "on-request", "default"));
         // A mode left over from Claude Code means the default.
         assert_eq!(modes(Some("acceptEdits")), m("workspace-write", "on-request", "default"));
-        assert_eq!(modes(Some("readOnly")), m("read-only", "on-request", "default"));
+        assert_eq!(modes(Some("manual")), m("read-only", "on-request", "default"));
         assert_eq!(modes(Some("fullAccess")), m("danger-full-access", "never", "default"));
         assert_eq!(modes(Some("plan")), m("workspace-write", "on-request", "plan"));
 
@@ -1221,6 +1262,31 @@ mod tests {
         assert_eq!(turn["collaborationMode"]["settings"]["model"], "gpt-x");
         let (thread, _) = opening(None, None);
         assert!(thread.get("model").is_none());
+
+        // Under a wrapper, Codex's own sandbox is off and the wrapper's stands.
+        let mut c = Conversation::new(&Turn { prompt: "hi", ..Default::default() });
+        c.own_sandbox = false;
+        let (_, sent) = c.on_line(&json!({ "id": 1, "result": {} }));
+        let thread: Value = serde_json::from_str(&sent[1]).unwrap();
+        assert_eq!(thread["params"]["sandbox"], "danger-full-access");
+        assert_eq!(thread["params"]["approvalPolicy"], "on-request");
+        let (_, sent) = c.on_line(&json!({ "id": 2, "result": { "thread": { "id": "t1" }, "model": "gpt-x" } }));
+        let turn: Value = serde_json::from_str(&sent[0]).unwrap();
+        assert_eq!(turn["params"]["sandboxPolicy"], json!({ "type": "externalSandbox", "networkAccess": "enabled" }));
+        // With its own sandbox, the thread's mode stands.
+        let (_, turn) = opening(None, None);
+        assert!(turn.get("sandboxPolicy").is_none());
+
+        // Manual there asks before commands it doesn't know are safe, and before edits.
+        let mut c = Conversation::new(&Turn { prompt: "hi", permission_mode: Some("manual"), ..Default::default() });
+        c.own_sandbox = false;
+        let (_, sent) = c.on_line(&json!({ "id": 1, "result": {} }));
+        let thread: Value = serde_json::from_str(&sent[1]).unwrap();
+        assert_eq!(thread["params"]["approvalPolicy"], "untrusted");
+        let (ev, replies) = ask(&mut c, json!({ "id": 7, "method": "item/fileChange/requestApproval",
+            "params": { "itemId": "i1", "turnId": "t1" } }));
+        assert!(matches!(&ev, Some(AgentEvent::Approval { tool_name, .. }) if tool_name == "Edit"), "{ev:?}");
+        assert!(replies.is_empty());
     }
 
     #[test]

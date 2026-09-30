@@ -6,7 +6,7 @@
 //! replies to calls, hands events on, and reconnects (with backoff) when the command ends.
 pub mod forward;
 
-use bach_protocol::{fingerprint, ApiError, ClientFrame, ErrorCode};
+use bach_protocol::{fingerprint, AgentWrapper, ApiError, ClientFrame, ErrorCode};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -28,8 +28,8 @@ use tokio::{
 #[derive(Clone, Debug, PartialEq)]
 pub enum Status {
     Connecting,
-    /// `version` is the server's.
-    Connected { version: String },
+    /// `version` is the server's; `wrapper` is how it starts agents.
+    Connected { version: String, wrapper: AgentWrapper },
     /// Why it isn't connected. Retried automatically unless `retrying` is false. `incompatible`:
     /// the server is reachable but speaks a different protocol (an update left one side old).
     Disconnected {
@@ -292,6 +292,7 @@ async fn session(
     });
     on_status(Status::Connected {
         version: hello["version"].as_str().unwrap_or_default().to_string(),
+        wrapper: serde_json::from_value(hello["wrapper"].clone()).unwrap_or_default(),
     });
 
     let writer = tokio::spawn(async move {

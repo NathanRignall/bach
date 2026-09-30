@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "cc9c074f9860585d";
+export const PROTOCOL = "5a89fd365f09bc58";
 
 /**
  * Agent-independent events the UI renders.
@@ -28,9 +28,27 @@ directories: Array<string>, } | { "type": "approval_cancelled", requestId: strin
  */
 activity?: string, toolUses?: number, tokens?: number, durationMs?: number, summary?: string, background?: boolean, } | { "type": "context", used: number, } | { "type": "context_windows", windows: { [key in string]: number }, } | { "type": "limits", usage: PlanUsage, } | { "type": "done", costUsd: number | null, isError: boolean, } | { "type": "error", message: string, } | { "type": "cancelled" } | { "type": "raw", line: string, };
 
-export type AgentInfo = { kind: AgentKind, name: string, installed: boolean, };
+export type AgentInfo = { kind: AgentKind, name: string, installed: boolean, 
+/**
+ * Its own sandbox is off (Codex under a wrapper): only the wrapper limits what it runs, so
+ * its permission modes mean less, and the UI says so.
+ */
+unsandboxed: boolean, };
 
 export type AgentKind = "claude" | "codex" | "opencode";
+
+/**
+ * A command bach-server starts the agent CLIs through, taking their command line after it:
+ * `sandbox` runs Claude Code as `sandbox claude …`. Fixed when the server starts
+ * (`BACH_AGENT_WRAPPER`); `""` starts them directly.
+ */
+export type AgentWrapper = { command: string, 
+/**
+ * Codex's own sandbox inside the wrapper's (`BACH_AGENT_WRAPPER_CODEX_SANDBOX`). Off, the
+ * wrapper's sandbox is the only one (many can't have Codex's inside them), and Codex's modes
+ * are kept by asking instead (see [`AgentInfo::unsandboxed`]).
+ */
+codexSandbox: boolean, };
 
 /**
  * Answers an approval request (or a question) the session's agent is waiting on.
@@ -92,7 +110,12 @@ host: string,
 /**
  * How to run bach-server there (default `bach-server`).
  */
-command: string, };
+command: string, 
+/**
+ * Given to bach-server there when the app starts or restarts it. An empty command leaves
+ * the server's own (`BACH_AGENT_WRAPPER`): the app never takes a wrapper away.
+ */
+wrapper: AgentWrapper, };
 
 export type ConnectionState = "connecting" | "connected" | "disconnected";
 
@@ -116,7 +139,16 @@ incompatible: boolean,
 /**
  * The server's version, once connected.
  */
-version: string | null, };
+version: string | null, 
+/**
+ * How the server starts agents, once connected.
+ */
+wrapper: AgentWrapper | null, 
+/**
+ * The server was started with another agent wrapper than the one set here (and only a new
+ * server takes it): new agent turns are refused until it restarts.
+ */
+wrapperMismatch: boolean, };
 
 /**
  * How much of the model's context window a session's conversation fills.
@@ -498,7 +530,11 @@ export type ServerEvent = { "topic": "session", "data": SessionEvent } | { "topi
  * What the WebSocket bridge (and `bach-server attach`) sends: first a `hello`, then replies to
  * commands, and events.
  */
-export type ServerFrame = { "kind": "hello", protocol: string, version: string, } | { "kind": "reply", id: number, result: JsonValue, } | { "kind": "error", id: number, error: ApiError, } | { "kind": "event", event: ServerEvent, };
+export type ServerFrame = { "kind": "hello", protocol: string, version: string, 
+/**
+ * How the server starts agents; see [`AgentWrapper`].
+ */
+wrapper: AgentWrapper, } | { "kind": "reply", id: number, result: JsonValue, } | { "kind": "error", id: number, error: ApiError, } | { "kind": "event", event: ServerEvent, };
 
 export type Session = { id: string, title: string, 
 /**

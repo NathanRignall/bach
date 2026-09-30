@@ -8,14 +8,7 @@ use serde_json::{json, Value};
 // Steering Claude Code to Satie
 // ---------------------------------------------------------------------------------------------
 
-const GUIDANCE: &str = "Anything that must keep running after your turn ends (dev servers, simulations, watchers, \
-long jobs) has to be started with the `satie` MCP tool `task_start`, not with Bash `run_in_background`, `nohup`, a trailing \
-`&` or tmux: processes started those ways are stopped when the turn ends. `task_start` keeps the process running on its own, \
-shows it to the user in the Tasks panel, and `task_logs`, `task_list` and `task_stop` manage it. Pass `port` when the process \
-serves on one, so the call waits until it is up, and `interactive: false` when only you will use it (a server for tests or \
-headless browser checks), so its ports aren't forwarded to the user's computer. For a process-compose project use `compose_start` with the compose file \
-instead of running process-compose yourself: each of its processes then gets its own state and log, and `task_process` \
-restarts one without the rest.";
+// The guidance itself is Satie's MCP `instructions`, which Claude Code adds to its prompt.
 
 const HOOK_DENY: &str = "Background commands are stopped when this turn ends. Start it with the satie MCP tool `task_start` \
 instead: it keeps running independently and the user can see and stop it in the Tasks panel.";
@@ -44,13 +37,18 @@ fn mcp_config(grant: &Grant) -> String {
     .to_string()
 }
 
-/// `--settings`: the hook that stops `run_in_background` and points at Satie instead.
-fn settings() -> String {
-    json!({ "hooks": { "PreToolUse": [{
-        "matcher": "Bash",
-        "hooks": [{ "type": "command", "command": hook_command() }],
-    }]}})
-    .to_string()
+/// `--settings`: verbose output, which `stream-json` needs, and with Satie the hook that stops
+/// `run_in_background` and points at Satie instead. Verbose is a setting rather than `--verbose`
+/// because a wrapper may take that flag for itself (`sandbox claude --verbose`).
+fn settings(satie: bool) -> String {
+    let mut settings = json!({ "verbose": true });
+    if satie {
+        settings["hooks"] = json!({ "PreToolUse": [{
+            "matcher": "Bash",
+            "hooks": [{ "type": "command", "command": hook_command() }],
+        }]});
+    }
+    settings.to_string()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -73,7 +71,6 @@ pub fn args(
         "stream-json",
         "--output-format",
         "stream-json",
-        "--verbose",
         // Text as it is written (`stream_event`s), for showing it live.
         "--include-partial-messages",
         "--permission-prompt-tool",
@@ -81,6 +78,7 @@ pub fn args(
     ]
     .map(String::from)
     .into();
+    a.extend(["--settings".into(), settings(satie.is_some())]);
     if let Some(id) = session_id {
         a.push("--resume".into());
         a.push(id.into());
@@ -99,8 +97,6 @@ pub fn args(
     }
     if let Some(grant) = satie {
         a.extend(["--mcp-config".into(), mcp_config(grant)]);
-        a.extend(["--append-system-prompt".into(), GUIDANCE.into()]);
-        a.extend(["--settings".into(), settings()]);
     }
     // Reading a task's state or output changes nothing, so those never need a card; starting
     // and stopping still do.
@@ -431,7 +427,7 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn hands_the_run_satie_with_guidance_and_a_hook() {
+    async fn hands_the_run_satie_and_a_hook() {
         let dir = std::env::temp_dir().join(format!("bach-claude-args-{}", std::process::id()));
         let satie = satie::Satie::start("127.0.0.1:0".parse().unwrap(), dir.clone())
             .await
@@ -444,8 +440,8 @@ mod tests {
         let server = &cfg["mcpServers"]["satie"];
         assert_eq!((server["type"].as_str(), server["url"].as_str()), (Some("http"), Some(satie.url())));
         assert_eq!(server["headers"]["Authorization"], format!("Bearer {}", grant.token));
-        let prompt = after("--append-system-prompt");
-        assert!(prompt.contains("task_start") && prompt.contains("run_in_background"));
+        // The system prompt is left to a wrapper; Satie's guidance comes with its tools.
+        assert!(!a.contains(&"--append-system-prompt".to_string()));
         assert!(a.contains(&"mcp__satie__task_list".to_string()), "read-only tools pre-approved");
         assert!(!a.contains(&"mcp__satie__task_start".to_string()), "starting still asks");
         let _ = std::fs::remove_dir_all(dir);
@@ -453,7 +449,8 @@ mod tests {
 
     #[test]
     fn hook_denies_only_background_bash_calls() {
-        let settings: Value = serde_json::from_str(&settings()).unwrap();
+        let settings: Value = serde_json::from_str(&settings(true)).unwrap();
+        assert_eq!(settings["verbose"], true);
         let hook = &settings["hooks"]["PreToolUse"][0];
         assert_eq!(hook["matcher"], "Bash");
         let cmd = hook["hooks"][0]["command"].as_str().unwrap();

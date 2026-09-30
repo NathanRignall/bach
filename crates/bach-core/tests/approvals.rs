@@ -235,10 +235,8 @@ async fn approvals_round_trip() {
         assert!(o.args.contains(flag), "missing `{flag}` in: {}", o.args);
     }
     // Claude Code is handed Bach's MCP server (Satie), with a per-run token, and it is revoked after.
-    assert!(
-        o.args.contains("--append-system-prompt ") && o.args.contains("task_start"),
-        "guidance missing"
-    );
+    // Its guidance comes with Satie's tools (MCP `instructions`), not the system prompt.
+    assert!(!o.args.contains("--append-system-prompt"), "system prompt left alone");
     assert!(
         o.args.contains("--settings ") && o.args.contains("PreToolUse"),
         "hook settings missing"
@@ -310,10 +308,6 @@ async fn approvals_round_trip() {
             .contains("--allowedTools mcp__satie__task_list mcp__satie__task_logs"),
         "{}",
         o.args
-    );
-    assert!(
-        !o.args.contains("task_start") || o.args.contains("--append-system-prompt"),
-        "task_start must not be pre-approved"
     );
     assert!(
         !o.args.contains("--allowedTools mcp__satie__task_start")

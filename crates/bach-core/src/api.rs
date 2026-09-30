@@ -46,6 +46,7 @@ impl Api {
     /// Opens (creating if needed) the session database at `db`. Worktrees and Satie's files go
     /// in folders next to it. Starts Satie's MCP server on a free loopback port.
     pub async fn open(db: &Path) -> Result<Api, String> {
+        crate::wrapper::init()?;
         let dir = db.parent().unwrap_or(Path::new("."));
         let store = Store::open(db)?;
         // Nothing survives a restart of the backend: no run is live any more.
@@ -410,7 +411,7 @@ impl Handler for Api {
                 return Ok(models.clone());
             }
         }
-        let models = crate::adapters::list_models(a.agent, cwd.as_deref())
+        let models = crate::adapters::list_models(a.agent, cwd.as_deref(), Some(&self.satie))
             .await
             .map_err(ApiError::failed)?;
         self.models

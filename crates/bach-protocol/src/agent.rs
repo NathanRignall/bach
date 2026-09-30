@@ -52,11 +52,27 @@ pub enum DeltaKind {
     Output,
 }
 
+/// A command bach-server starts the agent CLIs through, taking their command line after it:
+/// `sandbox` runs Claude Code as `sandbox claude …`. Fixed when the server starts
+/// (`BACH_AGENT_WRAPPER`); `""` starts them directly.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentWrapper {
+    pub command: String,
+    /// Codex's own sandbox inside the wrapper's (`BACH_AGENT_WRAPPER_CODEX_SANDBOX`). Off, the
+    /// wrapper's sandbox is the only one (many can't have Codex's inside them), and Codex's modes
+    /// are kept by asking instead (see [`AgentInfo::unsandboxed`]).
+    pub codex_sandbox: bool,
+}
+
 #[derive(Clone, Debug, Serialize, TS)]
 pub struct AgentInfo {
     pub kind: AgentKind,
     pub name: String,
     pub installed: bool,
+    /// Its own sandbox is off (Codex under a wrapper): only the wrapper limits what it runs, so
+    /// its permission modes mean less, and the UI says so.
+    pub unsandboxed: bool,
 }
 
 /// How the user answered an approval request.

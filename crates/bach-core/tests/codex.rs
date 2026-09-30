@@ -368,7 +368,7 @@ async fn real_turn(dir: &Path, prompt: &str, mode: Option<&str>, session_id: Opt
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn real_codex_settings_and_streams() {
-    let models = bach_core::adapters::list_models(AgentKind::Codex, None).await.unwrap();
+    let models = bach_core::adapters::list_models(AgentKind::Codex, None, None).await.unwrap();
     println!("models: {:?}", models.iter().map(|m| (&m.id, m.is_default)).collect::<Vec<_>>());
     assert!(models.iter().any(|m| m.is_default));
 

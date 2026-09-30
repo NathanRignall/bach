@@ -114,8 +114,27 @@ fn track(ev: &mut AgentEvent, pending: &Pending, project: Option<&std::path::Pat
 #[derive(Clone, Default)]
 pub struct Runs {
     live: Arc<Mutex<HashMap<String, Live>>>,
-    /// Satie (background tasks), offered to Claude Code runs as an MCP server.
+    /// Satie (background tasks), offered to the agents as an MCP server.
     satie: Option<Satie>,
+}
+
+/// `NO_PROXY` (both spellings) with loopback added to whatever it already lists. Satie is on
+/// 127.0.0.1, and Claude Code sends even loopback requests through an `HTTPS_PROXY` otherwise,
+/// which may refuse them, so Satie's tools go missing.
+pub(crate) fn no_proxy_for_loopback() -> [(&'static str, String); 2] {
+    let mut hosts: Vec<String> = ["NO_PROXY", "no_proxy"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .flat_map(|v| v.split(',').map(|h| h.trim().to_string()).collect::<Vec<_>>())
+        .filter(|h| !h.is_empty())
+        .collect();
+    for h in ["127.0.0.1", "localhost", "::1"] {
+        if !hosts.iter().any(|x| x == h) {
+            hosts.push(h.into());
+        }
+    }
+    let value = hosts.join(",");
+    [("NO_PROXY", value.clone()), ("no_proxy", value)]
 }
 
 /// A run's attachments written out for an agent that takes them as files, in a folder only this
@@ -291,12 +310,17 @@ impl Runs {
         attachment_files: AttachmentFiles,
         project: PathBuf,
     ) -> Result<String, String> {
-        let server = opencode_server::server(&turn.dir).await?;
+        let server = opencode_server::server(&turn.dir, self.satie.as_ref()).await?;
         // Keeps this folder's server running while the turn does.
         let lease = server.lease();
         // Listening before prompting, so nothing is missed.
         let mut events = server.subscribe();
         let dir = turn.dir;
+        // Without Satie the turn still runs; its tools are just missing.
+        let mcp_servers = server.offer_satie(&dir).await.unwrap_or_else(|e| {
+            eprintln!("run {run_id}: couldn't give opencode Satie: {e}");
+            vec![]
+        });
         let mode = turn.mode.as_deref();
         let permission = json!({ "permission": opencode::permission_rules(mode, &turn.allowed) });
         let emit = {
@@ -353,7 +377,7 @@ impl Runs {
         tokio::spawn(async move {
             let _attachment_files = attachment_files; // removed when the run ends
             let _lease = lease;
-            let mut stream = opencode::Stream::new(&session, &turn.allowed);
+            let mut stream = opencode::Stream::new(&session, &turn.allowed, &mcp_servers);
             let path = format!("/session/{session}/abort");
             loop {
                 tokio::select! {
@@ -517,7 +541,8 @@ impl Runs {
             },
         );
 
-        // Claude Code and Codex get Satie as an MCP server, with a token scoped to this project.
+        // Claude Code and Codex get Satie as an MCP server, with a token scoped to this project
+        // (opencode's server gets its own when it starts).
         // The grant is revoked when the run ends (or if launching fails below).
         let grant = match (&self.satie, agent) {
             (Some(satie), AgentKind::Claude | AgentKind::Codex) => Some(satie.grant(Scope {
@@ -527,8 +552,9 @@ impl Runs {
             _ => None,
         };
 
-        let mut cmd = Command::new(agent.binary());
-        cmd.args(agent.args(
+        let program = crate::wrapper::command(agent.binary());
+        let mut cmd = Command::new(&program[0]);
+        cmd.args(&program[1..]).args(agent.args(
             session_id.as_deref(),
             model.as_deref(),
             permission_mode.as_deref(),
@@ -537,6 +563,7 @@ impl Runs {
             grant.as_ref(),
         ))
         .envs(agent.env(grant.as_ref()))
+        .envs(no_proxy_for_loopback())
         .stdin(if conversation.uses_stdin() {
             Stdio::piped()
         } else {
@@ -550,7 +577,7 @@ impl Runs {
         }
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("failed to launch `{}`: {e}", agent.binary()))?;
+            .map_err(|e| format!("failed to launch `{}`: {e}", program.join(" ")))?;
 
         // Deliver the prompt, leaving stdin open for the agent's requests until the run ends.
         let stdin = Arc::new(Mutex::new(child.stdin.take()));

@@ -276,7 +276,7 @@ fn codex_real_command_approval_and_session_rules() {
 
 /// A recorded opencode turn (1.15.10): a question, a shell command that asked first, then text.
 fn opencode(allowed: &[String]) -> (Vec<AgentEvent>, Vec<bach_core::adapters::opencode::Reply>) {
-    let mut stream = bach_core::adapters::opencode::Stream::new("ses_f10477d98ffeJX7XYmQSN2mpi4", allowed);
+    let mut stream = bach_core::adapters::opencode::Stream::new("ses_f10477d98ffeJX7XYmQSN2mpi4", allowed, &[]);
     let (mut events, mut replies) = (vec![], vec![]);
     for line in include_str!("fixtures/opencode_question_permission.jsonl").lines() {
         let (ev, r) = stream.on_event(&serde_json::from_str(line).unwrap());
@@ -284,7 +284,7 @@ fn opencode(allowed: &[String]) -> (Vec<AgentEvent>, Vec<bach_core::adapters::op
         replies.extend(r);
     }
     // Another session's events are none of this run's business.
-    let mut other = bach_core::adapters::opencode::Stream::new("ses_other", &[]);
+    let mut other = bach_core::adapters::opencode::Stream::new("ses_other", &[], &[]);
     for line in include_str!("fixtures/opencode_question_permission.jsonl").lines() {
         assert!(other.on_event(&serde_json::from_str(line).unwrap()).0.is_empty());
     }
