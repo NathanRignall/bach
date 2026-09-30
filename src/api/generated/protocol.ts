@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "775f4f4f732cc327";
+export const PROTOCOL = "f58a6a4ced3f30f5";
 
 /**
  * Agent-independent events the UI renders.
@@ -68,6 +68,39 @@ export type ApiError = { code: ErrorCode,
 message: string, };
 
 /**
+ * Where a branch stands against the remote.
+ */
+export type BranchStatus = { 
+/**
+ * None when HEAD is detached.
+ */
+branch: string | null, 
+/**
+ * HEAD's commit (abbreviated); none before the first commit.
+ */
+head: string | null, 
+/**
+ * The remote-tracking branch it pushes to, like `origin/feature`; none until first pushed.
+ */
+upstream: string | null, 
+/**
+ * The repository has at least one remote.
+ */
+hasRemote: boolean, 
+/**
+ * Commits the upstream lacks. Without an upstream: commits no remote branch has.
+ */
+ahead: number, 
+/**
+ * Commits the upstream has that the branch lacks (as of the last fetch).
+ */
+behind: number, 
+/**
+ * Files with staged changes.
+ */
+staged: number, };
+
+/**
  * A command sent over the WebSocket bridge. `id` is echoed back in the reply.
  */
 export type ClientFrame = { id: number, cmd: string, args?: JsonValue, };
@@ -76,6 +109,23 @@ export type ClientFrame = { id: number, cmd: string, args?: JsonValue, };
  * Ends the terminal's shell (and what runs in it) and forgets the terminal.
  */
 export type CloseTerminalArgs = { terminalId: string, };
+
+/**
+ * A commit, for the history list.
+ */
+export type CommitInfo = { sha: string, 
+/**
+ * Abbreviated.
+ */
+short: string, subject: string, author: string, 
+/**
+ * Unix time in seconds.
+ */
+time: number, 
+/**
+ * On the session's branch, as opposed to from before it left its base branch.
+ */
+onBranch: boolean, };
 
 /**
  * One process of a process-compose project.
@@ -247,7 +297,12 @@ oldPath: string | null, status: FileStatus,
 /**
  * Not yet tracked by git.
  */
-untracked: boolean, binary: boolean, additions: number, deletions: number, 
+untracked: boolean, 
+/**
+ * In an uncommitted diff: the part of the file's changes that is staged (index against
+ * HEAD), as opposed to the unstaged part (working tree against index).
+ */
+staged: boolean, binary: boolean, additions: number, deletions: number, 
 /**
  * Empty for binary files, and for files too large to show (`omitted`).
  */
@@ -296,23 +351,35 @@ export type GetSessionArgs = { sessionId: string, afterSeq?: number, };
 export type GetUsageArgs = Record<symbol, never>;
 
 /**
+ * Commits what is staged, with `message`. Never amends.
+ */
+export type GitCommitArgs = { path: string, message: string, };
+
+/**
  * The changes in a checkout, file by file.
  */
 export type GitDiff = { 
 /**
- * The commit the working tree is compared with (abbreviated), or none before the first commit.
+ * The commit the changes are compared with (abbreviated), or none before the first commit.
+ * For a single commit's diff: that commit.
  */
-base: string | null, files: Array<FileDiff>, 
+base: string | null, 
+/**
+ * Uncommitted changes: a file with both staged and unstaged changes is listed twice (see
+ * `FileDiff::staged`), and files and hunks can be staged and unstaged.
+ */
+staging: boolean, files: Array<FileDiff>, 
 /**
  * Some files' lines were left out to keep the diff a reasonable size.
  */
 truncated: boolean, };
 
 /**
- * The changes in the checkout at `path`: uncommitted ones (including untracked files), or with
- * `baseBranch`, everything since the branch left it (committed or not).
+ * The changes in the checkout at `path`: uncommitted ones (including untracked files, split
+ * into staged and unstaged), or with `baseBranch`, everything since the branch left it
+ * (committed or not), or with `commit`, what that commit changed.
  */
-export type GitDiffArgs = { path: string, baseBranch?: string, };
+export type GitDiffArgs = { path: string, baseBranch?: string, commit?: string, };
 
 export type GitInfo = { isRepo: boolean, root: string | null, 
 /**
@@ -332,6 +399,45 @@ dirty: boolean, };
  * Branches and state of the repository containing `path`.
  */
 export type GitInfoArgs = { path: string, };
+
+/**
+ * A page of the commits reachable from HEAD, newest first.
+ */
+export type GitLog = { commits: Array<CommitInfo>, 
+/**
+ * There are more commits after these.
+ */
+hasMore: boolean, };
+
+/**
+ * The commits of the checkout at `path`, newest first. With `baseBranch` and not `older`, only
+ * those since the branch left it. `skip` and `limit` (default 50) page through them.
+ */
+export type GitLogArgs = { path: string, baseBranch?: string, older?: boolean, skip?: number, limit?: number, };
+
+/**
+ * Pushes the current branch to its upstream, or the first time to the repository's remote
+ * (`origin`, or its only one), setting that as the upstream. Never forces: a rejected push is
+ * an error. Returns the branch's new status.
+ */
+export type GitPushArgs = { path: string, };
+
+/**
+ * Stages (or with `stage: false`, unstages) whole files, given by path relative to the checkout.
+ */
+export type GitStageArgs = { path: string, files: Array<string>, stage: boolean, };
+
+/**
+ * Stages (or unstages) one hunk of a file: the `hunk`th of the file's unstaged (or, to unstage,
+ * staged) changes. `header` is that hunk's `@@` line as shown, refused if the file has changed
+ * since.
+ */
+export type GitStageHunkArgs = { path: string, file: string, hunk: number, header: string, stage: boolean, };
+
+/**
+ * The current branch of the checkout at `path`: its upstream and how far ahead of or behind it.
+ */
+export type GitStatusArgs = { path: string, };
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
@@ -1031,10 +1137,40 @@ export type Commands = {
    */
   git_info: { args: GitInfoArgs; output: GitInfo };
   /**
-   * The changes in the checkout at `path`: uncommitted ones (including untracked files), or with
-   * `baseBranch`, everything since the branch left it (committed or not).
+   * The changes in the checkout at `path`: uncommitted ones (including untracked files, split
+   * into staged and unstaged), or with `baseBranch`, everything since the branch left it
+   * (committed or not), or with `commit`, what that commit changed.
    */
   git_diff: { args: GitDiffArgs; output: GitDiff };
+  /**
+   * The commits of the checkout at `path`, newest first. With `baseBranch` and not `older`, only
+   * those since the branch left it. `skip` and `limit` (default 50) page through them.
+   */
+  git_log: { args: GitLogArgs; output: GitLog };
+  /**
+   * The current branch of the checkout at `path`: its upstream and how far ahead of or behind it.
+   */
+  git_status: { args: GitStatusArgs; output: BranchStatus };
+  /**
+   * Stages (or with `stage: false`, unstages) whole files, given by path relative to the checkout.
+   */
+  git_stage: { args: GitStageArgs; output: null };
+  /**
+   * Stages (or unstages) one hunk of a file: the `hunk`th of the file's unstaged (or, to unstage,
+   * staged) changes. `header` is that hunk's `@@` line as shown, refused if the file has changed
+   * since.
+   */
+  git_stage_hunk: { args: GitStageHunkArgs; output: null };
+  /**
+   * Commits what is staged, with `message`. Never amends.
+   */
+  git_commit: { args: GitCommitArgs; output: CommitInfo };
+  /**
+   * Pushes the current branch to its upstream, or the first time to the repository's remote
+   * (`origin`, or its only one), setting that as the upstream. Never forces: a rejected push is
+   * an error. Returns the branch's new status.
+   */
+  git_push: { args: GitPushArgs; output: BranchStatus };
   /**
    * Worktrees Bach created on the backend host.
    */

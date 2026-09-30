@@ -681,7 +681,43 @@ impl Handler for Api {
     }
 
     async fn git_diff(&self, a: GitDiffArgs) -> Result<GitDiff, ApiError> {
-        Ok(self.git.diff(a.path, a.base_branch).await?)
+        Ok(self.git.diff(a.path, a.base_branch, a.commit).await?)
+    }
+
+    async fn git_log(&self, a: GitLogArgs) -> Result<GitLog, ApiError> {
+        Ok(self
+            .git
+            .log(
+                a.path,
+                a.base_branch,
+                a.older.unwrap_or(false),
+                a.skip.unwrap_or(0),
+                a.limit.unwrap_or(0),
+            )
+            .await?)
+    }
+
+    async fn git_status(&self, a: GitStatusArgs) -> Result<BranchStatus, ApiError> {
+        Ok(self.git.status(a.path).await?)
+    }
+
+    async fn git_stage(&self, a: GitStageArgs) -> Result<(), ApiError> {
+        Ok(self.git.stage(a.path, a.files, a.stage).await?)
+    }
+
+    async fn git_stage_hunk(&self, a: GitStageHunkArgs) -> Result<(), ApiError> {
+        Ok(self
+            .git
+            .stage_hunk(a.path, a.file, a.hunk, a.header, a.stage)
+            .await?)
+    }
+
+    async fn git_commit(&self, a: GitCommitArgs) -> Result<CommitInfo, ApiError> {
+        Ok(self.git.commit(a.path, a.message).await?)
+    }
+
+    async fn git_push(&self, a: GitPushArgs) -> Result<BranchStatus, ApiError> {
+        Ok(self.git.push(a.path).await?)
     }
 
     async fn list_worktrees(&self, _: ListWorktreesArgs) -> Result<Vec<WorktreeEntry>, ApiError> {

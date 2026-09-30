@@ -11,10 +11,10 @@ Planned features and known issues, roughly grouped by area.
 - [x] **File browser**: browse and view any file in the worktree, not just changed
   ones, with the same tree and highlighting.
 - [ ] **Manual edits**: edit code directly in the diff view.
-- [ ] **Commit from the diff**: stage files or hunks, write a message and commit
+- [x] **Commit from the diff**: stage files or hunks, write a message and commit
   without leaving the diff view.
-- [ ] **Commit history**: browse the branch's commits and open each one's diff.
-- [ ] **Push**: push the session's branch from Bach.
+- [x] **Commit history**: browse the branch's commits and open each one's diff.
+- [x] **Push**: push the session's branch from Bach.
 - [x] **Explain this change**: select a hunk and ask the agent why it made it.
 
 ## Sessions

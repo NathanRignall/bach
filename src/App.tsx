@@ -113,6 +113,8 @@ export function App() {
   const [showJump, setShowJump] = useState(false);
   const [view, setView] = useState<SessionView>("chat");
   const [diffMode, setDiffMode] = useState<DiffMode>("uncommitted");
+  // The commit shown while browsing the branch's commits.
+  const [diffCommit, setDiffCommit] = useState<string>();
 
   /** Fetches a session's transcript, or the part of it after what's already here. */
   async function fetchTranscript(id: string) {
@@ -203,12 +205,13 @@ export function App() {
   const showFiles = !!active && view === "files";
   const review = useReview(active?.id);
   // A selection being commented on would shift under the diff's live refresh.
-  const diff = useDiff(active, diffMode, showChanges && !review.selection);
+  const diff = useDiff(active, diffMode, showChanges && !review.selection, diffCommit);
 
   // Each session opens on its chat; a worktree's changes are compared with where it branched from.
   useEffect(() => {
     setView("chat");
     setDiffMode(active && diffBase(active) ? "branch" : "uncommitted");
+    setDiffCommit(undefined);
   }, [activeId]);
 
   useEffect(() => {
@@ -483,8 +486,8 @@ export function App() {
         )}
         {active && (
           <>
-            <SessionHeader session={active} inset={!sidebarOpen} view={view} onView={setView} changedFiles={diff.diff?.files.length} />
-            {showChanges && <DiffView session={active} state={diff} mode={diffMode} onMode={setDiffMode} review={review} onAsk={canRun(active) ? ask : undefined} />}
+            <SessionHeader session={active} inset={!sidebarOpen} view={view} onView={setView} changedFiles={diffMode === "commits" ? undefined : new Set(diff.diff?.files.map((f) => f.path)).size} />
+            {showChanges && <DiffView session={active} state={diff} mode={diffMode} onMode={setDiffMode} commit={diffCommit} onCommit={setDiffCommit} review={review} onAsk={canRun(active) ? ask : undefined} />}
             {showFiles && <FileBrowser key={active.id} session={active} />}
             {view === "chat" && (
             <>

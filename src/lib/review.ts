@@ -1,9 +1,11 @@
 import { useState } from "react";
-import type { DiffHunk, DiffLine, FileDiff } from "@/api";
+import type { DiffLine, FileDiff } from "@/api";
 
 /** Lines `from`..`to` (inclusive, by index) of one hunk of one file in the diff. */
 export interface LineSelection {
   path: string;
+  /** The file's staged part rather than its unstaged part (see `FileDiff.staged`). */
+  staged?: boolean;
   hunk: number;
   from: number;
   to: number;
@@ -21,6 +23,7 @@ export interface LineRef {
  */
 export interface Anchor {
   path: string;
+  staged?: boolean;
   /** The span in the old and new file (none if the lines aren't in it). */
   old: [number, number] | null;
   new: [number, number] | null;
@@ -40,8 +43,11 @@ export interface Draft {
 const PREFIX = { add: "+", delete: "-", context: " " } as const;
 const ref = (l: DiffLine): LineRef => ({ old: l.old, new: l.new });
 
-export const isSelected = (sel: LineSelection | undefined, path: string, hunk: number, i: number) =>
-  !!sel && sel.path === path && sel.hunk === hunk && i >= sel.from && i <= sel.to;
+/** Whether `at` (a selection or anchor) is in `file`: the same path, and the same part of it. */
+export const inFile = (at: { path: string; staged?: boolean }, file: { path: string; staged: boolean }) => at.path === file.path && !!at.staged === file.staged;
+
+export const isSelected = (sel: LineSelection | undefined, file: FileDiff, hunk: number, i: number) =>
+  !!sel && inFile(sel, file) && sel.hunk === hunk && i >= sel.from && i <= sel.to;
 
 /** The lines a selection covers in the current diff, clamped to the hunk. */
 export function anchorOf(file: FileDiff, sel: LineSelection): Anchor | undefined {
@@ -51,11 +57,11 @@ export function anchorOf(file: FileDiff, sel: LineSelection): Anchor | undefined
     const at = lines.map(n).filter((x): x is number => x !== null);
     return at.length ? [Math.min(...at), Math.max(...at)] : null;
   };
-  return { path: file.path, old: span((l) => l.old), new: span((l) => l.new), end: ref(lines[lines.length - 1]), quote: lines.map((l) => PREFIX[l.kind] + l.text) };
+  return { path: file.path, staged: file.staged, old: span((l) => l.old), new: span((l) => l.new), end: ref(lines[lines.length - 1]), quote: lines.map((l) => PREFIX[l.kind] + l.text) };
 }
 
 /** Every line of a hunk. */
-export const hunkSelection = (path: string, hunk: number, h: DiffHunk): LineSelection => ({ path, hunk, from: 0, to: h.lines.length - 1 });
+export const hunkSelection = (file: FileDiff, hunk: number): LineSelection => ({ path: file.path, staged: file.staged, hunk, from: 0, to: file.hunks[hunk].lines.length - 1 });
 
 const same = (a: LineRef, l: DiffLine) => (a.new !== null ? a.new === l.new : a.old === l.old);
 
@@ -117,7 +123,7 @@ export function useReview(sessionId: string | undefined) {
     select: (sel: LineSelection | undefined, extend = false) =>
       set((s) => {
         const from = s.selection;
-        if (!sel || !extend || !from || from.path !== sel.path || from.hunk !== sel.hunk) return { selection: sel };
+        if (!sel || !extend || !from || from.path !== sel.path || !!from.staged !== !!sel.staged || from.hunk !== sel.hunk) return { selection: sel };
         return { selection: { ...sel, from: Math.min(from.from, sel.from), to: Math.max(from.to, sel.to) } };
       }),
     add: (anchor: Anchor, text: string) =>
