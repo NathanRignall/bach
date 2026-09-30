@@ -1,61 +1,63 @@
-# Bach
+<p align="center">
+  <img src="src-tauri/icons/128x128@2x.png" width="128" height="128" alt="Bach app icon">
+</p>
 
-A desktop-style UI (Tauri + React) that wraps Claude Code, Codex and opencode by driving each
-CLI in headless JSON-streaming mode and normalizing their output into one event stream.
+<h1 align="center">Bach</h1>
 
-## Layout
+<p align="center">
+  <strong>One desktop app for your coding agents, running on the machine where the code lives.</strong><br>
+  Claude Code, Codex and opencode, driven headless and rendered as one clean chat.
+</p>
 
-- `crates/bach-protocol/` — the wire protocol: the command table (`commands.rs`: each command's
-  name, arguments and result), `ServerEvent`s, `ApiError { code, message }`, and the frames the
-  WebSocket carries. `cargo test -p bach-protocol` regenerates `src/api/generated/protocol.ts`
-  from it (the test fails once when the file changes; commit the result).
-- `crates/satie/` — Satie, the background-task launcher (see below). Knows nothing about Bach:
-  callers get an MCP token by granting a `Scope` (a project, and an owner recorded on its tasks).
-  `lib.rs` is the launcher, `mcp.rs` the agents' MCP server, `diagnose.rs` / `probe.rs` / `process.rs`
-  look at the machine, `store.rs` is its own database.
-- `crates/satie-protocol/` — Satie's wire types (tasks, `TaskEvent`s, log chunks, command arguments).
-- `crates/bach-core/` — the engine, with no UI or transport.
-  - `api.rs` — `Api`: implements every command (`bach_protocol::Handler`) and broadcasts events.
-  - `adapters/` — one adapter per agent: builds the CLI args, parses its JSON lines into
-    `AgentEvent`s. Claude Code is implemented and tested against real output; Codex is
-    best-effort; opencode is a stub.
-  - `runs.rs` — spawns/cancels agent processes and emits their events.
-  - `sessions.rs` — the backend owns sessions: it records every run event into the session's
-    transcript as it happens (whether or not a client is watching), tracks what the session is
-    waiting on, and pushes `session` events (`changed` / `entry` / `deleted`) to clients.
-  - `store.rs` — SQLite storage (`~/.local/share/bach/bach.db`, or `$BACH_DB`): a row per session
-    and its transcript as numbered entries. Sessions live wherever the backend runs: the Tauri
-    app's data dir, or the bach-server host. Sessions saved by older versions (the frontend's own
-    JSON) are converted on startup, their transcript kept as one `imported` entry.
-  - `adapters/claude.rs` also steers Claude Code to Satie (system prompt, a hook refusing Bash
-    `run_in_background`, the MCP config with the run's token).
-- `crates/bach-server/` — the server binary: `serve` (a private Unix socket for the desktop app,
-  plus a WebSocket for browsers; one server per database) and `attach` (stdin/stdout to that
-  socket, starting the server if needed), and `restart` (replace a running server with this binary's;
-  the app's "Restart server" button runs it over SSH when the two disagree on the protocol).
-- `crates/bach-client/` — the desktop app's side of a remote connection: runs
-  `ssh <host> bach-server attach`, checks the protocol, matches replies, reconnects; `forward.rs`
-  adds port forwards to that SSH connection.
-- `src-tauri/` — Tauri shell: one `rpc` command, routed to a backend inside the app or to
-  `bach-client`; events on the `bach` channel, connection status on `bach-connection`.
-- `src/api/` — the typed client: `call("send_message", {...})` is checked against the generated
-  `Commands` map; `transport.ts` carries it over Tauri IPC or the WebSocket.
-- `src/session.ts` folds a session's transcript entries into the blocks the UI renders; `App.tsx`
-  keeps the session list and opened transcripts current from `session` events, refetching after
-  a gap or a reconnect.
-- `src/` — React frontend styled with Tailwind v4 and shadcn/ui (Base UI primitives, `base-nova`
-  style; components live in `src/components/ui`, add more with `pnpm dlx shadcn@latest add <name>`).
-  Theme tokens are in `src/index.css` and follow the system light/dark setting.
+<p align="center">
+  <img src="docs/screenshots/chat.png" alt="A Claude Code session in Bach: the transcript with tool calls, the session list and the composer">
+</p>
 
-### Adding a command
+Bach is a Tauri + React app that drives each agent CLI in its headless JSON-streaming mode and
+turns its output into one event stream. The agents run in `bach-server`, on your own computer or
+on a remote machine over SSH, so sessions, terminals and dev servers keep running when your laptop
+sleeps or disconnects.
 
-1. Add an `...Args` struct and a line to the `commands!` table in `crates/bach-protocol/src/commands.rs`.
-2. Implement the new `Handler` method in `crates/bach-core/src/api.rs` (it won't compile until you do).
-3. `cargo test -p bach-protocol` to regenerate the TypeScript, then `call("your_command", {...})`.
+## Features
 
-Commands and enum values are `snake_case`; fields are `camelCase`.
+- **Every agent in one place.** Sessions from Claude Code, Codex and opencode sit side by side,
+  grouped by project. Tool calls, sub-agents, questions and approvals each get a proper card.
+- **Agents on another machine.** Point the Mac app at a host over SSH (your keys, your
+  `~/.ssh/config`). Nothing listens on the network, and ports your dev servers open are
+  forwarded back to the Mac automatically.
+- **Approvals you control.** Allow once, for the session, or always (saved to the project).
+  Sessions waiting on you are flagged in the sidebar.
+- **Worktrees per session.** Start a session on a fresh branch in its own git worktree, and
+  review everything it changed in the **Changes** tab.
+- **Real terminals.** A terminal panel per project, running on the agent's machine, that
+  survives reloads and reconnects.
+- **Background tasks that outlive the turn.** Satie, Bach's task launcher, lets agents start dev
+  servers and long jobs that keep running, with live logs and ports.
+- **Context and usage at a glance.** A ring shows how full the context is, plus your plan's
+  5-hour and weekly limits.
 
-## Develop
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/changes.png" alt="The Changes tab showing a session's diff"></td>
+    <td width="50%"><img src="docs/screenshots/terminal.png" alt="The terminal panel open under a chat"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Review a session's changes</sub></td>
+    <td align="center"><sub>A terminal on the agent's machine</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/new-session.png" alt="The new-session screen with folder, branch and worktree pickers"></td>
+    <td width="50%"><img src="docs/screenshots/chat-dark.png" alt="A session in dark mode"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Start a session: folder, branch, worktree, agent, model</sub></td>
+    <td align="center"><sub>Follows the system light/dark setting</sub></td>
+  </tr>
+</table>
+
+## Getting started
+
+Everything comes from the Nix flake's devShell.
 
 ```sh
 direnv allow        # or: nix develop
@@ -64,43 +66,178 @@ cargo test
 pnpm tauri dev      # the desktop app (needs a display)
 ```
 
-## The Mac app, agents on orion
+You'll need at least one agent CLI installed and signed in (`claude`, `codex` or `opencode`).
 
-The desktop app talks to agents either **on this computer** (inside the app) or **on another
-machine over SSH**. Pick in the sidebar (the settings button next to "Agents on …"): for SSH, give
-the host as you'd pass it to `ssh` (`orion`, a `~/.ssh/config` alias, `user@host`). The choice is
-saved in the app.
+---
 
-Over SSH the app runs `ssh <host> bach-server attach` with your own ssh (keys, agent,
-`~/.ssh/config`, ProxyJump), never prompting: connect once with `ssh orion` in a terminal first
-so its host key is trusted. `attach` connects to the server's private Unix socket on that machine
-(`~/.local/share/bach/bach.sock`, next to the database, only accessible to you), and starts the
-server there if it isn't running. So nothing listens on the network for the app, and agents and
-background tasks keep running when the Mac disconnects. The app reconnects by itself and catches
-up. Its status and any SSH error are shown in the sidebar.
+## Using Bach
 
-**Port forwarding.** Over SSH, the ports background tasks listen on are forwarded to the Mac as
-they come and go (like VS Code), so `http://localhost:5173` on the Mac reaches the dev server on
-orion. The cable icon next to the connection in the sidebar (shown over SSH, with a count) lists
-the forwards, each labelled with the task (and compose process) listening on it, switches the
-automatic ones off, and forwards any other port by hand. Clicking a
-port anywhere opens it in the browser, forwarding it first if needed. Forwards
-use the app's own SSH connection (it runs as a `ControlMaster`; each forward is
-`ssh -O forward -L 127.0.0.1:<local>:localhost:<port>`), so there's no second login, they listen
-on the Mac's loopback only, and they come back after a reconnect. When a port is taken on the Mac
-(or below 1024) another one is used, and shown next to the port.
+### Agents on a remote machine
 
-`bach-server` must be on the remote's PATH (or set the command in the connection settings, e.g.
-`~/dev/bach/target/release/bach-server`). The flake exports it as a package; on NixOS, add it to
-the host, for example:
+The app runs agents either **on this computer** (inside the app) or **on another machine over
+SSH**. Choose in the sidebar with the settings button next to "Agents on …". For SSH, give the
+host as you'd pass it to `ssh` (`orion`, a `~/.ssh/config` alias, `user@host`).
 
-```nix
-# flake inputs:   bach.url = "github:NathanRignall/bach";   (private: nix needs a GitHub token)
-environment.systemPackages = [ inputs.bach.packages.${pkgs.system}.bach-server ];
+- The app runs `ssh <host> bach-server attach` with your own ssh (keys, agent, `~/.ssh/config`,
+  ProxyJump) and never prompts, so connect once with `ssh <host>` in a terminal first to trust its
+  host key.
+- `attach` talks to the server's private Unix socket (`~/.local/share/bach/bach.sock`, only
+  accessible to you) and starts the server if it isn't running. Nothing listens on the network,
+  and agents and tasks keep running while the Mac is away. The app reconnects and catches up on
+  its own; its status and any SSH error show in the sidebar.
+- `bach-server` must be on the remote's `PATH`, or set the full command in the connection
+  settings (e.g. `~/dev/bach/target/release/bach-server`). The flake exports it as a package:
+
+  ```nix
+  # flake inputs:   bach.url = "github:NathanRignall/bach";   (private: nix needs a GitHub token)
+  environment.systemPackages = [ inputs.bach.packages.${pkgs.system}.bach-server ];
+  ```
+
+- The app and the server must come from the same commit. They compare protocol fingerprints
+  (`bach-server --version`) on connect; if they differ, **Restart server** replaces the remote
+  one over SSH.
+
+**Port forwarding.** Ports that background tasks listen on are forwarded to the Mac as they come
+and go (like VS Code), so `http://localhost:5173` on the Mac reaches the dev server on the remote.
+The cable icon next to the connection lists the forwards with the task listening on each, turns
+automatic forwarding off, and forwards any other port by hand. Clicking a port anywhere in the app
+opens it, forwarding it first if needed.
+
+Forwards reuse the app's SSH connection (a `ControlMaster`, each forward an
+`ssh -O forward -L 127.0.0.1:<local>:localhost:<port>`): no second login, loopback only on the Mac,
+and restored after a reconnect. If a port is taken on the Mac (or is below 1024), another is used
+and shown next to it.
+
+### Sessions, branches and worktrees
+
+For a git project, a new session shows a branch picker and a **Worktree** switch:
+
+- **Off** (default): the agent runs in the folder itself. Picking another branch switches the
+  folder to it first (git refuses if uncommitted changes conflict).
+- **On**: a new branch `bach/<prompt words>-<id>` is created from the picked branch in its own
+  worktree under `<data dir>/worktrees/`, and the agent runs there. Your checkout is untouched.
+  Worktrees aren't deleted with their session; **Clean up worktrees…** in the sidebar removes them.
+
+The folder, branch and worktree are fixed once the first message is sent.
+
+The **Changes** tab (Ctrl/Cmd+Shift+D) shows the diff where the session runs, untracked files
+included. For a worktree session it defaults to everything since the base branch; **Uncommitted**
+narrows it to what isn't committed yet. It refreshes when a run ends, and every few seconds while
+the agent works.
+
+### The transcript
+
+- Claude's sub-agent (`Agent`/`Task`) calls render as a card with the sub-agent's title, type,
+  live tool and token counts, and duration, with its own steps nested inside.
+- Running tool calls show a ticking elapsed time; calls cut off by Stop or a restart show as
+  interrupted.
+- The transcript follows new output only while you're at the bottom. Scroll up to stay put;
+  **Jump to latest** re-pins.
+- Hover one of your messages for **Retry** (resends it as a new message). Errors have one too.
+- Claude Code sessions have a model picker (Default/Opus/Sonnet/Haiku, passed as `--model`); the
+  model each run reports is shown in the header.
+- The ring next to the model picker shows how full the context is. Its popover shows the account's
+  5-hour and weekly limits, as of the latest run on that backend.
+
+### Approvals
+
+Claude Code runs with `--permission-prompt-tool stdio`. When it wants a tool that isn't
+pre-approved, Bach shows an approval card and the run waits for you:
+
+| Button | What it does |
+| --- | --- |
+| **Allow** | This call only. |
+| **Allow for this session** | Also remembers the agent's suggested rule (e.g. `Bash(touch inside-b.txt)`) and passes it with `--allowedTools` on later messages. |
+| **Always allow** | Saves the rule to the project's `.claude/settings.local.json`. |
+| **Deny** | The agent is told you said no. |
+
+Only the rule itself is ever granted: suggestions to widen directory access or switch to
+accept-edits mode are dropped, and a request reaching outside the project says so on the card.
+Sessions waiting on you show a shield in the sidebar and change the tab title. A reload or another
+client can still answer; stopping the run (or restarting the backend) closes the request.
+
+Codex runs over `codex app-server`, and its approval and question requests use the same cards.
+
+### Terminal
+
+Drag up the **Terminal** bar under the chat (or click it, or press Ctrl+\`) to open the project's
+terminals: your login shell on the agent's machine, so direnv and dev shells load as usual,
+starting in the session's folder. Tabs hold several; drag the bar to resize or put it away.
+
+Terminals belong to the backend (a PTY each), not the window. Hiding the panel, reloading or
+reconnecting leaves them running, and any client can pick them up from the last 512 KB of output.
+Closing a tab ends its shell. The terminal font (JetBrains Mono) is bundled.
+
+### Background tasks (Satie)
+
+Bach runs one agent process per message, so anything an agent backgrounds with its own tools dies
+when the turn ends. **Satie** is Bach's launcher for things that must keep running:
+
+- Tasks start *detached* (own session, output to a log file, exit code to a file) and are recorded
+  in a database, so they survive turns, agents and a `bach-server` restart. Starting the same
+  command in the same folder again replaces its earlier finished runs.
+- Agents reach it as an MCP server (`satie`, loopback only, one bearer token per run):
+  `task_start` (optionally waiting for ports or a URL), `task_list`, `task_logs`, `task_stop`, plus
+  process-compose projects. Agents only see their own project's tasks. Claude Code also gets a
+  system-prompt note and a hook that refuses Bash `run_in_background`, pointing it at
+  `task_start`.
+- Tasks the agent only needs itself (a server for its own tests) can be marked non-interactive:
+  their ports aren't forwarded and the panel hides them behind a toggle.
+- The **Background tasks** panel lists tasks with status, uptime, clickable ports, live logs, Stop
+  and Remove (or **Clear finished**), updated live from `task` events.
+
+Satie keeps its database and task files in `tasks/` next to the session database. Unix only
+(`setsid`, `/proc` for ports). Codex and opencode don't get the MCP server yet.
+
+### From a browser
+
+`bach-server` also serves browsers, on a WebSocket at `127.0.0.1:3421` that rejects origins other
+than the Vite dev page, because it can run agents (and so shell commands) as your user.
+
+```sh
+# on the remote
+cargo run --bin bach-server &
+pnpm dev                                   # UI on http://<remote>:3420
+
+# on your computer
+ssh -L 3421:localhost:3421 <remote>        # then open http://<remote>:3420
 ```
 
-The app and the server must come from the same commit: they check each other's protocol
-fingerprint (`bach-server --version`) when connecting and say so if they differ.
+| Variable | Effect |
+| --- | --- |
+| `BACH_PORT` | WebSocket port (default `3421`). |
+| `BACH_ALLOWED_ORIGINS` | Comma-separated browser origins, replacing the defaults. |
+| `VITE_BACH_WS` | Where the UI connects (default `ws://localhost:3421`). |
+| `BACH_DB` | Session database (default `~/.local/share/bach/bach.db`); the socket, lock and `server.log` move with it. |
+
+---
+
+## Development
+
+### Layout
+
+| Path | What's there |
+| --- | --- |
+| `crates/bach-protocol/` | The wire protocol: the command table (`commands.rs`), `ServerEvent`s, `ApiError`, and WebSocket frames. `cargo test -p bach-protocol` regenerates `src/api/generated/protocol.ts` (the test fails once when it changes; commit the result). |
+| `crates/bach-core/` | The engine, with no UI or transport. `api.rs` implements every command; `adapters/` turns each CLI's output into `AgentEvent`s; `runs.rs` spawns and cancels agents; `sessions.rs` records every run event into the session's transcript; `store.rs` is SQLite storage; `terminals.rs` the PTYs. |
+| `crates/bach-server/` | The server binary: `serve` (Unix socket for the app, WebSocket for browsers), `attach` (stdin/stdout to that socket, starting the server if needed) and `restart`. |
+| `crates/bach-client/` | The app's side of a remote connection: runs `ssh <host> bach-server attach`, checks the protocol, reconnects; `forward.rs` adds port forwards. |
+| `crates/satie/` | Satie, the background-task launcher. Knows nothing about Bach: callers get an MCP token by granting a `Scope`. |
+| `crates/satie-protocol/` | Satie's wire types (tasks, `TaskEvent`s, log chunks). |
+| `src-tauri/` | Tauri shell: one `rpc` command, routed to an in-app backend or to `bach-client`. |
+| `src/` | React frontend (Tailwind v4, shadcn/ui on Base UI). `src/api/` is the typed client, `session.ts` folds transcript entries into rendered blocks. Theme tokens are in `src/index.css`. |
+
+Adapter status: Claude Code is implemented and tested against real output, Codex runs over
+`codex app-server`, and opencode is still a stub that shows raw JSON.
+
+### Adding a command
+
+1. Add an `...Args` struct and a line to the `commands!` table in `crates/bach-protocol/src/commands.rs`.
+2. Implement the new `Handler` method in `crates/bach-core/src/api.rs` (it won't compile until you do).
+3. Run `cargo test -p bach-protocol` to regenerate the TypeScript, then `call("your_command", {...})`.
+
+Commands and enum values are `snake_case`; fields are `camelCase`. UI components live in
+`src/components/ui`; add more with `pnpm dlx shadcn@latest add <name>`.
 
 ### Building and signing the Mac app
 
@@ -115,108 +252,5 @@ export APPLE_API_ISSUER=... APPLE_API_KEY=... APPLE_API_KEY_PATH=~/keys/AuthKey_
 nix develop -c scripts/build-mac.sh
 ```
 
-It builds `target/release/bundle/macos/Bach.app` and a DMG, signed with hardened runtime and
-notarized (the app by Tauri, the DMG by the script), and checks both the way Gatekeeper will.
-
-## Using it from a browser (e.g. Mac -> orion)
-
-`bach-server` also serves browsers, on a WebSocket at `127.0.0.1:3421` that rejects origins other
-than the Vite dev page, because it can run agents (and so shell commands) as your user.
-
-```sh
-# on orion
-cargo run --bin bach-server &
-pnpm dev                                   # UI on http://orion:3420
-
-# on the Mac
-ssh -L 3421:localhost:3421 orion           # then open http://orion:3420
-```
-
-`BACH_PORT` changes the port; `BACH_ALLOWED_ORIGINS` (comma-separated) replaces the allowed
-origins. Point the UI elsewhere with `VITE_BACH_WS`. `BACH_DB` moves the database (and with it
-the socket, lock and `server.log`).
-
-## Branches and worktrees
-
-For a git project folder, a new session shows a branch picker and a Worktree switch:
-
-- **Off** (default): the agent runs in the folder itself; picking a different branch switches the
-  folder to it first (git refuses if uncommitted changes conflict).
-- **On**: a new branch `bach/<prompt words>-<id>` is created from the picked branch in an isolated
-  worktree under `<data dir>/worktrees/` (next to the session database), and the agent runs there.
-  Your own checkout is untouched. Worktrees are not deleted when a session is.
-
-This happens when the first message is sent; the folder, branch and worktree are then fixed.
-
-A session's **Changes** tab (the switcher at the top, or Ctrl/Cmd+Shift+D) shows the diff of
-where it runs, untracked files included. For a worktree session it defaults to everything since
-the branch it was created from (committed or not); **Uncommitted** narrows it to what isn't
-committed yet. It refreshes when a run ends, and every few seconds while the agent is working
-and the tab is open.
-
-## Sub-agents, long-running calls and models
-
-- Claude's sub-agent (`Agent`/`Task`) calls render as a card with the sub-agent's title, type,
-  live tool/token counts and duration; its own steps and summary nest inside. Running tool
-  calls show a ticking elapsed time; calls cut off by Stop or a restart show as interrupted.
-- The transcript follows new output only while you're at the bottom. Scroll up to stay put;
-  "Jump to latest" re-pins.
-- Claude Code sessions have a model picker (Default/Opus/Sonnet/Haiku, passed as `--model`);
-  the model each run actually reports using is shown in the session header.
-- The ring next to the model picker shows how full the session's context is; its popover also shows
-  the account's plan usage limits (5-hour, weekly). Claude Code reports both while it runs
-  (`rate_limit_event`, message usage), so the limits are as of the latest run on that backend.
-
-## Approvals and retry
-
-Claude Code runs with `--permission-prompt-tool stdio`: when it wants to use a tool that isn't
-pre-approved (e.g. `nix develop`, `tmux`, file writes outside the safe list) it sends a request,
-Bach shows an approval card, and the run waits for your answer.
-
-- **Allow** - this call only. **Allow for this session** - also remembers the agent's suggested rule
-  (e.g. `Bash(touch inside-b.txt)`) and passes it with `--allowedTools` on every later message in the
-  session. **Always allow** - saves that rule to the project's `.claude/settings.local.json`.
-  **Deny** - the agent is told you said no.
-- Only the rule itself is ever granted. The agent also offers to widen directory access or switch to
-  accept-edits mode; those suggestions are dropped. A request that reaches outside the project
-  folder says so on the card.
-- Sessions waiting on you show a shield in the sidebar and the tab title changes. A reload, or another
-  client, can still answer an open request; stopping the run (or restarting the backend) closes it.
-- Hover one of your messages for a **Retry** button (resends it as a new message; the agent still
-  remembers the earlier one). Error messages have a Retry too.
-
-## Terminal
-
-The **Terminal** bar under the chat is dragged up (or clicked, or Ctrl+`) to open a panel of the
-current project's terminals: your login shell on the machine the agents run on (so direnv and dev
-shells load as usual), starting in the current session's folder. Tabs hold several; drag the bar
-to resize, or down to put it away. Each project sees only the terminals started in its folder.
-
-Terminals belong to the backend (`crates/bach-core/src/terminals.rs`, a PTY each), not the window:
-hiding the panel, reloading, or the Mac reconnecting leaves them running, and any client can pick
-them up. The backend keeps each one's recent output (512 KB) to redraw from, and streams the rest
-as numbered `terminal` events; a client that missed some redraws from that snapshot. Closing a tab
-ends its shell. The terminal font (JetBrains Mono) is bundled, so it looks the same everywhere.
-
-## Background tasks (Satie)
-
-Anything an agent starts in the background with its own tools dies when the turn ends, because Bach
-runs one agent process per message. **Satie** is Bach's own launcher for things that must keep running:
-
-- Processes start *detached* (own session, output in a log file, exit code in a file) and are recorded
-  in the database, so they survive turns, agents and even a `bach-server` restart; on startup Bach
-  finds them again, notices ones that ended, and can still stop them. Starting the same command
-  in the same folder again replaces its earlier, finished runs, so a restarted server is listed once
-  (runs left behind by older versions are pruned at startup).
-- Agents reach it as an MCP server (`satie`, loopback only, one bearer token per run): `task_start`
-  (optionally waits for a `port`), `task_list`, `task_logs`, `task_stop`. Agents only see their own
-  project's tasks. Claude Code runs also get a system-prompt note and a hook that refuses Bash
-  `run_in_background` and points at `task_start`.
-- The **Background tasks** panel (sidebar) lists them with status, uptime, listening ports (clickable),
-  live logs, Stop and Remove (or **Clear finished** for all of them at once), and can start a command by hand. It follows `task` events the backend
-  pushes (Satie checks tasks every second while anyone is listening) instead of polling.
-- Satie keeps its own database and task files in a `tasks/` folder next to the session database
-  (`~/.local/share/bach/tasks/satie.db`). Tasks from older versions, kept in `bach.db`, are moved
-  there on startup.
-
-Unix only (`setsid`, `/proc` for ports). Codex and opencode don't get the MCP server yet.
+This builds `target/release/bundle/macos/Bach.app` and a DMG, signed with hardened runtime and
+notarized, and checks both the way Gatekeeper will.
