@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Archive, ArchiveRestore, ChevronDown, ChevronRight, CircleAlert, CircleCheck, GitFork, ListChecks, MoreHorizontal, Pencil, Plus, Settings, ShieldAlert, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, CircleAlert, CircleCheck, GitFork, Handshake, ListChecks, MoreHorizontal, Pencil, Plus, Settings, ShieldAlert, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
@@ -128,7 +128,10 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, searchFocus, 
                             className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm"
                           >
                             <StatusIcon session={s} />
-                            <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                            <span className="flex min-w-0 flex-1 flex-col">
+                              <span className="truncate">{s.title}</span>
+                              <OriginLine session={s} all={sessions} />
+                            </span>
                           </button>
                         )}
                         <RowMenu
@@ -197,6 +200,22 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, searchFocus, 
       </div>
       <ResizeHandle width={width} onWidth={onWidth} min={SIDEBAR_WIDTH.min} max={SIDEBAR_WIDTH.max} edge="right" reset={SIDEBAR_WIDTH.default} label="Resize sidebar" />
     </aside>
+  );
+}
+
+/** Under a forked or handed-off session's title: the session it came from. */
+function OriginLine({ session: s, all }: { session: Session; all: Session[] }) {
+  if (!s.origin) return null;
+  const from = all.find((x) => x.id === s.origin?.sessionId);
+  const fork = s.origin.kind === "fork";
+  const Icon = fork ? GitFork : Handshake;
+  return (
+    <span className="flex items-center gap-1 text-[11px] leading-tight text-muted-foreground" title={from ? `${fork ? "Forked from" : "Handed off from"} “${from.title}”` : undefined}>
+      <Icon className="size-3 shrink-0" />
+      <span className="truncate">
+        {fork ? "Fork of" : "Handed off from"} {from ? from.title : "a deleted session"}
+      </span>
+    </span>
   );
 }
 

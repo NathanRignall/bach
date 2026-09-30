@@ -104,6 +104,9 @@ commands! {
     mark_seen(MarkSeenArgs) -> Session;
     update_session(UpdateSessionArgs) -> Session;
     delete_session(DeleteSessionArgs) -> ();
+    fork_session(ForkSessionArgs) -> Session;
+    handoff_summary(HandoffSummaryArgs) -> String;
+    handoff_session(HandoffSessionArgs) -> Session;
 
     list_dir(ListDirArgs) -> DirListing;
     read_image(ReadImageArgs) -> String;
@@ -287,6 +290,40 @@ pub struct UpdateSessionArgs {
 #[serde(rename_all = "camelCase")]
 pub struct DeleteSessionArgs {
     pub session_id: String,
+}
+
+/// Starts a new session from the session's transcript before its user message `seq`, in a
+/// worktree as it was when that message was sent, and sends `prompt` (the message again unless
+/// changed) to continue. The source is left as it is.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(optional_fields)]
+pub struct ForkSessionArgs {
+    pub session_id: String,
+    pub seq: u64,
+    pub prompt: Option<String>,
+}
+
+/// A draft of the message that hands a session's task to another agent: the goal, what was done,
+/// where it stands and the files touched, written from its transcript and worktree.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffSummaryArgs {
+    pub session_id: String,
+}
+
+/// Continues a session's task with `agent` in the same worktree, starting with `prompt` (usually
+/// the edited summary). The source stays as it is; it must not be running.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(optional_fields)]
+pub struct HandoffSessionArgs {
+    pub session_id: String,
+    pub agent: AgentKind,
+    pub prompt: String,
+    pub model_choice: Option<String>,
+    pub permission_mode: Option<String>,
+    pub effort: Option<String>,
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -1,10 +1,10 @@
 use crate::{
     attachments::{Attachment, SavedFile},
     opencode_server,
-    adapters::{codex_answer, opencode, permission_modes, AgentCli, AgentEvent, AgentKind, Conversation, Turn},
+    adapters::{codex_answer, fork_args, opencode, permission_modes, AgentCli, AgentEvent, AgentKind, Conversation, Turn},
 };
 pub use bach_protocol::Decision;
-use bach_protocol::ApiError;
+use bach_protocol::{ApiError, NativeFork};
 use serde::Serialize;
 use bach_tasks::{Tasks, Scope};
 use serde_json::{json, Value};
@@ -42,6 +42,8 @@ pub struct RunRequest {
     pub cwd: Option<String>,
     /// The agent's own session id, to continue an earlier conversation.
     pub session_id: Option<String>,
+    /// Instead of continuing `session_id`: start a new conversation from part of this one.
+    pub fork: Option<NativeFork>,
     pub model: Option<String>,
     /// Claude Code's `--permission-mode` (`acceptEdits`, `auto`, …); none for its default.
     pub permission_mode: Option<String>,
@@ -281,6 +283,7 @@ async fn send(stdin: &Mutex<Option<ChildStdin>>, lines: &[String]) {
 struct OpencodeTurn {
     dir: String,
     session_id: Option<String>,
+    fork: Option<NativeFork>,
     prompt: String,
     model: Option<String>,
     mode: Option<String>,
@@ -318,7 +321,32 @@ impl Runs {
             let id = run_id.clone();
             move |event: AgentEvent| emit(RunEvent { run_id: id.clone(), event })
         };
-        let session = match turn.session_id {
+        // A fork is a copy of the source's messages before the one forked from (opencode leaves
+        // that one out), made in this folder.
+        let forked = match &turn.fork {
+            Some(fork) => {
+                let messages = server.get(&format!("/session/{}/message", fork.agent_session_id), Some(&dir)).await?;
+                let message = messages
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|m| m["info"]["role"] == "user")
+                    .nth(fork.turn as usize)
+                    .and_then(|m| m["info"]["id"].as_str())
+                    .ok_or("opencode's session doesn't have the message to fork from.")?;
+                let copy = server
+                    .post(&format!("/session/{}/fork", fork.agent_session_id), &dir, &json!({ "messageID": message }))
+                    .await?;
+                Some(copy["id"].as_str().ok_or("opencode didn't make a session.")?.to_string())
+            }
+            None => None,
+        };
+        let session = match forked.or(turn.session_id) {
+            Some(id) if turn.fork.is_some() => {
+                server.patch(&format!("/session/{id}"), &dir, &permission).await?;
+                emit(AgentEvent::Session { id: id.clone(), model: None });
+                id
+            }
             Some(id) => {
                 server.patch(&format!("/session/{id}"), &dir, &permission).await?;
                 id
@@ -428,6 +456,7 @@ impl Runs {
             images,
             cwd,
             session_id,
+            fork,
             model,
             permission_mode,
             effort,
@@ -473,7 +502,7 @@ impl Runs {
         // No implicit "wherever the backend happens to be": a new session must name its folder.
         // (A resumed session may predate this rule and have none saved.)
         let cwd = cwd.map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
-        if cwd.is_none() && session_id.is_none() {
+        if cwd.is_none() && session_id.is_none() && fork.is_none() {
             return Err("Choose a project folder first.".into());
         }
         let cwd = cwd.map(|d| crate::fs::expand_home(&d));
@@ -507,6 +536,7 @@ impl Runs {
             let turn = OpencodeTurn {
                 dir: dir.to_string_lossy().into_owned(),
                 session_id,
+                fork,
                 prompt,
                 model,
                 mode: permission_mode,
@@ -524,6 +554,7 @@ impl Runs {
                 attachments: &images,
                 files: &attachment_files.files,
                 session_id: session_id.as_deref(),
+                fork: fork.as_ref(),
                 cwd: cwd.as_deref().and_then(|d| d.to_str()),
                 allowed_tools: &allowed_tools,
                 model: model.as_deref(),
@@ -549,14 +580,17 @@ impl Runs {
         if let Some(dir) = &cwd {
             crate::project_env::load(dir).await.apply(&mut cmd);
         }
+        // Claude Code resumes the fork's source and copies it; the others fork in their protocol.
+        let resume = fork.as_ref().map(|f| f.agent_session_id.as_str()).or(session_id.as_deref());
         cmd.args(&program[1..]).args(agent.args(
-            session_id.as_deref(),
+            resume,
             model.as_deref(),
             permission_mode.as_deref(),
             effort.as_deref(),
             &allowed_tools,
             grant.as_ref(),
         ))
+        .args(fork.iter().flat_map(|f| fork_args(agent, f)))
         .envs(agent.env(grant.as_ref()))
         .envs(no_proxy_for_loopback())
         .stdin(if conversation.uses_stdin() {
@@ -833,6 +867,7 @@ mod tests {
             images: vec![],
             cwd: cwd.map(String::from),
             session_id: None,
+            fork: None,
             model: model.map(String::from),
             permission_mode: None,
             effort: None,

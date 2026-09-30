@@ -1,4 +1,4 @@
-import { Brain, Cpu, FileDiff, FolderTree, GitBranch, GitFork, MessageSquare } from "lucide-react";
+import { Brain, Cpu, FileDiff, FolderTree, GitBranch, GitFork, Handshake, MessageSquare } from "lucide-react";
 import { Session, macTitleBar } from "@/api";
 import { cn } from "@/lib/utils";
 
@@ -45,6 +45,9 @@ export function SessionHeader({
   view,
   onView,
   changedFiles,
+  origin,
+  onOpenOrigin,
+  onHandoff,
 }: {
   session: Session;
   /** The sidebar is hidden, so its button sits over the header's left end. */
@@ -53,6 +56,11 @@ export function SessionHeader({
   onView: (v: SessionView) => void;
   /** How many files the session's checkout has changed, once known. */
   changedFiles?: number;
+  /** The session this one was forked or handed off from, if it still exists. */
+  origin?: Session;
+  onOpenOrigin?: (id: string) => void;
+  /** Offered when the session's work can be handed to another agent. */
+  onHandoff?: () => void;
 }) {
   return (
     // Also the window's title bar in the Mac app: drag it by the empty space.
@@ -70,8 +78,33 @@ export function SessionHeader({
           {session.worktree && <span>· worktree{session.workdirRemoved ? " (removed)" : ""}</span>}
         </span>
       )}
+      {session.origin && (
+        <button
+          type="button"
+          disabled={!origin}
+          onClick={() => origin && onOpenOrigin?.(origin.id)}
+          className="flex min-w-0 shrink items-center gap-1.5 rounded-md enabled:hover:text-foreground"
+          title={origin ? `Open “${origin.title}”` : "The session it came from was deleted"}
+        >
+          {session.origin.kind === "fork" ? <GitFork className="size-3.5 shrink-0" /> : <Handshake className="size-3.5 shrink-0" />}
+          <span className="truncate">
+            {session.origin.kind === "fork" ? "Forked from" : "Handed off from"} {origin ? `“${origin.title}”` : "a deleted session"}
+          </span>
+        </button>
+      )}
+      {onHandoff && (
+        <button
+          type="button"
+          onClick={onHandoff}
+          className="ml-auto flex shrink-0 items-center gap-1.5 rounded-md hover:text-foreground"
+          title="Continue this task with another agent, in the same worktree"
+        >
+          <Handshake className="size-3.5" />
+          Hand off
+        </button>
+      )}
       {session.model && (
-        <span className="ml-auto flex shrink-0 items-center gap-1.5" title="Model used on the latest run">
+        <span className={cn("flex shrink-0 items-center gap-1.5", !onHandoff && "ml-auto")} title="Model used on the latest run">
           <Cpu className="size-3.5" />
           <span className="font-mono">{session.model}</span>
           {/* Only a level chosen for the session; the model's default isn't always known. */}

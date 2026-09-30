@@ -89,6 +89,11 @@ export const answerApproval = (args: Args<"answer_approval">) => call("answer_ap
 export const markSeen = (sessionId: string) => call("mark_seen", { sessionId });
 export const updateSession = (args: Args<"update_session">) => call("update_session", args);
 export const deleteSession = (sessionId: string) => call("delete_session", { sessionId });
+/** A new session from before the user's message `seq`, in a worktree as it was then; sends `prompt` (the message again unless changed). */
+export const forkSession = (sessionId: string, seq: number, prompt?: string) => call("fork_session", { sessionId, seq, prompt });
+/** A draft message handing the session's task to another agent, for the user to edit. */
+export const handoffSummary = (sessionId: string) => call("handoff_summary", { sessionId });
+export const handoffSession = (args: Args<"handoff_session">) => call("handoff_session", args);
 
 export const listDir = (path?: string, showHidden = false) => call("list_dir", { path, showHidden });
 /** An image file on the backend host as a `data:` URL. */

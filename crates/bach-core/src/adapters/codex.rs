@@ -54,6 +54,8 @@ const INITIALIZE: u64 = 1;
 const THREAD: u64 = 2;
 const TURN: u64 = 3;
 const INTERRUPT: u64 = 4;
+/// Reading the source thread's turns, to find where a fork continues from.
+const READ: u64 = 5;
 
 /// Codex only asks the user questions (its request_user_input tool) in plan mode unless this
 /// feature is on; Bach shows them on the question card, like Claude Code's.
@@ -116,6 +118,8 @@ pub struct Conversation {
     /// Attachments saved as files: images go as images, the rest by path in the text.
     files: Vec<SavedFile>,
     thread_id: Option<String>,
+    /// Set for the first turn of a fork: the thread it continues from part of.
+    fork: Option<bach_protocol::NativeFork>,
     cwd: Option<String>,
     /// Session rules approved earlier: requests they cover are accepted without asking.
     allowed: Vec<String>,
@@ -220,6 +224,7 @@ impl Conversation {
             prompt: turn.prompt.into(),
             files: turn.files.to_vec(),
             thread_id: turn.session_id.map(String::from),
+            fork: turn.fork.cloned(),
             cwd: turn.cwd.map(String::from),
             allowed: turn.allowed_tools.to_vec(),
             choice: turn.model.map(String::from),
@@ -267,6 +272,26 @@ impl Conversation {
         }
     }
 
+    /// What a thread starts, resumes or forks with. Also given when resuming: the session's mode or
+    /// model may have changed, and a thread first run by `codex exec` would otherwise keep its
+    /// read-only sandbox.
+    fn thread_params(&self) -> Value {
+        let (sandbox, approval) = preset(self.mode.as_deref());
+        // Without its own sandbox, manual is kept by asking: before every command Codex
+        // doesn't know to be safe, and every edit.
+        let manual = !self.own_sandbox && self.mode.as_deref() == Some("manual");
+        let approval = if manual { "untrusted" } else { approval };
+        let sandbox = if self.own_sandbox { sandbox } else { "danger-full-access" };
+        let mut params = json!({ "approvalPolicy": approval, "sandbox": sandbox });
+        if let Some(cwd) = &self.cwd {
+            params["cwd"] = json!(cwd);
+        }
+        if let Some(model) = &self.choice {
+            params["model"] = json!(model);
+        }
+        params
+    }
+
     fn on_response(&mut self, id: Option<u64>, v: &Value) -> (Vec<AgentEvent>, Vec<String>) {
         if let Some(e) = v.get("error") {
             if id == Some(INTERRUPT) {
@@ -289,21 +314,15 @@ impl Conversation {
         let result = &v["result"];
         match id {
             Some(INITIALIZE) => {
-                // Also given when resuming: the session's mode or model may have changed, and a
-                // thread first run by `codex exec` would otherwise keep its read-only sandbox.
-                let (sandbox, approval) = preset(self.mode.as_deref());
-                // Without its own sandbox, manual is kept by asking: before every command Codex
-                // doesn't know to be safe, and every edit.
-                let manual = !self.own_sandbox && self.mode.as_deref() == Some("manual");
-                let approval = if manual { "untrusted" } else { approval };
-                let sandbox = if self.own_sandbox { sandbox } else { "danger-full-access" };
-                let mut params = json!({ "approvalPolicy": approval, "sandbox": sandbox });
-                if let Some(cwd) = &self.cwd {
-                    params["cwd"] = json!(cwd);
+                // A fork first finds the source's turns: it continues through the last one kept.
+                if let Some(fork) = &self.fork {
+                    let read = json!({ "threadId": fork.agent_session_id, "includeTurns": true });
+                    return (
+                        vec![],
+                        vec![json!({ "method": "initialized" }).to_string(), request(READ, "thread/read", read)],
+                    );
                 }
-                if let Some(model) = &self.choice {
-                    params["model"] = json!(model);
-                }
+                let mut params = self.thread_params();
                 let method = match &self.thread_id {
                     Some(id) => {
                         params["threadId"] = json!(id);
@@ -318,6 +337,21 @@ impl Conversation {
                         request(THREAD, method, params),
                     ],
                 )
+            }
+            Some(READ) => {
+                let Some(fork) = &self.fork else { return (vec![], vec![]) };
+                let kept = (fork.turn as usize).checked_sub(1).and_then(|i| result["thread"]["turns"].get(i));
+                let Some(last) = kept.and_then(|t| t["id"].as_str()) else {
+                    let message = "Codex's thread doesn't have the turns to fork from.";
+                    return (
+                        vec![AgentEvent::Error { message: message.into() }, AgentEvent::Done { cost_usd: None, is_error: true }],
+                        vec![],
+                    );
+                };
+                let mut params = self.thread_params();
+                params["threadId"] = json!(fork.agent_session_id);
+                params["lastTurnId"] = json!(last);
+                (vec![], vec![request(THREAD, "thread/fork", params)])
             }
             Some(THREAD) => {
                 let id = s(&result["thread"]["id"]);
@@ -1409,5 +1443,28 @@ mod tests {
         );
         assert_eq!(unwrap_shell("bash -c ls"), "ls");
         assert_eq!(unwrap_shell("git status"), "git status");
+    }
+
+    #[test]
+    fn a_fork_reads_the_source_then_forks_through_the_last_turn_kept() {
+        let fork = bach_protocol::NativeFork { agent_session_id: "src".into(), turn: 2, at: None };
+        let mut c = Conversation::new(&Turn { prompt: "hi", fork: Some(&fork), cwd: Some("/w"), ..Default::default() });
+        let (_, sent) = c.on_line(&json!({ "id": 1, "result": {} }));
+        let read: Value = serde_json::from_str(&sent[1]).unwrap();
+        assert_eq!((read["method"].as_str(), read["params"]["threadId"].as_str()), (Some("thread/read"), Some("src")));
+        let turns = json!([{ "id": "t1" }, { "id": "t2" }, { "id": "t3" }]);
+        let (_, sent) = c.on_line(&json!({ "id": 5, "result": { "thread": { "turns": turns } } }));
+        let fork: Value = serde_json::from_str(&sent[0]).unwrap();
+        assert_eq!(fork["method"], "thread/fork");
+        assert_eq!((fork["params"]["threadId"].as_str(), fork["params"]["lastTurnId"].as_str(), fork["params"]["cwd"].as_str()), (Some("src"), Some("t2"), Some("/w")));
+        // Its answer is the new thread, which takes the turn like any other.
+        let (ev, sent) = c.on_line(&json!({ "id": 2, "result": { "thread": { "id": "new" }, "model": "m" } }));
+        assert!(matches!(&ev[0], AgentEvent::Session { id, .. } if id == "new"));
+        assert_eq!(serde_json::from_str::<Value>(&sent[0]).unwrap()["params"]["threadId"], "new");
+        // Fewer turns than expected is an error, not a fork of something else.
+        let mut c = Conversation::new(&Turn { prompt: "hi", fork: Some(&bach_protocol::NativeFork { agent_session_id: "src".into(), turn: 4, at: None }), ..Default::default() });
+        c.on_line(&json!({ "id": 1, "result": {} }));
+        let (ev, sent) = c.on_line(&json!({ "id": 5, "result": { "thread": { "turns": turns } } }));
+        assert!(sent.is_empty() && matches!(ev[0], AgentEvent::Error { .. }));
     }
 }

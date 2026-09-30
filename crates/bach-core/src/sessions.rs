@@ -61,6 +61,11 @@ impl Sessions {
         Ok(self.store.put(session)?)
     }
 
+    /// Saves a new session with the start of its transcript, without telling anyone yet.
+    pub fn put_with_entries(&self, session: &Session, entries: &[LogEntry]) -> Result<(), ApiError> {
+        Ok(self.store.put_with_entries(session, entries)?)
+    }
+
     pub fn delete(&self, id: &str) -> Result<(), ApiError> {
         self.store.delete(id)?;
         self.send(SessionEvent::Deleted {
@@ -165,6 +170,7 @@ impl Sessions {
         let effect: Option<Box<dyn FnOnce(&mut Session)>> = match event {
             AgentEvent::Session { id: agent_id, model } => Some(Box::new(move |s| {
                 s.agent_session_id = Some(agent_id);
+                s.pending_fork = None;
                 s.model = model.or(s.model.take());
             })),
             AgentEvent::Approval { request_id, .. } => {

@@ -152,6 +152,24 @@ impl Store {
         put(&self.0.lock().unwrap(), session)
     }
 
+    /// Saves a new session together with transcript entries it starts with (numbered as they
+    /// are, which must be 1, 2, 3, …).
+    pub fn put_with_entries(&self, session: &Session, entries: &[LogEntry]) -> Result<(), String> {
+        let mut conn = self.0.lock().unwrap();
+        let tx = conn.transaction().map_err(err)?;
+        for e in entries {
+            tx.execute(
+                "INSERT INTO entries (session_id, seq, at, data) VALUES (?1, ?2, ?3, ?4)",
+                params![session.id, e.seq, e.at, serde_json::to_string(&e.entry).map_err(err)?],
+            )
+            .map_err(err)?;
+        }
+        let mut session = session.clone();
+        session.last_seq = entries.last().map_or(0, |e| e.seq);
+        put(&tx, &session)?;
+        tx.commit().map_err(err)
+    }
+
     /// Changes a session in place. `f` can refuse the change by returning an error, which is
     /// passed on; `Ok(None)` means there is no such session.
     pub fn update<E: From<String>>(
@@ -614,6 +632,8 @@ fn session_from_frontend(v: &Value, updated_at: i64) -> Option<Session> {
         context: None,
         run_id: None,
         archived: false,
+        origin: None,
+        pending_fork: None,
         open_approvals: vec![],
         unseen: None,
         queued: vec![],
@@ -650,6 +670,8 @@ mod tests {
             context: None,
             run_id: None,
             archived: false,
+            origin: None,
+            pending_fork: None,
             open_approvals: vec![],
             unseen: None,
             queued: vec![],

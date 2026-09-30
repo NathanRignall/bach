@@ -14,6 +14,7 @@ fn request(dir: &Path, prompt: &str, session_id: Option<&str>, rules: &[&str]) -
         images: vec![],
         cwd: Some(dir.to_string_lossy().into()),
         session_id: session_id.map(String::from),
+        fork: None,
         model: None,
         permission_mode: None,
         effort: None,
