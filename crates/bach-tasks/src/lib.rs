@@ -1,16 +1,16 @@
-//! Satie: a launcher for long-running background processes.
+//! bach-tasks: a launcher for long-running background processes.
 //!
 //! Agents can't keep background work alive themselves: Claude Code stops its background tasks
-//! when its process exits, which Bach's does after every turn. Satie starts processes
+//! when its process exits, which Bach's does after every turn. bach-tasks starts processes
 //! *detached* (own session, output to a log file, exit code to a file), remembers them in its own
 //! database, and finds them again after a restart. Agents reach it as an MCP server (see [`mcp`]),
-//! so it works for any agent that speaks MCP; apps drive it through [`Satie`]'s methods and follow
-//! it through [`Satie::subscribe`].
+//! so it works for any agent that speaks MCP; apps drive it through [`Tasks`]'s methods and follow
+//! it through [`Tasks::subscribe`].
 //!
-//! Satie knows nothing about who embeds it. Callers get an MCP token by [`Satie::grant`]ing a
+//! bach-tasks knows nothing about who embeds it. Callers get an MCP token by [`Tasks::grant`]ing a
 //! [`Scope`]: the project whose tasks it may see and manage, and an opaque owner recorded on the
 //! tasks it starts. Embedders can serve tools of their own from the same MCP server
-//! ([`Satie::add_tools`]) and name it ([`Satie::set_server_name`]).
+//! ([`Tasks::add_tools`]) and name it ([`Tasks::set_server_name`]).
 //!
 //! Unix only (`setsid`, `/proc` for ports).
 mod compose;
@@ -28,7 +28,7 @@ pub use compose::{project_shell, StartCompose};
 pub use mcp::Tools;
 pub use diagnose::presentable_ports;
 pub use store::parse_task;
-pub use satie_protocol::{
+pub use bach_tasks_protocol::{
     ComposeProcess, LogChunk, ProcessAction, Task, TaskEvent, TaskStatus, TaskView,
 };
 
@@ -124,19 +124,19 @@ pub struct Scope {
     pub owner: Option<String>,
 }
 
-/// Access to Satie's MCP server for one [`Scope`]. The token stops working when this is dropped,
+/// Access to bach-tasks' MCP server for one [`Scope`]. The token stops working when this is dropped,
 /// so a finished agent run can't keep calling tools.
 pub struct Grant {
     /// The MCP endpoint (streamable HTTP, loopback only).
     pub url: String,
     /// Sent as `Authorization: Bearer <token>`.
     pub token: String,
-    satie: Satie,
+    tasks: Tasks,
 }
 
 impl Drop for Grant {
     fn drop(&mut self) {
-        self.satie.inner.grants.lock().unwrap().remove(&self.token);
+        self.tasks.inner.grants.lock().unwrap().remove(&self.token);
     }
 }
 
@@ -159,31 +159,31 @@ struct Inner {
     compose: Mutex<HashMap<String, Vec<ComposeProcess>>>,
     /// `(task, process)` whose output is being copied to a log file right now.
     log_streams: Mutex<HashSet<(String, String)>>,
-    /// Tools the embedder serves next to Satie's own (see [`Satie::add_tools`]).
+    /// Tools the embedder serves next to bach-tasks' own (see [`Tasks::add_tools`]).
     extra_tools: RwLock<Vec<Arc<dyn Tools>>>,
     /// What the MCP server calls itself to its clients.
     server_name: RwLock<String>,
 }
 
-/// Handle to Satie. Cheap to clone.
+/// Handle to the launcher. Cheap to clone.
 #[derive(Clone)]
-pub struct Satie {
+pub struct Tasks {
     url: String,
     inner: Arc<Inner>,
 }
 
-impl Satie {
-    /// Starts Satie with its files (database, logs) in `dir`: loads and reconciles known tasks,
+impl Tasks {
+    /// Starts bach-tasks with its files (database, logs) in `dir`: loads and reconciles known tasks,
     /// starts the monitor, and serves MCP on `addr` (loopback only; port 0 for any free port).
-    pub async fn start(addr: SocketAddr, dir: PathBuf) -> std::io::Result<Satie> {
+    pub async fn start(addr: SocketAddr, dir: PathBuf) -> std::io::Result<Tasks> {
         Self::start_with(addr, dir, Duration::from_secs(1)).await
     }
 
     /// [`start`](Self::start), with the monitor checking tasks every `tick`.
-    pub async fn start_with(addr: SocketAddr, dir: PathBuf, tick: Duration) -> std::io::Result<Satie> {
-        assert!(addr.ip().is_loopback(), "Satie only listens on loopback");
+    pub async fn start_with(addr: SocketAddr, dir: PathBuf, tick: Duration) -> std::io::Result<Tasks> {
+        assert!(addr.ip().is_loopback(), "bach-tasks only listens on loopback");
         std::fs::create_dir_all(&dir)?;
-        let store = TaskStore::open(&dir.join("satie.db")).map_err(std::io::Error::other)?;
+        let store = TaskStore::open(&dir.join("tasks.db")).map_err(std::io::Error::other)?;
         let tasks = store
             .list()
             .unwrap_or_default()
@@ -191,7 +191,7 @@ impl Satie {
             .map(|t| (t.id.clone(), t))
             .collect();
         let listener = TcpListener::bind(addr).await?;
-        let satie = Satie {
+        let tasks = Tasks {
             url: format!("http://{}/mcp", listener.local_addr()?),
             inner: Arc::new(Inner {
                 grants: Mutex::default(),
@@ -204,13 +204,13 @@ impl Satie {
                 compose: Mutex::default(),
                 log_streams: Mutex::default(),
                 extra_tools: RwLock::default(),
-                server_name: RwLock::new("satie".into()),
+                server_name: RwLock::new("bach-tasks".into()),
             }),
         };
-        satie.tick(); // reconcile: what ran while we were down?
-        satie.prune_superseded();
+        tasks.tick(); // reconcile: what ran while we were down?
+        tasks.prune_superseded();
 
-        let monitor = satie.clone();
+        let monitor = tasks.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(tick).await;
@@ -218,12 +218,12 @@ impl Satie {
                 monitor.publish();
             }
         });
-        tokio::spawn(satie.clone().watch_compose(tick));
-        let app = mcp::router(satie.clone());
+        tokio::spawn(tasks.clone().watch_compose(tick));
+        let app = mcp::router(tasks.clone());
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        Ok(satie)
+        Ok(tasks)
     }
 
     /// Forgets finished runs of a command that was started again later in the same folder: only
@@ -254,13 +254,13 @@ impl Satie {
         &self.url
     }
 
-    /// Serves `tools` from Satie's MCP server too, after Satie's own. Their calls get the
+    /// Serves `tools` from bach-tasks' MCP server too, after bach-tasks' own. Their calls get the
     /// caller's [`Scope`], so they can tell which grant (and so which caller) is asking.
     pub fn add_tools(&self, tools: Arc<dyn Tools>) {
         self.inner.extra_tools.write().unwrap().push(tools);
     }
 
-    /// The name the MCP server gives its clients (`satie` by default).
+    /// The name the MCP server gives its clients (`tasks` by default).
     pub fn set_server_name(&self, name: &str) {
         *self.inner.server_name.write().unwrap() = name.to_string();
     }
@@ -281,7 +281,7 @@ impl Satie {
         Grant {
             url: self.url.clone(),
             token,
-            satie: self.clone(),
+            tasks: self.clone(),
         }
     }
 
@@ -330,7 +330,7 @@ impl Satie {
 
     fn save(&self, task: &Task) {
         if let Err(e) = self.inner.store.save(task) {
-            eprintln!("satie: couldn't save task {}: {e}", task.id);
+            eprintln!("bach-tasks: couldn't save task {}: {e}", task.id);
         }
     }
 
@@ -508,11 +508,11 @@ impl Satie {
         let err = log.try_clone().map_err(failed)?;
 
         // The outer shell records the inner command's exit code, so the result is known even
-        // if Satie was restarted in the meantime.
+        // if bach-tasks was restarted in the meantime.
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
             .arg(r#"sh -c "$1"; code=$?; echo "$code" > "$2"; exit "$code""#)
-            .arg("satie")
+            .arg("bach-tasks")
             .arg(&command)
             .arg(&exit_path)
             .current_dir(&cwd)
@@ -611,7 +611,7 @@ impl Satie {
         }
         self.inner.tasks.lock().unwrap().remove(id);
         if let Err(e) = self.inner.store.delete(id) {
-            eprintln!("satie: couldn't delete task {id}: {e}");
+            eprintln!("bach-tasks: couldn't delete task {id}: {e}");
         }
         let _ = std::fs::remove_file(&task.log_path);
         let _ = std::fs::remove_file(self.exit_path(id));

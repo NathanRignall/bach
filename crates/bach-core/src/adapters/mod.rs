@@ -6,11 +6,11 @@ mod codex;
 pub mod opencode;
 
 use crate::attachments::SavedFile;
-use satie::Grant;
+use bach_tasks::Grant;
 pub use bach_protocol::{AgentEvent, AgentKind};
 use serde_json::Value;
 
-/// What agents call Bach's MCP server: Satie's background-task tools and Bach's own
+/// What agents call Bach's MCP server: bach-tasks' background-task tools and Bach's own
 /// ([`crate::tools`]), so tool names read `mcp__bach__task_start`.
 pub const MCP_SERVER: &str = "bach";
 
@@ -28,7 +28,7 @@ pub trait AgentCli: Copy {
     /// as is `permission_mode` (`--permission-mode`, e.g. `acceptEdits` or `auto`) and `effort`
     /// (`--effort`); the other agents get theirs over their protocols ([`Turn`]).
     ///
-    /// `mcp` adds Bach's MCP server ([`MCP_SERVER`]: Satie's background tasks and Bach's own
+    /// `mcp` adds Bach's MCP server ([`MCP_SERVER`]: bach-tasks' background tasks and Bach's own
     /// tools), whose instructions steer the agent to it (Claude Code, which also gets a hook, and
     /// Codex; opencode gets it from its server, see `opencode_server`).
     ///
@@ -224,18 +224,18 @@ fn mode(id: &str, name: &str, description: &str, is_default: bool) -> bach_proto
 }
 
 /// The models `agent` can run, for the model picker (opencode's in folder `cwd`, whose server
-/// is started with `satie` if it isn't running).
+/// is started with Bach's MCP server if it isn't running).
 pub async fn list_models(
     agent: AgentKind,
     cwd: Option<&str>,
-    satie: Option<&satie::Satie>,
+    tasks: Option<&bach_tasks::Tasks>,
 ) -> Result<Vec<bach_protocol::ModelInfo>, String> {
     match agent {
         AgentKind::Claude => Ok(claude::models()),
         AgentKind::Codex => codex::list_models().await,
         AgentKind::Opencode => {
             let dir = cwd.ok_or("Choose a project folder to see opencode's models.")?;
-            crate::opencode_server::list_models(dir, satie).await
+            crate::opencode_server::list_models(dir, tasks).await
         }
     }
 }

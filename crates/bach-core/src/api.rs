@@ -1,4 +1,4 @@
-//! The backend behind every transport: owns sessions, runs, git and Satie, implements each
+//! The backend behind every transport: owns sessions, runs, git and bach-tasks, implements each
 //! command of the protocol, and broadcasts [`ServerEvent`]s. Transports only parse, call
 //! [`Api::call`], and forward [`Api::subscribe`].
 use crate::{
@@ -12,8 +12,8 @@ use crate::{
     store::{now_ms, Store},
 };
 use bach_protocol::{commands::*, *};
-use satie::{Satie, StartTask};
-use satie_protocol::*;
+use bach_tasks::{Tasks, StartTask};
+use bach_tasks_protocol::*;
 use serde_json::Value;
 use std::{
     path::Path,
@@ -35,17 +35,17 @@ pub struct Api {
     git: Git,
     sessions: Sessions,
     terminals: Terminals,
-    satie: Satie,
+    tasks: Tasks,
     events: broadcast::Sender<ServerEvent>,
-    /// Passes Satie's task events on while anyone is subscribed.
+    /// Passes bach-tasks' task events on while anyone is subscribed.
     task_events: Mutex<Option<JoinHandle<()>>>,
     /// Each agent's models, as last listed, and when.
     models: Mutex<ModelLists>,
 }
 
 impl Api {
-    /// Opens (creating if needed) the session database at `db`. Worktrees and Satie's files go
-    /// in folders next to it. Starts the agents' MCP server (Satie's, with Bach's tools added) on
+    /// Opens (creating if needed) the session database at `db`. Worktrees and bach-tasks' files go
+    /// in folders next to it. Starts the agents' MCP server (bach-tasks', with Bach's tools added) on
     /// a free loopback port.
     pub async fn open(db: &Path) -> Result<Api, String> {
         crate::wrapper::init()?;
@@ -53,27 +53,27 @@ impl Api {
         let store = Store::open(db)?;
         // Nothing survives a restart of the backend: no run is live any more.
         store.end_all_runs()?;
-        let satie = Satie::start("127.0.0.1:0".parse().unwrap(), dir.join("tasks"))
+        let tasks = Tasks::start("127.0.0.1:0".parse().unwrap(), dir.join("tasks"))
             .await
-            .map_err(|e| format!("couldn't start Satie: {e}"))?;
-        // Tasks used to live in the session database; Satie keeps its own now.
+            .map_err(|e| format!("couldn't start the task launcher: {e}"))?;
+        // Tasks used to live in the session database; bach-tasks keeps its own now.
         let legacy = store.legacy_tasks()?;
         if !legacy.is_empty() {
-            let n = satie.import(legacy.into_iter().filter_map(satie::parse_task).collect());
-            eprintln!("moved {n} background task(s) to Satie's database");
+            let n = tasks.import(legacy.into_iter().filter_map(bach_tasks::parse_task).collect());
+            eprintln!("moved {n} background task(s) to bach-tasks' database");
         }
         store.drop_legacy_tasks()?;
-        Ok(Self::new(store, Git::new(dir.join("worktrees")), satie))
+        Ok(Self::new(store, Git::new(dir.join("worktrees")), tasks))
     }
 
-    pub fn new(store: Store, git: Git, satie: Satie) -> Api {
+    pub fn new(store: Store, git: Git, tasks: Tasks) -> Api {
         let (events, _) = broadcast::channel(1024);
-        let runs = Runs::with_satie(Some(satie.clone()));
+        let runs = Runs::with_tasks(Some(tasks.clone()));
         let sessions = Sessions::new(store, events.clone());
         let launcher = Launcher::new(sessions.clone(), runs.clone(), git.clone());
-        // Agents see one `bach` server: Satie's task tools and Bach's own.
-        satie.set_server_name(crate::adapters::MCP_SERVER);
-        satie.add_tools(Arc::new(SessionTools {
+        // Agents see one `bach` server: bach-tasks' task tools and Bach's own.
+        tasks.set_server_name(crate::adapters::MCP_SERVER);
+        tasks.add_tools(Arc::new(SessionTools {
             launcher: launcher.clone(),
             sessions: sessions.clone(),
         }));
@@ -83,15 +83,15 @@ impl Api {
             git,
             sessions,
             terminals: Terminals::new(events.clone()),
-            satie,
+            tasks,
             events,
             task_events: Mutex::default(),
             models: Mutex::default(),
         }
     }
 
-    pub fn satie(&self) -> &Satie {
-        &self.satie
+    pub fn tasks(&self) -> &Tasks {
+        &self.tasks
     }
 
     /// Runs one command given by name and JSON arguments.
@@ -107,13 +107,13 @@ impl Api {
     }
 
     /// Watching tasks means looking at the machine every second, so only do it while someone is
-    /// listening: the forwarder stops (and unsubscribes from Satie) once nobody is.
+    /// listening: the forwarder stops (and unsubscribes from bach-tasks) once nobody is.
     fn forward_task_events(&self) {
         let mut running = self.task_events.lock().unwrap();
         if running.as_ref().is_some_and(|h| !h.is_finished()) {
             return;
         }
-        let (mut tasks, events) = (self.satie.subscribe(), self.events.clone());
+        let (mut tasks, events) = (self.tasks.subscribe(), self.events.clone());
         *running = Some(tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -468,11 +468,11 @@ impl Launcher {
     }
 }
 
-fn satie_error(e: satie::Error) -> ApiError {
+fn task_error(e: bach_tasks::Error) -> ApiError {
     match e {
-        satie::Error::NotFound(m) => ApiError::not_found(m),
-        satie::Error::Invalid(m) => ApiError::invalid(m),
-        satie::Error::Failed(m) => ApiError::failed(m),
+        bach_tasks::Error::NotFound(m) => ApiError::not_found(m),
+        bach_tasks::Error::Invalid(m) => ApiError::invalid(m),
+        bach_tasks::Error::Failed(m) => ApiError::failed(m),
     }
 }
 
@@ -499,7 +499,7 @@ impl Handler for Api {
                 return Ok(models.clone());
             }
         }
-        let models = crate::adapters::list_models(a.agent, cwd.as_deref(), Some(&self.satie))
+        let models = crate::adapters::list_models(a.agent, cwd.as_deref(), Some(&self.tasks))
             .await
             .map_err(ApiError::failed)?;
         self.models
@@ -695,40 +695,40 @@ impl Handler for Api {
     }
 
     async fn list_tasks(&self, _: ListTasksArgs) -> Result<Vec<TaskView>, ApiError> {
-        Ok(self.satie.list(None))
+        Ok(self.tasks.list(None))
     }
 
     async fn task_logs(&self, a: TaskLogsArgs) -> Result<String, ApiError> {
-        self.satie
+        self.tasks
             .logs(
                 &a.task_id,
                 a.lines.unwrap_or(200).clamp(1, 2000),
                 a.process.as_deref(),
             )
-            .map_err(satie_error)
+            .map_err(task_error)
     }
 
     async fn task_log_chunk(&self, a: TaskLogChunkArgs) -> Result<LogChunk, ApiError> {
-        self.satie
+        self.tasks
             .log_chunk(
                 &a.task_id,
                 a.process.as_deref(),
                 a.from,
                 a.max_bytes.unwrap_or(512 * 1024),
             )
-            .map_err(satie_error)
+            .map_err(task_error)
     }
 
     async fn stop_task(&self, a: StopTaskArgs) -> Result<Task, ApiError> {
-        self.satie.stop_task(&a.task_id).await.map_err(satie_error)
+        self.tasks.stop_task(&a.task_id).await.map_err(task_error)
     }
 
     async fn remove_task(&self, a: RemoveTaskArgs) -> Result<(), ApiError> {
-        self.satie.remove_task(&a.task_id).map_err(satie_error)
+        self.tasks.remove_task(&a.task_id).map_err(task_error)
     }
 
     async fn start_task(&self, a: StartTaskArgs) -> Result<Task, ApiError> {
-        self.satie
+        self.tasks
             .start_task(StartTask {
                 command: a.command,
                 cwd: Some(a.cwd.clone()),
@@ -738,14 +738,14 @@ impl Handler for Api {
                 ports: vec![],
                 interactive: None,
             })
-            .map_err(satie_error)
+            .map_err(task_error)
     }
 
     async fn task_process(&self, a: TaskProcessArgs) -> Result<(), ApiError> {
-        self.satie
+        self.tasks
             .process_action(&a.task_id, &a.process, a.action)
             .await
-            .map_err(satie_error)
+            .map_err(task_error)
     }
 
     async fn list_terminals(&self, _: ListTerminalsArgs) -> Result<Vec<TerminalInfo>, ApiError> {

@@ -11,7 +11,7 @@ use crate::{
     AgentInfo, AgentKind, ApiError, ModelInfo, Decision, DirListing, FileContent, FileList, GitDiff, GitInfo, PlanUsage, Session,
     SessionLog, TerminalInfo, TerminalSnapshot, WorktreeEntry,
 };
-use satie_protocol::{
+use bach_tasks_protocol::{
     ListTasksArgs, LogChunk, RemoveTaskArgs, StartTaskArgs, StopTaskArgs, Task, TaskLogChunkArgs,
     TaskLogsArgs, TaskProcessArgs, TaskView,
 };

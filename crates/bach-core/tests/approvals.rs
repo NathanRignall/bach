@@ -6,7 +6,7 @@ use bach_core::{
     runs::{Decision, RunRequest, Runs},
 };
 use bach_protocol::ErrorCode;
-use satie::Satie;
+use bach_tasks::Tasks;
 use serde_json::Value;
 use std::{os::unix::fs::PermissionsExt, path::Path, sync::mpsc, time::Duration};
 
@@ -52,7 +52,7 @@ fn answers_map(a: &Answers) -> Option<std::collections::HashMap<String, String>>
 
 /// A run that has been started and is waiting on the request the stand-in agent sent.
 struct Waiting {
-    satie: Satie,
+    tasks: Tasks,
     runs: Runs,
     run_id: String,
     rx: mpsc::Receiver<Value>,
@@ -73,13 +73,13 @@ async fn begin(dir: &Path, request: &str, rules: &[&str]) -> Waiting {
     );
 
     let (tx, rx) = mpsc::channel();
-    let satie = Satie::start(
+    let tasks = Tasks::start(
         "127.0.0.1:0".parse().unwrap(),
         dir.join(format!("tasks-{n}")),
     )
     .await
     .unwrap();
-    let runs = Runs::with_satie(Some(satie.clone()));
+    let runs = Runs::with_tasks(Some(tasks.clone()));
     let run_id = runs
         .start(
             std::sync::Arc::new(move |ev| {
@@ -112,7 +112,7 @@ async fn begin(dir: &Path, request: &str, rules: &[&str]) -> Waiting {
         }
     }
     Waiting {
-        satie,
+        tasks,
         runs,
         run_id,
         rx,
@@ -149,7 +149,7 @@ async fn finish(mut w: Waiting) -> Outcome {
 
     // The run's MCP token is revoked when the run is over.
     for _ in 0..40 {
-        if w.satie.active_grants() == 0 {
+        if w.tasks.active_grants() == 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -157,7 +157,7 @@ async fn finish(mut w: Waiting) -> Outcome {
 
     let read = |f: &str| std::fs::read_to_string(w.out.join(f)).unwrap();
     Outcome {
-        tokens_left: w.satie.active_grants(),
+        tokens_left: w.tasks.active_grants(),
         answer: serde_json::from_str(&read("answer")).unwrap(),
         args: read("args"),
         first: serde_json::from_str(&read("first")).unwrap(),

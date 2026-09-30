@@ -1,5 +1,5 @@
 use crate::{PlanUsage, SessionEvent, TerminalEvent};
-use satie_protocol::TaskEvent;
+use bach_tasks_protocol::TaskEvent;
 use serde::Serialize;
 use ts_rs::TS;
 

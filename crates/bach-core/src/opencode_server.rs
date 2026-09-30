@@ -35,8 +35,8 @@ pub struct Server {
     /// Runs using it right now, and when it was last used: an idle server is stopped.
     runs: Arc<AtomicUsize>,
     last_used: Arc<std::sync::Mutex<Instant>>,
-    /// Its Satie token, scoped to its folder; revoked once the server is gone.
-    satie: Option<Arc<satie::Grant>>,
+    /// Its bach-tasks token, scoped to its folder; revoked once the server is gone.
+    tasks: Option<Arc<bach_tasks::Grant>>,
 }
 
 /// Held by a run while it uses a server, so the server isn't stopped under it.
@@ -98,9 +98,9 @@ fn supervise() -> String {
 /// What a run sees when the server has gone away; its turn is over.
 pub const LOST: &str = "bach.server.lost";
 
-/// The server for folder `dir`, starting it there if it isn't running. `satie`, if given, is
+/// The server for folder `dir`, starting it there if it isn't running. `tasks`, if given, is
 /// offered to it as Bach's MCP server (see [`Server::offer_mcp`]).
-pub async fn server(dir: &str, satie: Option<&satie::Satie>) -> Result<Server, String> {
+pub async fn server(dir: &str, tasks: Option<&bach_tasks::Tasks>) -> Result<Server, String> {
     let mut all = servers().lock().await;
     if let Some((s, _)) = all.get(dir) {
         if s.alive.load(Ordering::SeqCst) {
@@ -108,18 +108,18 @@ pub async fn server(dir: &str, satie: Option<&satie::Satie>) -> Result<Server, S
             return Ok(s.clone());
         }
     }
-    let (server, lifeline) = start(dir, satie).await?;
+    let (server, lifeline) = start(dir, tasks).await?;
     all.insert(dir.to_string(), (server.clone(), lifeline));
     Ok(server)
 }
 
-async fn start(dir: &str, satie: Option<&satie::Satie>) -> Result<(Server, Lifeline), String> {
+async fn start(dir: &str, tasks: Option<&bach_tasks::Tasks>) -> Result<(Server, Lifeline), String> {
     if !crate::wrapper::installed("opencode") {
         return Err("opencode isn't installed on the machine running the agents.".into());
     }
     let password = uuid::Uuid::new_v4().to_string();
-    let grant = satie.map(|s| {
-        Arc::new(s.grant(satie::Scope { project: Some(dir.to_string()), owner: None }))
+    let grant = tasks.map(|s| {
+        Arc::new(s.grant(bach_tasks::Scope { project: Some(dir.to_string()), owner: None }))
     });
     let mut child = Command::new("sh")
         .args(["-c", &supervise()])
@@ -162,7 +162,7 @@ async fn start(dir: &str, satie: Option<&satie::Satie>) -> Result<(Server, Lifel
         alive: Arc::new(AtomicBool::new(true)),
         runs: Arc::default(),
         last_used: Arc::new(std::sync::Mutex::new(Instant::now())),
-        satie: grant,
+        tasks: grant,
     };
     // One stream of every project's events, passed on to the runs.
     let s = server.clone();
@@ -197,7 +197,7 @@ impl Server {
             status.as_object().into_iter().flatten().map(|(k, _)| k.clone()).collect()
         };
         let status = self.get("/mcp", Some(dir)).await?;
-        let Some(grant) = &self.satie else { return Ok(names(&status)) };
+        let Some(grant) = &self.tasks else { return Ok(names(&status)) };
         if status[MCP_SERVER]["status"] == "connected" {
             return Ok(names(&status));
         }
@@ -286,8 +286,8 @@ impl Server {
 
 /// The models opencode can run in folder `dir` (its configured providers', the project's own
 /// included), as `provider/model`.
-pub async fn list_models(dir: &str, satie: Option<&satie::Satie>) -> Result<Vec<ModelInfo>, String> {
-    let server = server(dir, satie).await?;
+pub async fn list_models(dir: &str, tasks: Option<&bach_tasks::Tasks>) -> Result<Vec<ModelInfo>, String> {
+    let server = server(dir, tasks).await?;
     let providers = server.get("/config/providers", Some(dir)).await?;
     let config = server.get("/config", Some(dir)).await.unwrap_or_default();
     Ok(opencode::models_from(&providers, config["model"].as_str()))

@@ -80,14 +80,14 @@ fn toml_string(s: &str) -> String {
 
 /// `mcp` adds Bach's MCP server (as [`MCP_SERVER`]), with guidance on when to use it. The token
 /// itself goes in the environment ([`env`]), not the command line.
-pub fn args(mcp: Option<&satie::Grant>) -> Vec<String> {
+pub fn args(mcp: Option<&bach_tasks::Grant>) -> Vec<String> {
     args_with(mcp, crate::wrapper::active())
 }
 
 /// Codex keeps only the last `developer_instructions` it is given, wherever they come from. A
 /// wrapper may put its own there (describing its sandbox), and those must stand: under one,
 /// the MCP tools' descriptions are what steer Codex to them.
-fn args_with(mcp: Option<&satie::Grant>, wrapped: bool) -> Vec<String> {
+fn args_with(mcp: Option<&bach_tasks::Grant>, wrapped: bool) -> Vec<String> {
     let mut a: Vec<String> = vec!["app-server".into(), "--enable".into(), QUESTIONS_FEATURE.into()];
     if let Some(grant) = mcp {
         a.extend(["-c".into(), format!("mcp_servers.{MCP_SERVER}.url={}", toml_string(&grant.url))]);
@@ -103,7 +103,7 @@ fn args_with(mcp: Option<&satie::Grant>, wrapped: bool) -> Vec<String> {
 }
 
 /// The environment Codex needs on top of Bach's: the MCP token, when it has the server.
-pub fn env(mcp: Option<&satie::Grant>) -> Vec<(&'static str, String)> {
+pub fn env(mcp: Option<&bach_tasks::Grant>) -> Vec<(&'static str, String)> {
     mcp
         .map(|g| (MCP_TOKEN_ENV, g.token.clone()))
         .into_iter()
@@ -150,7 +150,7 @@ struct Ask {
     rules: Vec<String>,
     directories: Vec<String>,
     reply: Value,
-    /// Allowed without asking (Satie calls that only read).
+    /// Allowed without asking (bach-tasks calls that only read).
     harmless: bool,
 }
 
@@ -1245,8 +1245,8 @@ mod tests {
     #[tokio::test]
     async fn leaves_a_wrappers_instructions_alone() {
         let dir = std::env::temp_dir().join(format!("bach-codex-args-{}", std::process::id()));
-        let satie = satie::Satie::start("127.0.0.1:0".parse().unwrap(), dir.clone()).await.unwrap();
-        let grant = satie.grant(satie::Scope::default());
+        let tasks = bach_tasks::Tasks::start("127.0.0.1:0".parse().unwrap(), dir.clone()).await.unwrap();
+        let grant = tasks.grant(bach_tasks::Scope::default());
         let has = |a: &[String], key: &str| a.iter().any(|x| x.starts_with(key));
         let direct = args_with(Some(&grant), false);
         assert!(has(&direct, "mcp_servers.bach.url=") && has(&direct, "developer_instructions="));

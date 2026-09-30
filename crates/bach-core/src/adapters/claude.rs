@@ -1,7 +1,7 @@
 use super::{mode, AgentEvent, MCP_READ_ONLY, MCP_SERVER};
 use crate::attachments::{Attachment, Kind};
 use bach_protocol::{DeltaKind, LimitWindow, PlanUsage};
-use satie::Grant;
+use bach_tasks::Grant;
 use serde_json::{json, Value};
 
 // ---------------------------------------------------------------------------------------------
@@ -430,16 +430,16 @@ mod tests {
     #[tokio::test]
     async fn hands_the_run_the_bach_server_and_a_hook() {
         let dir = std::env::temp_dir().join(format!("bach-claude-args-{}", std::process::id()));
-        let satie = satie::Satie::start("127.0.0.1:0".parse().unwrap(), dir.clone())
+        let tasks = bach_tasks::Tasks::start("127.0.0.1:0".parse().unwrap(), dir.clone())
             .await
             .unwrap();
-        let grant = satie.grant(satie::Scope::default());
+        let grant = tasks.grant(bach_tasks::Scope::default());
         let a = args(None, None, None, None, &[], Some(&grant));
         let after = |flag: &str| a[a.iter().position(|x| x == flag).unwrap() + 1].clone();
 
         let cfg: Value = serde_json::from_str(&after("--mcp-config")).unwrap();
         let server = &cfg["mcpServers"]["bach"];
-        assert_eq!((server["type"].as_str(), server["url"].as_str()), (Some("http"), Some(satie.url())));
+        assert_eq!((server["type"].as_str(), server["url"].as_str()), (Some("http"), Some(tasks.url())));
         assert_eq!(server["headers"]["Authorization"], format!("Bearer {}", grant.token));
         // The system prompt is left to a wrapper; the guidance comes with the tools.
         assert!(!a.contains(&"--append-system-prompt".to_string()));

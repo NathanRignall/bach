@@ -1,8 +1,8 @@
-//! Satie's MCP server: streamable HTTP on loopback, one bearer token per [`Grant`](crate::Grant).
+//! bach-tasks' MCP server: streamable HTTP on loopback, one bearer token per [`Grant`](crate::Grant).
 //! Tools see and manage only the tasks of their grant's project. Embedders can add tools of their
 //! own ([`Tools`]).
 use crate::{
-    compose, probe, ProcessAction, Ready, Satie, Scope, StartCompose, StartTask, Task, TaskStatus,
+    compose, probe, ProcessAction, Ready, Tasks, Scope, StartCompose, StartTask, Task, TaskStatus,
     TaskView,
 };
 use axum::{
@@ -15,11 +15,11 @@ use axum::{
 use serde_json::{json, Value};
 use std::{collections::HashMap, future::Future, pin::Pin, time::Duration};
 
-/// More tools for Satie's MCP server, from whoever embeds it (see [`Satie::add_tools`]).
+/// More tools for bach-tasks' MCP server, from whoever embeds it (see [`Tasks::add_tools`]).
 pub trait Tools: Send + Sync + 'static {
     /// Their MCP descriptions (`name`, `description`, `inputSchema`).
     fn list(&self) -> Vec<Value>;
-    /// What agents are told about them, after Satie's own instructions.
+    /// What agents are told about them, after bach-tasks' own instructions.
     fn instructions(&self) -> Option<String> {
         None
     }
@@ -46,16 +46,16 @@ forwarded to the user's computer. For a process-compose project use `compose_sta
 running process-compose yourself: each of its processes then gets its own state and log, and `task_process` restarts one \
 without the rest.";
 
-pub(crate) fn router(satie: Satie) -> Router {
+pub(crate) fn router(tasks: Tasks) -> Router {
     Router::new()
         .route(
             "/mcp",
             post(mcp).get(|| async { StatusCode::METHOD_NOT_ALLOWED }),
         )
-        .with_state(satie)
+        .with_state(tasks)
 }
 
-impl Satie {
+impl Tasks {
     pub(crate) fn tools() -> Value {
         let interactive = json!({ "type": "boolean", "description": "Default true: the user will open it (a dev server to browse to), so the app forwards its ports to their computer. Set false for a task only you use, such as a server for tests or headless browser checks: it is still listed, but its ports are not forwarded automatically." });
         let id = json!({ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] });
@@ -488,7 +488,7 @@ impl Satie {
         }
     }
 
-    /// The server's MCP `instructions`: Satie's, then the embedder's.
+    /// The server's MCP `instructions`: Tasks's, then the embedder's.
     fn instructions(&self) -> String {
         let extra = self.inner.extra_tools.read().unwrap().clone();
         std::iter::once(INSTRUCTIONS.to_string())
@@ -497,7 +497,7 @@ impl Satie {
             .join(" ")
     }
 
-    /// Runs one of Satie's tools or, failing that, one of the embedder's.
+    /// Runs one of bach-tasks' tools or, failing that, one of the embedder's.
     async fn call_any(&self, scope: &Scope, name: &str, args: &Value) -> Result<String, String> {
         let own = Self::tools();
         if own.as_array().expect("a list").iter().any(|t| t["name"] == name) {
@@ -559,8 +559,8 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .strip_prefix("Bearer ")
 }
 
-async fn mcp(State(satie): State<Satie>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
-    let scope = bearer(&headers).and_then(|t| satie.inner.grants.lock().unwrap().get(t).cloned());
+async fn mcp(State(tasks): State<Tasks>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    let scope = bearer(&headers).and_then(|t| tasks.inner.grants.lock().unwrap().get(t).cloned());
     let Some(scope) = scope else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
@@ -568,7 +568,7 @@ async fn mcp(State(satie): State<Satie>, headers: HeaderMap, Json(body): Json<Va
         Value::Array(msgs) => {
             let mut replies = vec![];
             for m in &msgs {
-                replies.extend(satie.handle(&scope, m).await);
+                replies.extend(tasks.handle(&scope, m).await);
             }
             if replies.is_empty() {
                 StatusCode::ACCEPTED.into_response()
@@ -576,7 +576,7 @@ async fn mcp(State(satie): State<Satie>, headers: HeaderMap, Json(body): Json<Va
                 Json(replies).into_response()
             }
         }
-        msg => match satie.handle(&scope, &msg).await {
+        msg => match tasks.handle(&scope, &msg).await {
             Some(reply) => Json(reply).into_response(),
             None => StatusCode::ACCEPTED.into_response(), // a notification
         },

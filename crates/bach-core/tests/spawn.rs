@@ -89,7 +89,7 @@ async fn a_running_agent_starts_a_session_in_its_project() {
     wait_for("the agent to start", || dir.join("mcp").exists()).await;
     let cfg: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("mcp")).unwrap()).unwrap();
 
-    // One server, named `bach`, with Satie's tools and Bach's.
+    // One server, named `bach`, with bach-tasks' tools and Bach's.
     let init = mcp(&cfg, "initialize", json!({ "protocolVersion": "2025-06-18" })).await;
     assert_eq!(init["serverInfo"]["name"], "bach");
     let told = init["instructions"].as_str().unwrap();
@@ -132,6 +132,6 @@ async fn a_running_agent_starts_a_session_in_its_project() {
         let _ = api.call("stop_session", json!({ "sessionId": s.id })).await;
     }
     // Once the run is over, its token no longer starts anything.
-    wait_for("the grants to go", || api.satie().active_grants() == 0).await;
+    wait_for("the grants to go", || api.tasks().active_grants() == 0).await;
     let _ = std::fs::remove_dir_all(dir);
 }

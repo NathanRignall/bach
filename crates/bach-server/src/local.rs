@@ -178,7 +178,7 @@ fn server_running(paths: &Paths) -> bool {
 
 /// Stops the running server, if any, and starts this binary's in its place: how a server left
 /// running from an older build gets replaced. Agent turns in progress end with it; background
-/// tasks don't (Satie detaches them). The new server keeps the old one's agent wrapper unless
+/// tasks don't (bach-tasks detaches them). The new server keeps the old one's agent wrapper unless
 /// we were given one (`BACH_AGENT_WRAPPER`): a restart never takes a wrapper away.
 pub async fn restart(paths: &Paths) -> Result<(), String> {
     let mut env = vec![];

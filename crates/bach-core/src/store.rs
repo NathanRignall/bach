@@ -218,7 +218,7 @@ impl Store {
         Ok(())
     }
 
-    /// Background tasks from before Satie had its own database (the old `tasks` table), for
+    /// Background tasks from before bach-tasks had its own database (the old `tasks` table), for
     /// handing over to it. Empty once [`drop_legacy_tasks`](Self::drop_legacy_tasks) has run.
     pub fn legacy_tasks(&self) -> Result<Vec<Value>, String> {
         let conn = self.0.lock().unwrap();

@@ -1,9 +1,9 @@
-//! Bach's own tools on the agents' MCP server, served next to Satie's `task_*` ones (see
-//! [`satie::Tools`]). A call's grant is owned by the run that makes it, which leads back to the
+//! Bach's own tools on the agents' MCP server, served next to bach-tasks' `task_*` ones (see
+//! [`bach_tasks::Tools`]). A call's grant is owned by the run that makes it, which leads back to the
 //! calling session.
 use crate::{api::Launcher, sessions::Sessions};
 use bach_protocol::{commands::StartSessionArgs, AgentKind, Session};
-use satie::Scope;
+use bach_tasks::Scope;
 use serde_json::{json, Value};
 use std::{future::Future, pin::Pin};
 
@@ -12,7 +12,7 @@ pub(crate) struct SessionTools {
     pub sessions: Sessions,
 }
 
-impl satie::Tools for SessionTools {
+impl bach_tasks::Tools for SessionTools {
     fn list(&self) -> Vec<Value> {
         vec![json!({
             "name": "start_session",

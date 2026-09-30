@@ -1,9 +1,9 @@
-//! Looking at the machine on behalf of Satie: who listens on which port, what a task's
+//! Looking at the machine on behalf of bach-tasks: who listens on which port, what a task's
 //! processes are, whether a local URL answers, and reading log files in chunks.
 //!
 //! Linux (`/proc`); everything degrades to "nothing found" elsewhere.
 use crate::process::{pids_in_session, proc_stat, session_of};
-use satie_protocol::LogChunk;
+use bach_tasks_protocol::LogChunk;
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -26,7 +26,7 @@ use tokio::{
 pub struct Listener {
     pub port: u16,
     pub pid: Option<u32>,
-    /// The owner's session; a Satie task leads its own session.
+    /// The owner's session; a background task leads its own session.
     pub sid: Option<u32>,
     pub command: String,
     pub cwd: Option<String>,
@@ -177,7 +177,7 @@ pub fn age(secs: u64) -> String {
 }
 
 /// Names of the processes in a session, with counts ("workerd ×8"), most numerous first. The
-/// wrapper shells Satie itself adds are left out.
+/// wrapper shells bach-tasks itself adds are left out.
 pub fn process_summary(sid: u32) -> Vec<String> {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for pid in pids_in_session(sid) {
@@ -339,7 +339,7 @@ pub async fn http_get(url: &str, timeout: Duration) -> Result<HttpProbe, String>
         let mut s = TcpStream::connect((host, port))
             .await
             .map_err(|e| e.to_string())?;
-        let req = format!("GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\nAccept: */*\r\nUser-Agent: satie\r\n\r\n");
+        let req = format!("GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\nAccept: */*\r\nUser-Agent: bach-tasks\r\n\r\n");
         s.write_all(req.as_bytes())
             .await
             .map_err(|e| e.to_string())?;
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn finds_who_listens_on_a_port() {
-        // A listener that is not ours to describe as a Satie task: we hold it ourselves.
+        // A listener that is not ours to describe as a background task: we hold it ourselves.
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
         let found = listeners()
