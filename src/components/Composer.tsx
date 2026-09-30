@@ -37,6 +37,8 @@ interface Props {
   /** Permission mode ("default", "acceptEdits", "auto", …); offered for Claude Code and Codex. */
   permissionMode?: string;
   onPermissionMode?: (m: string) => void;
+  /** The project folder the agent runs in (opencode's models depend on it). */
+  cwd?: string;
   /** Extra controls shown before the agent picker (project, branch, …). */
   left?: ReactNode;
   /** Shown next to the model picker (usage). */
@@ -46,24 +48,28 @@ interface Props {
 }
 
 /** The chat input card, shared by the new-session page and the running chat. */
-/** Each agent's models, as the backend lists them (Codex is asked for its current ones). */
-const modelLists = new Map<AgentKind, Promise<ModelInfo[]>>();
+/** Each agent's models, as the backend lists them (Codex and opencode are asked for their current ones). */
+const modelLists = new Map<string, Promise<ModelInfo[]>>();
 
-function useModels(agent: AgentKind): ModelInfo[] {
+/** `cwd`: the project folder, which opencode's list depends on (it has none without one). */
+function useModels(agent: AgentKind, cwd?: string): ModelInfo[] {
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const folder = agent === "opencode" ? cwd?.trim() || undefined : undefined;
   useEffect(() => {
     let current = true;
     setModels([]);
-    let list = modelLists.get(agent);
+    if (agent === "opencode" && !folder) return;
+    const key = `${agent}\u0000${folder ?? ""}`;
+    let list = modelLists.get(key);
     if (!list) {
-      list = listModels(agent);
-      modelLists.set(agent, list);
+      list = listModels(agent, folder);
+      modelLists.set(key, list);
       // Ask again next time rather than keep a failure.
-      list.catch(() => modelLists.delete(agent));
+      list.catch(() => modelLists.delete(key));
     }
     list.then((m) => current && setModels(m), () => {});
     return () => void (current = false);
-  }, [agent]);
+  }, [agent, folder]);
   return models;
 }
 
@@ -191,7 +197,7 @@ export function Composer(p: Props) {
   const canSend = (!!p.draft.trim() || p.images.length > 0) && !p.blockedReason && !p.starting;
   const agentName = p.agents.find((a) => a.kind === p.agent)?.name ?? p.agent;
   const modes = PERMISSION_MODES[p.agent];
-  const models = useModels(p.agent);
+  const models = useModels(p.agent, p.cwd);
   const [dragging, setDragging] = useState(false);
   const [imageError, setImageError] = useState<string>();
 

@@ -202,12 +202,15 @@ pub fn permission_modes(agent: AgentKind) -> &'static [&'static str] {
     }
 }
 
-/// The models `agent` can run, for the model picker.
-pub async fn list_models(agent: AgentKind) -> Result<Vec<bach_protocol::ModelInfo>, String> {
+/// The models `agent` can run, for the model picker (opencode's in folder `cwd`).
+pub async fn list_models(agent: AgentKind, cwd: Option<&str>) -> Result<Vec<bach_protocol::ModelInfo>, String> {
     match agent {
         AgentKind::Claude => Ok(claude::models()),
         AgentKind::Codex => codex::list_models().await,
-        AgentKind::Opencode => crate::opencode_server::list_models().await,
+        AgentKind::Opencode => {
+            let dir = cwd.ok_or("Choose a project folder to see opencode's models.")?;
+            crate::opencode_server::list_models(dir).await
+        }
     }
 }
 

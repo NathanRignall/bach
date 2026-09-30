@@ -23,6 +23,10 @@ use tokio::{
     task::JoinHandle,
 };
 
+/// Each agent's models (opencode's per folder), and when they were listed.
+type ModelLists =
+    std::collections::HashMap<(AgentKind, Option<String>), (std::time::Instant, Vec<ModelInfo>)>;
+
 pub struct Api {
     runs: Runs,
     launcher: Launcher,
@@ -34,7 +38,7 @@ pub struct Api {
     /// Passes Satie's task events on while anyone is subscribed.
     task_events: Mutex<Option<JoinHandle<()>>>,
     /// Each agent's models, as last listed, and when.
-    models: Mutex<std::collections::HashMap<AgentKind, (std::time::Instant, Vec<ModelInfo>)>>,
+    models: Mutex<ModelLists>,
 }
 
 impl Api {
@@ -377,20 +381,30 @@ impl Handler for Api {
     }
 
     async fn list_models(&self, a: ListModelsArgs) -> Result<Vec<ModelInfo>, ApiError> {
-        // Asking Codex takes a second or so, and its list rarely changes.
+        // Asking takes a second or so, and the lists rarely change. opencode's depend on the
+        // project (it may configure providers of its own), and it runs in the session's
+        // folder, so that's where it's asked.
         const FRESH: Duration = Duration::from_secs(30 * 60);
-        if let Some((at, models)) = self.models.lock().unwrap().get(&a.agent) {
+        let cwd = match a.agent {
+            AgentKind::Opencode => a
+                .cwd
+                .map(|d| crate::fs::expand_home(d.trim()))
+                .map(|d| d.canonicalize().unwrap_or(d).to_string_lossy().into_owned()),
+            _ => None,
+        };
+        let key = (a.agent, cwd.clone());
+        if let Some((at, models)) = self.models.lock().unwrap().get(&key) {
             if at.elapsed() < FRESH {
                 return Ok(models.clone());
             }
         }
-        let models = crate::adapters::list_models(a.agent)
+        let models = crate::adapters::list_models(a.agent, cwd.as_deref())
             .await
             .map_err(ApiError::failed)?;
         self.models
             .lock()
             .unwrap()
-            .insert(a.agent, (std::time::Instant::now(), models.clone()));
+            .insert(key, (std::time::Instant::now(), models.clone()));
         Ok(models)
     }
 

@@ -70,6 +70,16 @@ async fn real_opencode_turns() {
     assert_eq!(ev.last().unwrap()["isError"], false);
     assert_eq!(std::fs::read_to_string(dir.join("colour.txt")).unwrap().trim().to_lowercase(), "red");
 
+    // opencode may be a wrapper that sandboxes it to where it starts: its server runs in the
+    // session's folder.
+    let folder = dir.canonicalize().unwrap();
+    let in_folder = std::fs::read_dir("/proc").unwrap().flatten().any(|p| {
+        let cmd = std::fs::read(p.path().join("cmdline")).unwrap_or_default();
+        String::from_utf8_lossy(&cmd).contains("opencode\0serve")
+            && std::fs::read_link(p.path().join("cwd")).ok().as_deref() == Some(folder.as_path())
+    });
+    assert!(in_folder, "no opencode server running in {}", folder.display());
+
     // The same session again, with a rule approved earlier: no card this time.
     let ev = turn(&runs, request(&dir, "Run the shell command: echo again >> colour.txt. Then say done.", Some(&session), &["bash(echo *)"])).await;
     assert!(!ev.iter().any(|e| e["type"] == "approval"), "asked despite the rule");

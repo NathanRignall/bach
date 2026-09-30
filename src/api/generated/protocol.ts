@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "da2b095e8fd1508f";
+export const PROTOCOL = "43eb795b7747e735";
 
 /**
  * Agent-independent events the UI renders.
@@ -303,10 +303,11 @@ export type ListDirArgs = {
 path?: string, showHidden?: boolean, };
 
 /**
- * The models an agent can run. Codex is asked for its current list (kept for a while);
- * Claude Code's are its aliases.
+ * The models an agent can run. Codex and opencode are asked for their current lists (kept for
+ * a while); Claude Code's are its aliases. opencode's depend on the project folder (`cwd`),
+ * which may add providers of its own.
  */
-export type ListModelsArgs = { agent: AgentKind, };
+export type ListModelsArgs = { agent: AgentKind, cwd?: string, };
 
 /**
  * Every session, most recently active first (without transcripts).
@@ -808,8 +809,9 @@ export type Commands = {
    */
   list_agents: { args: ListAgentsArgs; output: Array<AgentInfo> };
   /**
-   * The models an agent can run. Codex is asked for its current list (kept for a while);
-   * Claude Code's are its aliases.
+   * The models an agent can run. Codex and opencode are asked for their current lists (kept for
+   * a while); Claude Code's are its aliases. opencode's depend on the project folder (`cwd`),
+   * which may add providers of its own.
    */
   list_models: { args: ListModelsArgs; output: Array<ModelInfo> };
   /**

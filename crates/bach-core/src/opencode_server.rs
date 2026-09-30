@@ -1,6 +1,7 @@
-//! The one `opencode serve` Bach runs for all opencode sessions: started on first use, on
-//! loopback with a random port and password, and restarted if it goes away. Every project
-//! shares it (requests name their folder), and one event stream serves every run.
+//! The `opencode serve`s Bach runs: one per session folder, started in that folder on first use
+//! (opencode may be a wrapper that sandboxes its writes to the folder it starts in), on loopback
+//! with a random port and password. It's restarted if it goes away, and stopped once it has had
+//! no runs for a while. Sessions in the same folder share it.
 //!
 //! It must not outlive Bach, however Bach ends (a restart is a SIGTERM; nothing gets to clean
 //! up). So it runs under a small shell that holds Bach's end of a pipe and stops the server
@@ -9,12 +10,13 @@ use crate::adapters::opencode;
 use bach_protocol::ModelInfo;
 use serde_json::Value;
 use std::{
+    collections::HashMap,
     process::Stdio,
     sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, OnceLock,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -30,13 +32,57 @@ pub struct Server {
     http: reqwest::Client,
     events: broadcast::Sender<Value>,
     alive: Arc<AtomicBool>,
+    /// Runs using it right now, and when it was last used: an idle server is stopped.
+    runs: Arc<AtomicUsize>,
+    last_used: Arc<std::sync::Mutex<Instant>>,
+}
+
+/// Held by a run while it uses a server, so the server isn't stopped under it.
+pub struct Lease(Server);
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        self.0.touch();
+        self.0.runs.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Bach's end of the pipe keeping the server alive (see the module docs); taking it stops it.
 type Lifeline = Arc<Mutex<Option<tokio::process::ChildStdin>>>;
 
-/// The server, once started.
-static SERVER: Mutex<Option<(Server, Lifeline)>> = Mutex::const_new(None);
+type Servers = Mutex<HashMap<String, (Server, Lifeline)>>;
+
+/// The servers, by folder.
+fn servers() -> &'static Servers {
+    static SERVERS: OnceLock<Servers> = OnceLock::new();
+    SERVERS.get_or_init(|| {
+        tokio::spawn(stop_idle());
+        Mutex::default()
+    })
+}
+
+/// How long a server with no runs is kept for the next turn.
+const IDLE: Duration = Duration::from_secs(10 * 60);
+
+/// Stops servers that have been idle for [`IDLE`], and forgets ones that went away.
+async fn stop_idle() {
+    loop {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        let mut stopped = vec![];
+        servers().lock().await.retain(|_, (s, lifeline)| {
+            let idle = s.runs.load(Ordering::SeqCst) == 0
+                && s.last_used.lock().unwrap().elapsed() > IDLE;
+            if idle || !s.alive.load(Ordering::SeqCst) {
+                stopped.push(lifeline.clone());
+                return false;
+            }
+            true
+        });
+        for lifeline in stopped {
+            lifeline.lock().await.take();
+        }
+    }
+}
 
 /// Runs `opencode serve` until its stdin (Bach's pipe) closes.
 const SUPERVISE: &str = "opencode serve --port 0 --hostname 127.0.0.1 & pid=$!; \
@@ -45,20 +91,21 @@ const SUPERVISE: &str = "opencode serve --port 0 --hostname 127.0.0.1 & pid=$!; 
 /// What a run sees when the server has gone away; its turn is over.
 pub const LOST: &str = "bach.server.lost";
 
-/// The shared server, starting it if it isn't running.
-pub async fn server() -> Result<Server, String> {
-    let mut slot = SERVER.lock().await;
-    if let Some((s, _)) = slot.as_ref() {
+/// The server for folder `dir`, starting it there if it isn't running.
+pub async fn server(dir: &str) -> Result<Server, String> {
+    let mut all = servers().lock().await;
+    if let Some((s, _)) = all.get(dir) {
         if s.alive.load(Ordering::SeqCst) {
+            s.touch();
             return Ok(s.clone());
         }
     }
-    let (server, lifeline) = start().await?;
-    *slot = Some((server.clone(), lifeline));
+    let (server, lifeline) = start(dir).await?;
+    all.insert(dir.to_string(), (server.clone(), lifeline));
     Ok(server)
 }
 
-async fn start() -> Result<(Server, Lifeline), String> {
+async fn start(dir: &str) -> Result<(Server, Lifeline), String> {
     if which::which("opencode").is_err() {
         return Err("opencode isn't installed on the machine running the agents.".into());
     }
@@ -66,6 +113,7 @@ async fn start() -> Result<(Server, Lifeline), String> {
     let mut child = Command::new("sh")
         .args(["-c", SUPERVISE])
         .env("OPENCODE_SERVER_PASSWORD", &password)
+        .current_dir(dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -100,6 +148,8 @@ async fn start() -> Result<(Server, Lifeline), String> {
         http: reqwest::Client::new(),
         events,
         alive: Arc::new(AtomicBool::new(true)),
+        runs: Arc::default(),
+        last_used: Arc::new(std::sync::Mutex::new(Instant::now())),
     };
     // One stream of every project's events, passed on to the runs.
     let s = server.clone();
@@ -118,6 +168,16 @@ async fn start() -> Result<(Server, Lifeline), String> {
 }
 
 impl Server {
+    /// Keeps the server while the lease lives (a run).
+    pub fn lease(&self) -> Lease {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        Lease(self.clone())
+    }
+
+    fn touch(&self) {
+        *self.last_used.lock().unwrap() = Instant::now();
+    }
+
     fn request(&self, method: reqwest::Method, path: &str, directory: Option<&str>) -> reqwest::RequestBuilder {
         let mut r = self
             .http
@@ -189,10 +249,11 @@ impl Server {
     }
 }
 
-/// The models opencode can run (its configured providers'), as `provider/model`.
-pub async fn list_models() -> Result<Vec<ModelInfo>, String> {
-    let server = server().await?;
-    let providers = server.get("/config/providers", None).await?;
-    let config = server.get("/config", None).await.unwrap_or_default();
+/// The models opencode can run in folder `dir` (its configured providers', the project's own
+/// included), as `provider/model`.
+pub async fn list_models(dir: &str) -> Result<Vec<ModelInfo>, String> {
+    let server = server(dir).await?;
+    let providers = server.get("/config/providers", Some(dir)).await?;
+    let config = server.get("/config", Some(dir)).await.unwrap_or_default();
     Ok(opencode::models_from(&providers, config["model"].as_str()))
 }

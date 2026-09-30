@@ -288,7 +288,9 @@ impl Runs {
         image_files: ImageFiles,
         project: PathBuf,
     ) -> Result<String, String> {
-        let server = opencode_server::server().await?;
+        let server = opencode_server::server(&turn.dir).await?;
+        // Keeps this folder's server running while the turn does.
+        let lease = server.lease();
         // Listening before prompting, so nothing is missed.
         let mut events = server.subscribe();
         let dir = turn.dir;
@@ -344,6 +346,7 @@ impl Runs {
         let id = run_id.clone();
         tokio::spawn(async move {
             let _image_files = image_files; // removed when the run ends
+            let _lease = lease;
             let mut stream = opencode::Stream::new(&session, &turn.allowed);
             let path = format!("/session/{session}/abort");
             loop {
