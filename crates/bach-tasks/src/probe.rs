@@ -1,8 +1,11 @@
 //! Looking at the machine on behalf of bach-tasks: who listens on which port, what a task's
 //! processes are, whether a local URL answers, and reading log files in chunks.
 //!
-//! Linux (`/proc`); everything degrades to "nothing found" elsewhere.
-use crate::process::{pids_in_session, proc_stat, session_of};
+//! The platform specifics are in [`crate::sys`].
+use crate::{
+    process::{pids_in_session, session_of},
+    sys,
+};
 use bach_tasks_protocol::LogChunk;
 use serde::Serialize;
 use std::{
@@ -37,97 +40,22 @@ pub struct Listener {
 /// `(port, owning pid)` for every listening TCP socket. The pid is None for sockets whose owner
 /// we are not allowed to inspect (another user's process).
 pub fn socket_owners() -> Vec<(u16, Option<u32>)> {
-    // Listening sockets: inode -> port.
-    let mut listening: HashMap<u64, u16> = HashMap::new();
-    for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
-        let Ok(text) = std::fs::read_to_string(table) else {
-            continue;
-        };
-        for line in text.lines().skip(1) {
-            let f: Vec<&str> = line.split_whitespace().collect();
-            // f[1] local address "HEXIP:HEXPORT", f[3] state (0A = LISTEN), f[9] socket inode.
-            if f.len() > 9 && f[3] == "0A" {
-                let port = f[1]
-                    .rsplit(':')
-                    .next()
-                    .and_then(|p| u16::from_str_radix(p, 16).ok());
-                if let (Some(port), Ok(inode)) = (port, f[9].parse::<u64>()) {
-                    listening.insert(inode, port);
-                }
-            }
-        }
-    }
-    // Which process holds each of those inodes.
-    let mut owner: HashMap<u64, u32> = HashMap::new();
-    if let Ok(procs) = std::fs::read_dir("/proc") {
-        for p in procs.filter_map(Result::ok) {
-            let Some(pid) = p.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
-                continue;
-            };
-            let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
-                continue;
-            };
-            for fd in fds.filter_map(Result::ok) {
-                let Ok(target) = std::fs::read_link(fd.path()) else {
-                    continue;
-                };
-                let inode = target
-                    .to_str()
-                    .and_then(|t| t.strip_prefix("socket:["))
-                    .and_then(|t| t.trim_end_matches(']').parse::<u64>().ok());
-                if let Some(i) = inode.filter(|i| listening.contains_key(i)) {
-                    owner.entry(i).or_insert(pid);
-                }
-            }
-        }
-    }
-    let mut out: Vec<(u16, Option<u32>)> = listening
-        .iter()
-        .map(|(inode, port)| (*port, owner.get(inode).copied()))
-        .collect();
+    let mut out = sys::socket_owners();
     out.sort_unstable();
     out.dedup();
     out
 }
 
-fn clock_ticks() -> f64 {
-    // SAFETY: sysconf has no preconditions.
-    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    if hz > 0 {
-        hz as f64
-    } else {
-        100.0
-    }
-}
-
 fn describe_process(pid: u32) -> (String, Option<String>, Option<u64>) {
-    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-    let mut command = String::from_utf8_lossy(&raw)
-        .replace('\0', " ")
-        .trim()
-        .to_string();
+    let mut command = sys::argv(pid).join(" ");
     if command.is_empty() {
-        command = std::fs::read_to_string(format!("/proc/{pid}/comm"))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        command = sys::name(pid).unwrap_or_default();
     }
     if command.chars().count() > 200 {
         command = command.chars().take(200).collect::<String>() + "…";
     }
-    let cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))
-        .ok()
-        .map(|p| p.to_string_lossy().into_owned());
-    let up_secs = proc_stat(pid).and_then(|(_, ticks)| {
-        let uptime: f64 = std::fs::read_to_string("/proc/uptime")
-            .ok()?
-            .split_whitespace()
-            .next()?
-            .parse()
-            .ok()?;
-        Some((uptime - ticks as f64 / clock_ticks()).max(0.0) as u64)
-    });
-    (command, cwd, up_secs)
+    let cwd = sys::cwd(pid).map(|p| p.to_string_lossy().into_owned());
+    (command, cwd, sys::age_secs(pid))
 }
 
 /// Every listening TCP socket on the machine, with what we can tell about its owner.
@@ -181,21 +109,16 @@ pub fn age(secs: u64) -> String {
 pub fn process_summary(sid: u32) -> Vec<String> {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for pid in pids_in_session(sid) {
-        // The command as started ("node", "workerd"), not the kernel's 15-character thread name
-        // (Node reports its threads as "MainThread"). Fall back to that when there's no command line.
-        let raw = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        let first = String::from_utf8_lossy(&raw)
-            .split('\0')
-            .next()
+        // The command as started ("node", "workerd"), not the kernel's short thread name (Node
+        // reports its threads as "MainThread"). Fall back to that when there's no command line.
+        let first = sys::argv(pid)
+            .first()
             .and_then(|a| a.split_whitespace().next())
             .and_then(|a| a.rsplit('/').next())
             .unwrap_or_default()
             .to_string();
         let comm = if first.is_empty() {
-            std::fs::read_to_string(format!("/proc/{pid}/comm"))
-                .unwrap_or_default()
-                .trim()
-                .to_string()
+            sys::name(pid).unwrap_or_default()
         } else {
             first
         };

@@ -1,7 +1,8 @@
 //! bach-tasks' tests: real processes, real ports, a real MCP client over HTTP.
     use super::*;
     use std::path::Path;
-    use crate::process::{proc_stat, session_of, signal_session, task_alive};
+    use crate::process::{session_of, signal_session, task_alive};
+    use crate::sys;
     use serde_json::{json, Value};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -49,16 +50,11 @@
 
     /// Any process whose command line contains `needle`.
     fn procs_matching(needle: &str) -> Vec<u32> {
-        std::fs::read_dir("/proc")
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        sys::all_pids()
+            .into_iter()
             .filter(|pid| {
-                std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|c| {
-                    String::from_utf8_lossy(&c)
-                        .replace('\0', " ")
-                        .contains(needle)
-                }) && proc_stat(*pid).is_some_and(|(st, _)| st != 'Z')
+                sys::argv(*pid).join(" ").contains(needle)
+                    && sys::stat(*pid).is_some_and(|s| !s.zombie)
                     && *pid != std::process::id()
             })
             .collect()
@@ -546,7 +542,7 @@
     // ----- diagnosing conflicts, several ports, HTTP readiness ------------------------------
 
     /// A process that is not a background task, listening on `port`.
-    struct Foreign(std::process::Child);
+    struct Foreign(std::process::Child, u32);
     impl Foreign {
         async fn listening_on(port: u16, dir: &Path) -> Foreign {
             let child = std::process::Command::new("python3")
@@ -566,10 +562,16 @@
                 std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
             })
             .await;
-            Foreign(child)
+            // On macOS `python3` is a shim that starts the real Python as a child: the listener
+            // is whichever process holds the socket, not necessarily the one we spawned.
+            let holder = crate::probe::socket_owners()
+                .into_iter()
+                .find_map(|(p, pid)| pid.filter(|_| p == port))
+                .expect("the listener's pid");
+            Foreign(child, holder)
         }
         fn pid(&self) -> u32 {
-            self.0.id()
+            self.1
         }
     }
     impl Drop for Foreign {
@@ -680,8 +682,9 @@
             procs_matching(&format!("http.server {port}"))
                 .into_iter()
                 .filter(|pid| {
-                    std::fs::read(format!("/proc/{pid}/cmdline"))
-                        .is_ok_and(|c| c.starts_with(b"python3"))
+                    sys::argv(*pid)
+                        .first()
+                        .is_some_and(|a| is_python(a.rsplit('/').next().unwrap()))
                 })
                 .collect::<Vec<u32>>()
         };
@@ -700,7 +703,7 @@
             "{view:?}"
         );
         assert!(
-            view.processes.iter().any(|p| p.starts_with("python3")),
+            view.processes.iter().any(|p| is_python(p)),
             "{view:?}"
         );
         let report = tasks.port_report(&[port]);
@@ -711,10 +714,15 @@
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A Python process by name: `python3` on Linux, Xcode's `Python` (started by the
+    /// `/usr/bin/python3` shim through `xcrun`) on macOS.
+    fn is_python(name: &str) -> bool {
+        name.to_lowercase().starts_with("python")
+    }
+
     fn proc_group(pid: u32) -> u32 {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
-        let rest = &stat[stat.rfind(')').unwrap() + 2..];
-        rest.split(' ').nth(2).unwrap().parse().unwrap()
+        // SAFETY: plain getpgid(2).
+        unsafe { libc::getpgid(pid as i32) as u32 }
     }
 
     #[tokio::test]
@@ -835,7 +843,9 @@
             "{text}"
         );
         assert!(
-            text.contains("Processes:") && text.contains("python3"),
+            text.lines()
+                .filter_map(|l| l.trim().strip_prefix("Processes: "))
+                .any(|l| l.split(", ").any(is_python)),
             "which processes are alive: {text}"
         );
 

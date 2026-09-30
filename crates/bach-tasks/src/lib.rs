@@ -12,12 +12,13 @@
 //! tasks it starts. Embedders can serve tools of their own from the same MCP server
 //! ([`Tasks::add_tools`]) and name it ([`Tasks::set_server_name`]).
 //!
-//! Unix only (`setsid`, `/proc` for ports).
+//! Unix only (`setsid`); follows its processes and their ports on Linux and macOS.
 mod compose;
 mod diagnose;
 mod mcp;
 pub mod probe;
 mod process;
+mod sys;
 pub(crate) mod store;
 #[cfg(test)]
 mod tests;
@@ -33,7 +34,9 @@ pub use bach_tasks_protocol::{
 };
 
 use diagnose::{diagnose, SETTLE_MS};
-use process::{now_ms, pids_in_session, ports_of_session, proc_stat, signal_session, task_alive};
+use process::{
+    now_ms, pids_in_session, ports_of_session, signal_session, start_time, task_alive,
+};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
@@ -547,7 +550,7 @@ impl Tasks {
             project: req.project,
             owner: req.owner,
             pid,
-            start_ticks: proc_stat(pid).map(|(_, t)| t),
+            start_ticks: start_time(pid),
             started_at: now_ms(),
             ended_at: None,
             status: TaskStatus::Running,
@@ -579,8 +582,8 @@ impl Tasks {
             .ok_or_else(no_such_task)?;
         // The kernel won't reuse a pid that still names a live session, so the session is this
         // task's even if its leader is gone, unless that pid now belongs to a different process.
-        let reused = proc_stat(task.pid)
-            .is_some_and(|(_, ticks)| task.start_ticks.is_some_and(|want| want != ticks));
+        let reused = start_time(task.pid)
+            .is_some_and(|start| task.start_ticks.is_some_and(|want| want != start));
         if reused {
             self.publish();
             return Ok(stopped);
