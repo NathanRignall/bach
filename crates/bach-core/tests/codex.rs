@@ -305,3 +305,75 @@ async fn real_codex_question() {
     println!("{deltas} text deltas");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Runs one real Codex turn in `dir`, approving everything; returns the events, deltas included.
+async fn real_turn(dir: &Path, prompt: &str, mode: Option<&str>, session_id: Option<&str>) -> Vec<Value> {
+    let (tx, rx) = mpsc::channel();
+    let runs = Runs::default();
+    let run_id = runs
+        .start(
+            std::sync::Arc::new(move |ev| {
+                let _ = tx.send(serde_json::to_value(&ev).unwrap());
+            }),
+            RunRequest {
+                agent: AgentKind::Codex,
+                prompt: prompt.into(),
+                images: vec![],
+                cwd: Some(dir.to_string_lossy().into()),
+                session_id: session_id.map(String::from),
+                model: None,
+                permission_mode: mode.map(String::from),
+                allowed_tools: vec![],
+                session_key: None,
+                run_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    let mut events = vec![];
+    loop {
+        let ev = rx.recv_timeout(Duration::from_secs(180)).unwrap();
+        if ev["type"] == "approval" {
+            runs.respond_approval(&run_id, ev["requestId"].as_str().unwrap(), Decision::Allow, None, None)
+                .await
+                .unwrap();
+        }
+        let done = ev["type"] == "done";
+        events.push(ev);
+        if done {
+            return events;
+        }
+    }
+}
+
+/// The real Codex: its model list, command output as it runs, and plan mode then back.
+/// `cargo test -p bach-core --test codex real_codex_settings -- --ignored --nocapture`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn real_codex_settings_and_streams() {
+    let models = bach_core::adapters::list_models(AgentKind::Codex).await.unwrap();
+    println!("models: {:?}", models.iter().map(|m| (&m.id, m.is_default)).collect::<Vec<_>>());
+    assert!(models.iter().any(|m| m.is_default));
+
+    let dir = std::env::temp_dir().join(format!("bach-real-codex-s-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let ev = real_turn(&dir, "Run exactly this shell command, nothing else: `for i in 1 2 3; do echo line $i; sleep 1; done`", None, None).await;
+    let outputs: Vec<&Value> = ev.iter().filter(|e| e["type"] == "delta" && e["kind"] == "output").collect();
+    let thinking = ev.iter().filter(|e| e["type"] == "delta" && e["kind"] == "thinking").count();
+    println!("{} output deltas: {:?}; {thinking} thinking deltas", outputs.len(), outputs.iter().map(|e| &e["text"]).collect::<Vec<_>>());
+    assert!(!outputs.is_empty(), "no command output streamed");
+    let thread = ev.iter().find(|e| e["type"] == "session").unwrap()["id"].as_str().unwrap().to_string();
+
+    // Plan mode: it plans rather than writes. Then the next turn, back in the default mode, does.
+    let ev = real_turn(&dir, "Create plan.txt containing hi.", Some("plan"), Some(&thread)).await;
+    let texts: Vec<&str> = ev.iter().filter(|e| e["type"] == "text").filter_map(|e| e["text"].as_str()).collect();
+    println!("plan turn said: {texts:#?}");
+    assert!(texts.iter().any(|t| t.contains("plan.txt")), "no plan shown");
+    assert!(!dir.join("plan.txt").exists(), "wrote a file in plan mode");
+    let ev = real_turn(&dir, "Go ahead and create plan.txt containing hi now.", None, Some(&thread)).await;
+    assert_eq!(ev.last().unwrap()["isError"], false);
+    assert!(dir.join("plan.txt").exists(), "didn't write after leaving plan mode");
+    let _ = std::fs::remove_dir_all(&dir);
+}

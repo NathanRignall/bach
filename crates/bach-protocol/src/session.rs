@@ -146,12 +146,13 @@ pub enum SessionEvent {
     Changed { session: Session },
     /// A new transcript entry.
     Entry { session_id: String, entry: LogEntry },
-    /// More of a message the agent is writing (see [`AgentEvent::TextDelta`]). Not part of the
-    /// transcript: the finished message arrives as an entry.
-    TextDelta {
+    /// More of something the agent is writing (see [`AgentEvent::Delta`]). Not part of the
+    /// transcript: the finished message, reasoning or tool result arrives as an entry.
+    Delta {
         session_id: String,
         run_id: String,
         id: String,
+        kind: crate::DeltaKind,
         text: String,
     },
     Deleted { session_id: String },

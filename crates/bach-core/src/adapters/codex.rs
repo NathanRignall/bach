@@ -2,14 +2,27 @@
 //! `jsonrpc` field). One process per turn, as with Claude Code: initialize, start or resume
 //! the thread, start the turn, answer its approval requests, and close stdin once the turn
 //! completes. Shapes recorded from codex-cli 0.146.0 (tests/fixtures/codex_*.jsonl).
-use super::AgentEvent;
+use super::{AgentEvent, Turn};
+use bach_protocol::{DeltaKind, ModelInfo};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 
-/// Codex edits the project on its own and asks before anything beyond it (network, other
-/// folders, `.git`). Without this, `codex` defaults to a read-only sandbox.
-const SANDBOX: &str = "workspace-write";
-const APPROVAL_POLICY: &str = "on-request";
+/// The permission modes Bach offers for Codex: its own presets, and its plan mode. Anything
+/// else (none, or a mode left over from Claude Code) is "auto".
+pub const PERMISSION_MODES: &[&str] = &["auto", "readOnly", "fullAccess", "plan"];
+
+/// The sandbox and approval policy for a permission mode.
+///
+/// "auto": Codex edits the project on its own and asks before anything beyond it (network,
+/// other folders, `.git`); without a sandbox given, `codex` would default to read-only. Plan
+/// mode runs the same way; Codex itself holds back from changing things while planning.
+fn preset(mode: Option<&str>) -> (&'static str, &'static str) {
+    match mode {
+        Some("readOnly") => ("read-only", "on-request"),
+        Some("fullAccess") => ("danger-full-access", "never"),
+        _ => ("workspace-write", "on-request"),
+    }
+}
 
 /// The session rule "allow for this session" grants for file changes.
 const EDIT_RULE: &str = "Edit";
@@ -38,6 +51,11 @@ pub struct Conversation {
     cwd: Option<String>,
     /// Session rules approved earlier: requests they cover are accepted without asking.
     allowed: Vec<String>,
+    /// The model chosen for the session, if any.
+    choice: Option<String>,
+    /// See [`PERMISSION_MODES`].
+    mode: Option<String>,
+    /// The model the thread runs (chosen, or Codex's default).
     model: Option<String>,
     /// Whether the model's context window has been reported (it doesn't change mid-turn).
     window_sent: bool,
@@ -83,19 +101,15 @@ fn shell_rule(command: &str) -> String {
 }
 
 impl Conversation {
-    pub fn new(
-        prompt: &str,
-        images: &[String],
-        thread_id: Option<&str>,
-        cwd: Option<&str>,
-        allowed: &[String],
-    ) -> Self {
+    pub fn new(turn: &Turn) -> Self {
         Self {
-            prompt: prompt.into(),
-            images: images.to_vec(),
-            thread_id: thread_id.map(String::from),
-            cwd: cwd.map(String::from),
-            allowed: allowed.to_vec(),
+            prompt: turn.prompt.into(),
+            images: turn.image_files.to_vec(),
+            thread_id: turn.session_id.map(String::from),
+            cwd: turn.cwd.map(String::from),
+            allowed: turn.allowed_tools.to_vec(),
+            choice: turn.model.map(String::from),
+            mode: turn.permission_mode.map(String::from),
             model: None,
             window_sent: false,
             turn_id: None,
@@ -109,7 +123,11 @@ impl Conversation {
         vec![request(
             INITIALIZE,
             "initialize",
-            json!({ "clientInfo": { "name": "bach", "title": "Bach", "version": env!("CARGO_PKG_VERSION") } }),
+            // The experimental API is what lets a turn run in plan mode.
+            json!({
+                "clientInfo": { "name": "bach", "title": "Bach", "version": env!("CARGO_PKG_VERSION") },
+                "capabilities": { "experimentalApi": true },
+            }),
         )]
     }
 
@@ -155,11 +173,15 @@ impl Conversation {
         let result = &v["result"];
         match id {
             Some(INITIALIZE) => {
-                // Also given when resuming: a thread first run by `codex exec` would otherwise
-                // keep its read-only sandbox.
-                let mut params = json!({ "approvalPolicy": APPROVAL_POLICY, "sandbox": SANDBOX });
+                // Also given when resuming: the session's mode or model may have changed, and a
+                // thread first run by `codex exec` would otherwise keep its read-only sandbox.
+                let (sandbox, approval) = preset(self.mode.as_deref());
+                let mut params = json!({ "approvalPolicy": approval, "sandbox": sandbox });
                 if let Some(cwd) = &self.cwd {
                     params["cwd"] = json!(cwd);
+                }
+                if let Some(model) = &self.choice {
+                    params["model"] = json!(model);
                 }
                 let method = match &self.thread_id {
                     Some(id) => {
@@ -189,16 +211,21 @@ impl Conversation {
                         .iter()
                         .map(|p| json!({ "type": "localImage", "path": p })),
                 );
+                let mut params = json!({ "threadId": id, "input": input });
+                // Always said, so leaving plan mode takes effect on a resumed thread too.
+                if let Some(model) = &self.model {
+                    let mode = if self.mode.as_deref() == Some("plan") { "plan" } else { "default" };
+                    params["collaborationMode"] = json!({
+                        "mode": mode,
+                        "settings": { "model": model, "reasoning_effort": null, "developer_instructions": null },
+                    });
+                }
                 (
                     vec![AgentEvent::Session {
                         id: id.clone(),
                         model: self.model.clone(),
                     }],
-                    vec![request(
-                        TURN,
-                        "turn/start",
-                        json!({ "threadId": id, "input": input }),
-                    )],
+                    vec![request(TURN, "turn/start", params)],
                 )
             }
             Some(TURN) => {
@@ -450,7 +477,8 @@ impl Conversation {
                     parent: None,
                 }]
             }
-            ("item/completed", Some("agentMessage")) => {
+            // A plan mode turn's plan is its answer.
+            ("item/completed", Some("agentMessage" | "plan")) => {
                 let text = s(&item["text"]);
                 if text.is_empty() {
                     return vec![];
@@ -519,19 +547,98 @@ impl Conversation {
                 .map(|request_id| AgentEvent::ApprovalCancelled { request_id })
                 .into_iter()
                 .collect(),
-            ("item/agentMessage/delta", _) => {
+            // Things still being written: the message, the reasoning, a command's output.
+            ("item/agentMessage/delta", _)
+            | ("item/plan/delta", _)
+            | ("item/reasoning/summaryTextDelta", _)
+            | ("item/reasoning/textDelta", _)
+            | ("item/commandExecution/outputDelta", _) => {
+                let kind = match method {
+                    "item/agentMessage/delta" | "item/plan/delta" => DeltaKind::Text,
+                    "item/commandExecution/outputDelta" => DeltaKind::Output,
+                    _ => DeltaKind::Thinking,
+                };
                 let text = s(&p["delta"]);
                 if text.is_empty() {
                     return vec![];
                 }
-                vec![AgentEvent::TextDelta {
+                vec![AgentEvent::Delta {
                     id: s(&p["itemId"]),
+                    kind,
                     text,
+                }]
+            }
+            // A new part of the reasoning summary starts a new paragraph.
+            ("item/reasoning/summaryPartAdded", _) if p["summaryIndex"].as_u64() > Some(0) => {
+                vec![AgentEvent::Delta {
+                    id: s(&p["itemId"]),
+                    kind: DeltaKind::Thinking,
+                    text: "\n\n".into(),
                 }]
             }
             _ => vec![],
         }
     }
+}
+
+/// Asks a short-lived app server for the models the user's Codex can run (its `model/list`).
+pub async fn list_models() -> Result<Vec<ModelInfo>, String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let mut child = tokio::process::Command::new("codex")
+        .arg("app-server")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("couldn't start `codex`: {e}"))?;
+    let mut stdin = child.stdin.take().expect("piped");
+    let lines = [
+        request(INITIALIZE, "initialize", json!({ "clientInfo": { "name": "bach", "title": "Bach", "version": env!("CARGO_PKG_VERSION") } })),
+        json!({ "method": "initialized" }).to_string(),
+        request(2, "model/list", json!({})),
+    ];
+    for line in lines {
+        stdin
+            .write_all(format!("{line}\n").as_bytes())
+            .await
+            .map_err(|e| format!("couldn't ask Codex for its models: {e}"))?;
+    }
+    let mut out = BufReader::new(child.stdout.take().expect("piped")).lines();
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while let Ok(Some(line)) = out.next_line().await {
+            let v: Value = serde_json::from_str(&line).unwrap_or_default();
+            if v["id"] == 2 {
+                return Some(v);
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+    .ok_or("Codex didn't list its models.")?;
+    if let Some(m) = answer["error"]["message"].as_str() {
+        return Err(format!("Codex couldn't list its models: {m}"));
+    }
+    Ok(models_from(&answer["result"]))
+}
+
+/// The visible models in a `model/list` result.
+fn models_from(result: &Value) -> Vec<ModelInfo> {
+    result["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["hidden"] != true)
+        .map(|m| ModelInfo {
+            id: s(&m["model"]),
+            name: m["displayName"].as_str().unwrap_or(m["model"].as_str().unwrap_or_default()).into(),
+            description: s(&m["description"]),
+            is_default: m["isDefault"] == true,
+        })
+        .filter(|m| !m.id.is_empty())
+        .collect()
 }
 
 /// `a.rs, b.rs`
@@ -751,7 +858,12 @@ mod tests {
 
     fn conversation(allowed: &[&str]) -> Conversation {
         let allowed: Vec<String> = allowed.iter().map(|r| r.to_string()).collect();
-        Conversation::new("hi", &[], Some("t1"), None, &allowed)
+        Conversation::new(&Turn {
+            prompt: "hi",
+            session_id: Some("t1"),
+            allowed_tools: &allowed,
+            ..Default::default()
+        })
     }
 
     /// The approval a request from Codex becomes, and what the conversation sent back at once.
@@ -891,10 +1003,69 @@ mod tests {
     }
 
     #[test]
-    fn message_text_streams() {
+    fn text_reasoning_and_output_stream() {
         let mut c = conversation(&[]);
-        let (ev, _) = c.on_line(&json!({ "method": "item/agentMessage/delta", "params": { "itemId": "m1", "delta": "Hel" } }));
-        assert!(matches!(&ev[..], [AgentEvent::TextDelta { id, text }] if id == "m1" && text == "Hel"));
+        let mut delta = |method: &str, params: Value| match &c.on_line(&json!({ "method": method, "params": params })).0[..] {
+            [AgentEvent::Delta { id, kind, text }] => Some((id.clone(), *kind, text.clone())),
+            [] => None,
+            other => panic!("{other:?}"),
+        };
+        let d = |id: &str, kind, text: &str| Some((id.to_string(), kind, text.to_string()));
+        assert_eq!(delta("item/agentMessage/delta", json!({ "itemId": "m1", "delta": "Hel" })), d("m1", DeltaKind::Text, "Hel"));
+        assert_eq!(delta("item/commandExecution/outputDelta", json!({ "itemId": "c1", "delta": "ok\n" })), d("c1", DeltaKind::Output, "ok\n"));
+        assert_eq!(delta("item/reasoning/summaryTextDelta", json!({ "itemId": "r1", "delta": "Plan", "summaryIndex": 0 })), d("r1", DeltaKind::Thinking, "Plan"));
+        // The first part needs no break; later ones start a paragraph.
+        assert_eq!(delta("item/reasoning/summaryPartAdded", json!({ "itemId": "r1", "summaryIndex": 0 })), None);
+        assert_eq!(delta("item/reasoning/summaryPartAdded", json!({ "itemId": "r1", "summaryIndex": 1 })), d("r1", DeltaKind::Thinking, "\n\n"));
+        assert_eq!(delta("item/agentMessage/delta", json!({ "itemId": "m1", "delta": "" })), None);
+    }
+
+    /// The requests a new turn sends for `model` and `mode`: the thread's, then the turn's.
+    fn opening(model: Option<&str>, mode: Option<&str>) -> (Value, Value) {
+        let mut c = Conversation::new(&Turn { prompt: "hi", model, permission_mode: mode, ..Default::default() });
+        let init: Value = serde_json::from_str(&c.opening()[0]).unwrap();
+        assert_eq!(init["params"]["capabilities"]["experimentalApi"], true);
+        let (_, sent) = c.on_line(&json!({ "id": 1, "result": {} }));
+        let thread: Value = serde_json::from_str(&sent[1]).unwrap();
+        let (_, sent) = c.on_line(&json!({ "id": 2, "result": { "thread": { "id": "t1" }, "model": "gpt-x" } }));
+        (thread["params"].clone(), serde_json::from_str::<Value>(&sent[0]).unwrap()["params"].clone())
+    }
+
+    #[test]
+    fn permission_modes_and_models() {
+        let modes = |mode| {
+            let (thread, turn) = opening(None, mode);
+            (
+                thread["sandbox"].as_str().unwrap().to_string(),
+                thread["approvalPolicy"].as_str().unwrap().to_string(),
+                turn["collaborationMode"]["mode"].as_str().unwrap().to_string(),
+            )
+        };
+        let m = |a: &str, b: &str, c: &str| (a.to_string(), b.to_string(), c.to_string());
+        assert_eq!(modes(None), m("workspace-write", "on-request", "default"));
+        // A mode left over from Claude Code means the default.
+        assert_eq!(modes(Some("acceptEdits")), m("workspace-write", "on-request", "default"));
+        assert_eq!(modes(Some("readOnly")), m("read-only", "on-request", "default"));
+        assert_eq!(modes(Some("fullAccess")), m("danger-full-access", "never", "default"));
+        assert_eq!(modes(Some("plan")), m("workspace-write", "on-request", "plan"));
+
+        // A chosen model is asked for; plan mode names the thread's model either way.
+        let (thread, turn) = opening(Some("gpt-y"), None);
+        assert_eq!(thread["model"], "gpt-y");
+        assert_eq!(turn["collaborationMode"]["settings"]["model"], "gpt-x");
+        let (thread, _) = opening(None, None);
+        assert!(thread.get("model").is_none());
+    }
+
+    #[test]
+    fn lists_visible_models() {
+        let models = models_from(&json!({ "data": [
+            { "model": "gpt-a", "displayName": "GPT A", "description": "fast", "hidden": false, "isDefault": true },
+            { "model": "gpt-old", "displayName": "Old", "description": "", "hidden": true, "isDefault": false },
+            { "model": "gpt-b", "displayName": null, "description": "big", "hidden": false, "isDefault": false },
+        ]}));
+        let got: Vec<_> = models.iter().map(|m| (m.id.as_str(), m.name.as_str(), m.is_default)).collect();
+        assert_eq!(got, [("gpt-a", "GPT A", true), ("gpt-b", "gpt-b", false)]);
     }
 
     #[test]

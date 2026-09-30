@@ -1,5 +1,5 @@
 use crate::{
-    adapters::{codex_answer, AgentCli, AgentEvent, AgentKind, Conversation},
+    adapters::{codex_answer, permission_modes, AgentCli, AgentEvent, AgentKind, Conversation, Turn},
 };
 pub use bach_protocol::Decision;
 use bach_protocol::ApiError;
@@ -268,7 +268,7 @@ impl Runs {
             .map(|m| m.trim().to_string())
             .filter(|m| !m.is_empty() && m != "default");
         if let Some(m) = &permission_mode {
-            if !PERMISSION_MODES.contains(&m.as_str()) {
+            if !permission_modes(agent).contains(&m.as_str()) {
                 return Err(format!("`{m}` isn't a permission mode."));
             }
         }
@@ -306,12 +306,16 @@ impl Runs {
         };
         let (mut conversation, opening) = Conversation::new(
             agent,
-            &prompt,
-            &images,
-            &image_files.paths,
-            session_id.as_deref(),
-            cwd.as_deref().and_then(|d| d.to_str()),
-            &allowed_tools,
+            &Turn {
+                prompt: &prompt,
+                images: &images,
+                image_files: &image_files.paths,
+                session_id: session_id.as_deref(),
+                cwd: cwd.as_deref().and_then(|d| d.to_str()),
+                allowed_tools: &allowed_tools,
+                model: model.as_deref(),
+                permission_mode: permission_mode.as_deref(),
+            },
         );
 
         // Claude Code gets Satie as an MCP server, with a token scoped to this project. The grant

@@ -1,6 +1,6 @@
-import { DragEvent, Fragment, ReactNode, useState } from "react";
+import { DragEvent, Fragment, ReactNode, useEffect, useState } from "react";
 import { ArrowUp, ImagePlus, ListPlus, Pencil, Square, X } from "lucide-react";
-import { AgentInfo, AgentKind, QueuedMessage } from "@/api";
+import { AgentInfo, AgentKind, ModelInfo, QueuedMessage, listModels } from "@/api";
 import { AgentBadge } from "@/components/AgentBadge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -31,10 +31,10 @@ interface Props {
   agent: AgentKind;
   agentLocked: boolean;
   onAgent: (a: AgentKind) => void;
-  /** Model choice ("default", "opus", …); only offered for Claude Code. */
+  /** Model choice ("default", "opus", …); offered for Claude Code and Codex. */
   modelChoice?: string;
   onModel?: (m: string) => void;
-  /** Permission mode ("default", "acceptEdits", "auto", …); only offered for Claude Code. */
+  /** Permission mode ("default", "acceptEdits", "auto", …); offered for Claude Code and Codex. */
   permissionMode?: string;
   onPermissionMode?: (m: string) => void;
   /** Extra controls shown before the agent picker (project, branch, …). */
@@ -46,21 +46,61 @@ interface Props {
 }
 
 /** The chat input card, shared by the new-session page and the running chat. */
-const MODELS = [
-  { value: "default", label: "Default model", description: "Whatever Claude Code picks" },
-  { value: "opus", label: "Opus", description: "Most capable, for hard problems" },
-  { value: "sonnet", label: "Sonnet", description: "Fast and capable for everyday work" },
-  { value: "haiku", label: "Haiku", description: "Fastest, for small tasks" },
-];
+/** Each agent's models, as the backend lists them (Codex is asked for its current ones). */
+const modelLists = new Map<AgentKind, Promise<ModelInfo[]>>();
 
-/** Claude Code's `--permission-mode` choices, worded as its own picker does. */
-const PERMISSION_MODES = [
-  { value: "auto", label: "Auto", description: "Claude handles permission decisions" },
-  { value: "default", label: "Manual", description: "Always ask before making changes" },
-  { value: "acceptEdits", label: "Accept edits", description: "Automatically accept all file edits" },
-  { value: "plan", label: "Plan", description: "Create a plan before making changes" },
-  { value: "bypassPermissions", label: "Bypass permissions", description: "Run everything without asking" },
-];
+function useModels(agent: AgentKind): ModelInfo[] {
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  useEffect(() => {
+    let current = true;
+    setModels([]);
+    let list = modelLists.get(agent);
+    if (!list) {
+      list = listModels(agent);
+      modelLists.set(agent, list);
+      // Ask again next time rather than keep a failure.
+      list.catch(() => modelLists.delete(agent));
+    }
+    list.then((m) => current && setModels(m), () => {});
+    return () => void (current = false);
+  }, [agent]);
+  return models;
+}
+
+/** The model picker's choices: the agent's default, its models, and the current choice if it isn't one of them. */
+function modelChoices(agent: string, models: ModelInfo[], value: string) {
+  const fallback = models.find((m) => m.isDefault);
+  const choices = [
+    { value: "default", label: "Default model", description: fallback ? `${fallback.name}, ${agent}'s default` : `Whatever ${agent} picks` },
+    ...models.map((m) => ({ value: m.id, label: m.name, description: m.description })),
+  ];
+  if (!choices.some((c) => c.value === value)) choices.push({ value, label: value, description: "Chosen earlier" });
+  return choices;
+}
+
+/** Each agent's permission modes, worded as its own picker does; the first is what "none chosen" means. */
+const PERMISSION_MODES: Partial<Record<AgentKind, Choice[]>> = {
+  claude: [
+    { value: "auto", label: "Auto", description: "Claude handles permission decisions" },
+    { value: "default", label: "Manual", description: "Always ask before making changes" },
+    { value: "acceptEdits", label: "Accept edits", description: "Automatically accept all file edits" },
+    { value: "plan", label: "Plan", description: "Create a plan before making changes" },
+    { value: "bypassPermissions", label: "Bypass permissions", description: "Run everything without asking" },
+  ],
+  codex: [
+    { value: "auto", label: "Auto", description: "Edit the project; ask before anything else" },
+    { value: "readOnly", label: "Read only", description: "Ask before any change" },
+    { value: "plan", label: "Plan", description: "Create a plan before making changes" },
+    { value: "fullAccess", label: "Full access", description: "Run everything without asking" },
+  ],
+};
+
+/** The mode a session is in: its choice if the agent has it, or what the agent does by default. */
+function modeValue(agent: AgentKind, mode?: string): string {
+  const modes = PERMISSION_MODES[agent] ?? [];
+  if (agent === "claude") return mode ?? "default";
+  return modes.some((m) => m.value === mode) ? mode! : (modes[0]?.value ?? "default");
+}
 
 const AGENT_DESCRIPTIONS: Record<AgentKind, string> = {
   claude: "Anthropic's coding agent",
@@ -136,6 +176,10 @@ export function Composer(p: Props) {
     disabled: !a.installed,
   }));
   const canSend = (!!p.draft.trim() || p.images.length > 0) && !p.blockedReason && !p.starting;
+  const agentName = p.agents.find((a) => a.kind === p.agent)?.name ?? p.agent;
+  // Agents without modes (opencode) have no model choice either.
+  const modes = PERMISSION_MODES[p.agent];
+  const models = useModels(p.agent);
   const [dragging, setDragging] = useState(false);
   const [imageError, setImageError] = useState<string>();
 
@@ -248,10 +292,12 @@ export function Composer(p: Props) {
       {/* How it runs: usage, mode, model and agent, below the card. */}
       <div className="flex flex-wrap items-center justify-end gap-2 px-1">
         {p.indicator}
-        {p.agent === "claude" && p.onPermissionMode && (
-          <Picker heading="Mode" label="Permission mode" choices={PERMISSION_MODES} value={p.permissionMode ?? "default"} onChange={p.onPermissionMode} />
+        {modes && p.onPermissionMode && (
+          <Picker heading="Mode" label="Permission mode" choices={modes} value={modeValue(p.agent, p.permissionMode)} onChange={p.onPermissionMode} />
         )}
-        {p.agent === "claude" && p.onModel && <Picker heading="Model" label="Model" choices={MODELS} value={p.modelChoice ?? "default"} onChange={p.onModel} />}
+        {modes && p.onModel && (
+          <Picker heading="Model" label="Model" choices={modelChoices(agentName, models, p.modelChoice ?? "default")} value={p.modelChoice ?? "default"} onChange={p.onModel} />
+        )}
         {p.agentLocked ? (
           // A session keeps its agent, so there's nothing to choose; say which it is instead of a dead menu.
           <AgentBadge kind={p.agent} className="h-7 px-2.5 text-[0.8rem]">

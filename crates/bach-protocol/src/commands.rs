@@ -8,7 +8,7 @@
 //! arguments are a struct named after it with an `Args` suffix; its doc comment documents the
 //! command.
 use crate::{
-    AgentInfo, AgentKind, ApiError, Decision, DirListing, GitDiff, GitInfo, PlanUsage, Session,
+    AgentInfo, AgentKind, ApiError, ModelInfo, Decision, DirListing, GitDiff, GitInfo, PlanUsage, Session,
     SessionLog, TerminalInfo, TerminalSnapshot, WorktreeEntry,
 };
 use satie_protocol::{
@@ -89,6 +89,7 @@ fn parse_args<T: DeserializeOwned>(cmd: &str, args: Value) -> Result<T, ApiError
 
 commands! {
     list_agents(ListAgentsArgs) -> Vec<AgentInfo>;
+    list_models(ListModelsArgs) -> Vec<ModelInfo>;
     get_usage(GetUsageArgs) -> Option<PlanUsage>;
 
     list_sessions(ListSessionsArgs) -> Vec<Session>;
@@ -132,6 +133,14 @@ commands! {
 /// The agent CLIs Bach knows, and which are installed on the backend host.
 #[derive(Debug, Default, Deserialize, TS)]
 pub struct ListAgentsArgs {}
+
+/// The models an agent can run. Codex is asked for its current list (kept for a while);
+/// Claude Code's are its aliases.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ListModelsArgs {
+    pub agent: AgentKind,
+}
 
 /// The account's usage limits as last reported by an agent run (none before the first run).
 #[derive(Debug, Default, Deserialize, TS)]
