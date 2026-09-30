@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/chat.png" alt="A Claude Code session in Bach: the transcript with tool calls, the session list and the composer">
+  <img src="docs/screenshots/new-session.png" alt="Bach's new-session screen: the session list, and a composer with folder, branch, worktree, agent and model pickers">
 </p>
 
 Bach runs your coding agents on the machine where the code lives, your laptop or a beefy box over
@@ -38,11 +38,11 @@ SSH, and gives you one clean window onto all of them. Close the lid and they kee
     <td align="center"><sub>A terminal on the agent's machine</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/screenshots/new-session.png" alt="The new-session screen with folder, branch and worktree pickers"></td>
+    <td width="50%"><img src="docs/screenshots/chat.png" alt="A Claude Code session: the transcript with tool calls, and the composer"></td>
     <td width="50%"><img src="docs/screenshots/chat-dark.png" alt="A session in dark mode"></td>
   </tr>
   <tr>
-    <td align="center"><sub>Start a session: folder, branch, worktree, agent, model</sub></td>
+    <td align="center"><sub>One clean chat, with every tool call on a card</sub></td>
     <td align="center"><sub>Light and dark, following the system</sub></td>
   </tr>
 </table>
@@ -78,18 +78,6 @@ pnpm tauri dev      # run the desktop app
 
 The app and server must be built from the same commit; if they aren't, the app offers to restart
 the server with the matching version.
-
-### Building the Mac app
-
-```sh
-export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-# notarization: an App Store Connect API key ...
-export APPLE_API_ISSUER=... APPLE_API_KEY=... APPLE_API_KEY_PATH=~/keys/AuthKey_XXXX.p8
-# ... or an Apple ID: APPLE_ID=... APPLE_PASSWORD=... APPLE_TEAM_ID=...
-nix develop -c scripts/build-mac.sh
-```
-
-This produces a signed, notarized `target/release/bundle/macos/Bach.app` and a DMG.
 
 ## How it works
 
