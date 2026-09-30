@@ -1,8 +1,12 @@
-//! Directory browsing for the folder picker, and reading images agents link to. Runs on the
-//! backend host, since that's where agents run (and so where project folders live).
-pub use bach_protocol::{ApiError, DirEntry, DirListing};
+//! Directory browsing for the folder picker, reading images agents link to, and the file
+//! browser's view of a session's folder. Runs on the backend host, since that's where agents run
+//! (and so where project folders live).
+pub use bach_protocol::{ApiError, DirEntry, DirListing, FileContent, FileList};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Component, Path, PathBuf},
+    process::Command,
+};
 
 fn home() -> PathBuf {
     std::env::var_os("HOME")
@@ -94,9 +98,195 @@ pub fn read_image(path: &str) -> Result<String, ApiError> {
     Ok(format!("data:{mime};base64,{}", B64.encode(bytes)))
 }
 
+const MAX_FILES: usize = 20_000;
+const MAX_TEXT_BYTES: u64 = 1024 * 1024;
+
+/// The session folder `root`, resolved (`~` expanded, symlinks followed).
+fn session_root(root: &str) -> Result<PathBuf, ApiError> {
+    let root = expand_home(root.trim());
+    root.canonicalize()
+        .map_err(|e| ApiError::not_found(format!("{}: {e}", root.display())))
+}
+
+/// The files in `root`: those git doesn't ignore or, outside a repository, every file but those
+/// in `.git` folders. Relative, `/`-separated and sorted; at most [`MAX_FILES`].
+pub fn list_files(root: &str) -> Result<FileList, ApiError> {
+    let root = session_root(root)?;
+    let mut files = match git_files(&root) {
+        Some(files) => files,
+        None => {
+            let mut files = Vec::new();
+            walk(&root, "", &mut files);
+            files
+        }
+    };
+    files.sort();
+    files.dedup();
+    let truncated = files.len() > MAX_FILES;
+    files.truncate(MAX_FILES);
+    Ok(FileList { files, truncated })
+}
+
+/// Tracked and untracked files git doesn't ignore, that are still there; none outside a repository.
+fn git_files(root: &Path) -> Option<Vec<String>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    Some(
+        out.stdout
+            .split(|&b| b == 0)
+            .filter(|p| !p.is_empty())
+            .map(|p| String::from_utf8_lossy(p).into_owned())
+            // Deleted (but still tracked) files are gone, and submodules are folders.
+            .filter(|p| root.join(p).symlink_metadata().is_ok_and(|m| !m.is_dir()))
+            .collect(),
+    )
+}
+
+/// Every file under `dir` (symlinks included, not followed), until there are more than enough.
+fn walk(dir: &Path, prefix: &str, files: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.filter_map(Result::ok) {
+        if files.len() > MAX_FILES {
+            return;
+        }
+        let name = e.file_name().to_string_lossy().into_owned();
+        let path = format!("{prefix}{name}");
+        match e.file_type() {
+            Ok(t) if t.is_dir() => {
+                if name != ".git" {
+                    walk(&e.path(), &format!("{path}/"), files);
+                }
+            }
+            Ok(_) => files.push(path),
+            Err(_) => {}
+        }
+    }
+}
+
+/// The file at `path` in the folder `root`. `path` must be relative and stay inside `root`, also
+/// after following symlinks. Text files up to 1 MB come with their text.
+pub fn read_file(root: &str, path: &str) -> Result<FileContent, ApiError> {
+    let root = session_root(root)?;
+    let rel = Path::new(path);
+    let outside = || ApiError::invalid(format!("{path}: not a file in the session's folder"));
+    if path.is_empty()
+        || rel
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(outside());
+    }
+    let full = root
+        .join(rel)
+        .canonicalize()
+        .map_err(|e| ApiError::not_found(format!("{path}: {e}")))?;
+    if !full.starts_with(&root) {
+        return Err(outside());
+    }
+    let meta = std::fs::metadata(&full).map_err(|e| ApiError::not_found(format!("{path}: {e}")))?;
+    if !meta.is_file() {
+        return Err(ApiError::invalid(format!("{path}: not a file")));
+    }
+    let mut file = FileContent {
+        path: path.to_string(),
+        size: meta.len(),
+        text: None,
+        binary: false,
+    };
+    if meta.len() > MAX_TEXT_BYTES {
+        return Ok(file);
+    }
+    let bytes = std::fs::read(&full).map_err(|e| ApiError::failed(format!("{path}: {e}")))?;
+    // Like git: a NUL near the start means binary.
+    file.binary = bytes.iter().take(8000).any(|&b| b == 0);
+    if !file.binary {
+        file.text = Some(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    Ok(file)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("bach-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn lists_files_git_does_not_ignore() {
+        let root = temp("files-git");
+        let git = |args: &[&str]| {
+            let ok = Command::new("git").arg("-C").arg(&root).args(args).status().unwrap();
+            assert!(ok.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        for (p, text) in [
+            (".gitignore", "target/\n"),
+            ("src/main.rs", "fn main() {}"),
+            ("target/debug/x", ""),
+            ("gone.txt", ""),
+            ("new.txt", ""),
+        ] {
+            std::fs::create_dir_all(root.join(p).parent().unwrap()).unwrap();
+            std::fs::write(root.join(p), text).unwrap();
+        }
+        git(&["add", ".gitignore", "src", "gone.txt"]);
+        std::fs::remove_file(root.join("gone.txt")).unwrap();
+
+        let l = list_files(root.to_str().unwrap()).unwrap();
+        assert_eq!(l.files, [".gitignore", "new.txt", "src/main.rs"]);
+        assert!(!l.truncated);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lists_every_file_outside_a_repository() {
+        let root = temp("files-plain");
+        for p in ["a/b.txt", ".git/HEAD", ".env", "c.txt"] {
+            std::fs::create_dir_all(root.join(p).parent().unwrap()).unwrap();
+            std::fs::write(root.join(p), "").unwrap();
+        }
+        let l = list_files(root.to_str().unwrap()).unwrap();
+        assert_eq!(l.files, [".env", "a/b.txt", "c.txt"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reads_files_only_inside_the_folder() {
+        let base = temp("read");
+        let root = base.join("proj");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(root.join("bin"), [0u8, 1, 2]).unwrap();
+        std::fs::write(root.join("big"), vec![b'x'; MAX_TEXT_BYTES as usize + 1]).unwrap();
+        std::fs::write(base.join("secret"), "s").unwrap();
+        std::os::unix::fs::symlink(base.join("secret"), root.join("link-out")).unwrap();
+        std::os::unix::fs::symlink(root.join("src/a.rs"), root.join("link-in")).unwrap();
+        let r = root.to_str().unwrap();
+
+        let f = read_file(r, "src/a.rs").unwrap();
+        assert_eq!((f.text.as_deref(), f.size, f.binary), (Some("fn a() {}\n"), 10, false));
+        assert_eq!(read_file(r, "./link-in").unwrap().text.as_deref(), Some("fn a() {}\n"));
+        let bin = read_file(r, "bin").unwrap();
+        assert!(bin.binary && bin.text.is_none());
+        let big = read_file(r, "big").unwrap();
+        assert!(!big.binary && big.text.is_none() && big.size == MAX_TEXT_BYTES + 1);
+
+        let secret = base.join("secret");
+        for bad in ["../secret", "link-out", secret.to_str().unwrap(), "src", "", "missing"] {
+            assert!(read_file(r, bad).is_err(), "{bad}");
+        }
+        let _ = std::fs::remove_dir_all(base);
+    }
 
     #[test]
     fn reads_only_image_files_at_absolute_paths() {

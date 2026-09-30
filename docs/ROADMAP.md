@@ -6,9 +6,9 @@ Planned features and known issues, roughly grouped by area.
 
 - [ ] **Review comments for the agent**: comment on lines or hunks in the diff and send
   them back to the agent as feedback.
-- [ ] **Syntax highlighting**: highlight code in the diff by language.
-- [ ] **File tree**: show changed files as a directory tree, not a flat list.
-- [ ] **File browser**: browse and view any file in the worktree, not just changed
+- [x] **Syntax highlighting**: highlight code in the diff by language.
+- [x] **File tree**: show changed files as a directory tree, not a flat list.
+- [x] **File browser**: browse and view any file in the worktree, not just changed
   ones, with the same tree and highlighting.
 - [ ] **Manual edits**: edit code directly in the diff view.
 - [ ] **Commit from the diff**: stage files or hunks, write a message and commit

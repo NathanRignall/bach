@@ -8,7 +8,7 @@
 //! arguments are a struct named after it with an `Args` suffix; its doc comment documents the
 //! command.
 use crate::{
-    AgentInfo, AgentKind, ApiError, ModelInfo, Decision, DirListing, GitDiff, GitInfo, PlanUsage, Session,
+    AgentInfo, AgentKind, ApiError, ModelInfo, Decision, DirListing, FileContent, FileList, GitDiff, GitInfo, PlanUsage, Session,
     SessionLog, TerminalInfo, TerminalSnapshot, WorktreeEntry,
 };
 use satie_protocol::{
@@ -105,6 +105,8 @@ commands! {
 
     list_dir(ListDirArgs) -> DirListing;
     read_image(ReadImageArgs) -> String;
+    list_files(ListFilesArgs) -> FileList;
+    read_file(ReadFileArgs) -> FileContent;
     git_info(GitInfoArgs) -> GitInfo;
     git_diff(GitDiffArgs) -> GitDiff;
     list_worktrees(ListWorktreesArgs) -> Vec<WorktreeEntry>;
@@ -277,6 +279,24 @@ pub struct ListDirArgs {
 #[derive(Debug, Deserialize, TS)]
 pub struct ReadImageArgs {
     /// Absolute, or starting with `~`.
+    pub path: String,
+}
+
+/// The files in a session's folder (its worktree, or its project folder): those git doesn't
+/// ignore, or outside a repository, all but `.git` folders. Up to 20,000.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ListFilesArgs {
+    pub session_id: String,
+}
+
+/// A file in a session's folder, for reading. Text files up to 1 MB come with their text.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadFileArgs {
+    pub session_id: String,
+    /// Relative to the session's folder, and inside it: `..`, absolute paths and symlinks that
+    /// lead out are refused.
     pub path: String,
 }
 

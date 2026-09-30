@@ -119,3 +119,25 @@ pub struct DiffLine {
     /// The file doesn't end with a newline after this line.
     pub no_newline: bool,
 }
+
+/// The files in a session's folder, for the file browser.
+#[derive(Debug, Default, Serialize, TS)]
+pub struct FileList {
+    /// Paths relative to the folder, `/`-separated, sorted.
+    pub files: Vec<String>,
+    /// There were more files than are listed.
+    pub truncated: bool,
+}
+
+/// A file in a session's folder, for the file viewer.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FileContent {
+    /// Relative to the session's folder.
+    pub path: String,
+    /// Size in bytes.
+    pub size: u64,
+    /// The file's text; none for binary files and files too large to show.
+    pub text: Option<String>,
+    pub binary: bool,
+}
