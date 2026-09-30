@@ -52,6 +52,9 @@ pub struct WorktreeEntry {
     pub dirty: bool,
     /// Commits on the branch that exist on no other local or remote branch.
     pub unmerged: u32,
+    /// The branch's changes are already in the repository's base branch (main, master or the
+    /// remote's default), whether it was merged, squashed or rebased.
+    pub merged: bool,
 }
 
 /// The changes in a checkout, file by file.

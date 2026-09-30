@@ -14,6 +14,9 @@ interface Props {
   onClose: () => void;
 }
 
+/** Removing it would lose work: uncommitted changes, or commits whose changes aren't in the base branch. */
+const unsafeToRemove = (w: WorktreeEntry) => w.dirty || (w.unmerged > 0 && !w.merged);
+
 /** Lists worktrees Bach created on the backend host and removes them, guarding unsaved work. */
 export function WorktreeCleanup({ sessions, onClose }: Props) {
   const [entries, setEntries] = useState<WorktreeEntry[]>();
@@ -30,7 +33,7 @@ export function WorktreeCleanup({ sessions, onClose }: Props) {
   useEffect(() => void refresh(), []);
 
   async function remove(w: WorktreeEntry) {
-    const unsafe = w.dirty || w.unmerged > 0;
+    const unsafe = unsafeToRemove(w);
     if (unsafe && confirming !== w.path) return setConfirming(w.path);
     setConfirming(undefined);
     setRemoving(w.path);
@@ -67,7 +70,7 @@ export function WorktreeCleanup({ sessions, onClose }: Props) {
           <ul className="divide-y">
             {entries?.map((w) => {
               const users = sessions.filter((s) => s.workdir === w.path && !s.workdirRemoved);
-              const unsafe = w.dirty || w.unmerged > 0;
+              const unsafe = unsafeToRemove(w);
               const isConfirming = confirming === w.path;
               return (
                 <li key={w.path} className="flex items-center gap-3 p-3">
@@ -81,9 +84,14 @@ export function WorktreeCleanup({ sessions, onClose }: Props) {
                     </p>
                     <div className="mt-1 flex flex-wrap gap-1">
                       {w.dirty && <Badge variant="destructive">uncommitted changes</Badge>}
-                      {w.unmerged > 0 && (
+                      {w.unmerged > 0 && !w.merged && (
                         <Badge variant="destructive">
                           {w.unmerged} unmerged commit{w.unmerged > 1 ? "s" : ""}
+                        </Badge>
+                      )}
+                      {w.merged && (
+                        <Badge variant="secondary" title="This branch's changes are already in the base branch (merged, squashed or rebased)">
+                          merged
                         </Badge>
                       )}
                       {!unsafe && <Badge variant="outline">clean</Badge>}

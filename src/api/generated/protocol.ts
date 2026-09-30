@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "23500fd836ed520d";
+export const PROTOCOL = "775f4f4f732cc327";
 
 /**
  * Agent-independent events the UI renders.
@@ -939,7 +939,12 @@ dirty: boolean,
 /**
  * Commits on the branch that exist on no other local or remote branch.
  */
-unmerged: number, };
+unmerged: number, 
+/**
+ * The branch's changes are already in the repository's base branch (main, master or the
+ * remote's default), whether it was merged, squashed or rebased.
+ */
+merged: boolean, };
 
 export type Commands = {
   /**
