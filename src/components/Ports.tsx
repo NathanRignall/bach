@@ -132,7 +132,7 @@ export function ForwardedPorts({ forwarding, tasks }: { forwarding: Forwarding; 
       <div className="flex items-center gap-2">
         <h3 className="flex-1 text-xs font-medium text-muted-foreground">Forwarded ports</h3>
         <Label htmlFor="auto-forward" className="text-xs font-normal text-muted-foreground">
-          Task ports automatically
+          Auto forward
         </Label>
         <Switch id="auto-forward" size="sm" checked={forwarding.auto} onCheckedChange={(v) => void setAutoForward(v)} />
       </div>
