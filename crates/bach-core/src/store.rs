@@ -183,6 +183,10 @@ impl Store {
         for s in self.list()? {
             if s.run_id.is_some() || !s.open_approvals.is_empty() {
                 let updated = self.update::<String>(&s.id, |s| {
+                    // A run lost to the restart never got to report; say it didn't end well.
+                    if s.run_id.is_some() {
+                        s.unseen = Some(bach_protocol::RunOutcome::Failed);
+                    }
                     s.run_id = None;
                     s.open_approvals.clear();
                     Ok(())
@@ -330,6 +334,7 @@ fn session_from_frontend(v: &Value, updated_at: i64) -> Option<Session> {
         run_id: None,
         archived: false,
         open_approvals: vec![],
+        unseen: None,
         queued: vec![],
         created_at: updated_at,
         updated_at,
@@ -365,6 +370,7 @@ mod tests {
             run_id: None,
             archived: false,
             open_approvals: vec![],
+            unseen: None,
             queued: vec![],
             created_at: 1,
             updated_at: 1,

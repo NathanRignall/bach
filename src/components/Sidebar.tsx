@@ -1,12 +1,12 @@
 import { useRef, useState } from "react";
-import { Archive, ArchiveRestore, ChevronDown, ChevronRight, GitFork, ListChecks, MoreHorizontal, Pencil, Plus, Settings, ShieldAlert, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, CircleAlert, CircleCheck, GitFork, ListChecks, MoreHorizontal, Pencil, Plus, Settings, ShieldAlert, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { Session, TaskView } from "@/api";
-import { awaitingApproval, groupByProject, projectKey, projectName } from "@/session";
+import { groupByProject, projectKey, projectName, sessionStatus } from "@/session";
 import { AgentDot } from "./AgentBadge";
 import { ConnectionPicker } from "./ConnectionPicker";
 import { ResizeHandle } from "./ResizeHandle";
@@ -122,11 +122,7 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
                             title={`${s.title}\nDouble-click to rename`}
                             className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm"
                           >
-                            {awaitingApproval(s) ? (
-                              <ShieldAlert className="size-3.5 shrink-0 animate-pulse text-primary" aria-label="Needs your approval" />
-                            ) : (
-                              <AgentDot kind={s.agent} running={!!s.runId} />
-                            )}
+                            <StatusIcon session={s} />
                             <span className="min-w-0 flex-1 truncate">{s.title}</span>
                           </button>
                         )}
@@ -196,6 +192,22 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
       <ResizeHandle width={width} onWidth={onWidth} min={SIDEBAR_WIDTH.min} max={SIDEBAR_WIDTH.max} edge="right" reset={SIDEBAR_WIDTH.default} label="Resize sidebar" />
     </aside>
   );
+}
+
+/** What a session is doing, in the place of its agent's dot when there's something to say. */
+function StatusIcon({ session: s }: { session: Session }) {
+  switch (sessionStatus(s)) {
+    case "waiting":
+      return <ShieldAlert className="size-3.5 shrink-0 animate-pulse text-primary" role="img" aria-label="Waiting for you" />;
+    case "failed":
+      return <CircleAlert className="size-3.5 shrink-0 text-destructive" role="img" aria-label="Failed" />;
+    case "done":
+      return <CircleCheck className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" role="img" aria-label="Done, not yet viewed" />;
+    case "working":
+      return <AgentDot kind={s.agent} running />;
+    case "idle":
+      return <AgentDot kind={s.agent} />;
+  }
 }
 
 /**

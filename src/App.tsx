@@ -41,6 +41,7 @@ import { SIDEBAR_WIDTH, Sidebar } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { isBoolean, isNumber, useStored } from "@/lib/layout";
+import { useAttention } from "@/lib/notifications";
 import {
   NewSession,
   Transcript,
@@ -272,11 +273,8 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [sidebarOpen]);
 
-  // Something is waiting on the user: say so in the tab, in case it's in the background.
-  const anyWaiting = sessions.some(awaitingApproval);
-  useEffect(() => {
-    document.title = anyWaiting ? "● Waiting for you — Bach" : "Bach";
-  }, [anyWaiting]);
+  // Badge, notifications and marking the open session seen.
+  useAttention(sessions, activeId, setActiveId);
 
   function toggleProject(key: string) {
     const next = new Set(collapsed);

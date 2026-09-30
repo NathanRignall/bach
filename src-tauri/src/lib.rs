@@ -3,6 +3,7 @@
 //! a backend inside the app (agents run on this computer) or over SSH to `bach-server attach` on
 //! another machine. `get_connection` / `set_connection` choose, and `bach-connection` events say
 //! how the connection is doing.
+mod notify;
 mod ports;
 mod titlebar;
 
@@ -460,7 +461,8 @@ pub fn run() {
             open_port,
             open_url,
             set_auto_forward,
-            titlebar::title_bar
+            titlebar::title_bar,
+            notify::notify
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bach");

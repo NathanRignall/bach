@@ -11,6 +11,7 @@ How Bach works under the hood. For what it is and how to get it running, see the
 - [Sessions, branches and worktrees](#sessions-branches-and-worktrees)
 - [The transcript](#the-transcript)
 - [Approvals](#approvals)
+- [Session status and notifications](#session-status-and-notifications)
 - [Terminals](#terminals)
 - [Background tasks](#background-tasks)
 - [Agents starting sessions](#agents-starting-sessions)
@@ -163,6 +164,22 @@ accept-edits mode are dropped, and a request reaching outside the project says s
 reload or another client can still answer; stopping the run (or restarting the backend) closes the
 request. Codex runs over `codex app-server`, and its approval and question requests use the same
 cards.
+
+## Session status and notifications
+
+The sidebar's status comes from the `Session` the backend pushes, never from polling: **waiting**
+is `openApprovals` (approvals and agent questions, for all three agents), **working** is `runId`
+(which stays set while background sub-agents keep a Claude run going after its first `result`),
+and **done** / **failed** is `unseen`, set when a run ends and cleared by the `mark_seen` command
+(sent when the session is open in a focused window) or by the next message. A run the user stopped
+sets nothing; a run lost to a backend restart counts as failed.
+
+`src/lib/notifications.ts` reacts to the same events. In the Mac app a notification (shown by
+`src-tauri/src/notify.rs`; clicking it focuses the window and opens the session) and the dock badge
+(sessions waiting on you) appear when a turn ends, an approval arrives or the agent asks a question
+in a session you aren't looking at. The web page uses the browser's Notification API when the
+browser allows it (it needs a secure context such as `localhost`, and a click to ask permission),
+and puts the waiting count in the tab title.
 
 ## Terminals
 
