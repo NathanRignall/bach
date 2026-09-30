@@ -542,7 +542,7 @@
     // ----- diagnosing conflicts, several ports, HTTP readiness ------------------------------
 
     /// A process that is not a background task, listening on `port`.
-    struct Foreign(std::process::Child);
+    struct Foreign(std::process::Child, u32);
     impl Foreign {
         async fn listening_on(port: u16, dir: &Path) -> Foreign {
             let child = std::process::Command::new("python3")
@@ -562,10 +562,16 @@
                 std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
             })
             .await;
-            Foreign(child)
+            // On macOS `python3` is a shim that starts the real Python as a child: the listener
+            // is whichever process holds the socket, not necessarily the one we spawned.
+            let holder = crate::probe::socket_owners()
+                .into_iter()
+                .find_map(|(p, pid)| pid.filter(|_| p == port))
+                .expect("the listener's pid");
+            Foreign(child, holder)
         }
         fn pid(&self) -> u32 {
-            self.0.id()
+            self.1
         }
     }
     impl Drop for Foreign {
@@ -678,7 +684,7 @@
                 .filter(|pid| {
                     sys::argv(*pid)
                         .first()
-                        .is_some_and(|a| a.rsplit('/').next().unwrap().starts_with("python3"))
+                        .is_some_and(|a| is_python(a.rsplit('/').next().unwrap()))
                 })
                 .collect::<Vec<u32>>()
         };
@@ -697,7 +703,7 @@
             "{view:?}"
         );
         assert!(
-            view.processes.iter().any(|p| p.starts_with("python3")),
+            view.processes.iter().any(|p| is_python(p)),
             "{view:?}"
         );
         let report = tasks.port_report(&[port]);
@@ -706,6 +712,12 @@
         tasks.stop_task(&t.id).await.unwrap();
         until("server gone", || server().is_empty()).await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A Python process by name: `python3` on Linux, Xcode's `Python` (started by the
+    /// `/usr/bin/python3` shim through `xcrun`) on macOS.
+    fn is_python(name: &str) -> bool {
+        name.to_lowercase().starts_with("python")
     }
 
     fn proc_group(pid: u32) -> u32 {
@@ -831,7 +843,9 @@
             "{text}"
         );
         assert!(
-            text.contains("Processes:") && text.contains("python3"),
+            text.lines()
+                .filter_map(|l| l.trim().strip_prefix("Processes: "))
+                .any(|l| l.split(", ").any(is_python)),
             "which processes are alive: {text}"
         );
 
