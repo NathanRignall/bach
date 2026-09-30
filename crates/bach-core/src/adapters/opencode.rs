@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 
 /// The permission modes Bach offers for opencode. Anything else (none, or a mode left over from
 /// another agent) is "auto".
-pub const PERMISSION_MODES: &[&str] = &["auto", "readOnly", "fullAccess", "plan"];
+pub const PERMISSION_MODES: &[&str] = &["auto", "manual", "fullAccess", "plan"];
 
 /// Questions show on the question card, as Claude Code's do.
 const QUESTION_TOOL: &str = "AskUserQuestion";
@@ -29,7 +29,7 @@ pub fn permission_rules(mode: Option<&str>, allowed: &[String]) -> Value {
     };
     let mut rules = match mode {
         Some("fullAccess") => vec![rule("*", "*", "allow")],
-        Some("readOnly") => vec![rule("edit", "*", "ask"), rule("bash", "*", "ask")],
+        Some("manual") => vec![rule("edit", "*", "ask"), rule("bash", "*", "ask")],
         _ => vec![rule("bash", "*", "ask")],
     };
     rules.extend(
@@ -572,7 +572,7 @@ mod tests {
 
     #[test]
     fn modes_become_rules_with_session_rules_last() {
-        let rules = permission_rules(Some("readOnly"), &["bash(git status *)".into(), "nonsense".into()]);
+        let rules = permission_rules(Some("manual"), &["bash(git status *)".into(), "nonsense".into()]);
         assert_eq!(
             rules,
             json!([

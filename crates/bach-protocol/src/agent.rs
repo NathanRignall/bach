@@ -59,9 +59,9 @@ pub enum DeltaKind {
 #[serde(default, rename_all = "camelCase")]
 pub struct AgentWrapper {
     pub command: String,
-    /// Codex's own sandbox inside the wrapper's (`BACH_AGENT_WRAPPER_CODEX_SANDBOX`). Off, Codex
-    /// runs with full access and the wrapper's sandbox is the only one: Codex can't start its
-    /// bubblewrap inside another.
+    /// Codex's own sandbox inside the wrapper's (`BACH_AGENT_WRAPPER_CODEX_SANDBOX`). Off, the
+    /// wrapper's sandbox is the only one (many can't have Codex's inside them), and Codex's modes
+    /// are kept by asking instead (see [`AgentInfo::unsandboxed`]).
     pub codex_sandbox: bool,
 }
 
@@ -70,6 +70,9 @@ pub struct AgentInfo {
     pub kind: AgentKind,
     pub name: String,
     pub installed: bool,
+    /// Its own sandbox is off (Codex under a wrapper): only the wrapper limits what it runs, so
+    /// its permission modes mean less, and the UI says so.
+    pub unsandboxed: bool,
 }
 
 /// How the user answered an approval request.

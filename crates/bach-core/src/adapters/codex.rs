@@ -10,16 +10,17 @@ use std::collections::{BTreeMap, HashMap};
 
 /// The permission modes Bach offers for Codex: its own presets, and its plan mode. Anything
 /// else (none, or a mode left over from Claude Code) is "auto".
-pub const PERMISSION_MODES: &[&str] = &["auto", "readOnly", "fullAccess", "plan"];
+pub const PERMISSION_MODES: &[&str] = &["auto", "manual", "fullAccess", "plan"];
 
 /// The sandbox and approval policy for a permission mode.
 ///
 /// "auto": Codex edits the project on its own and asks before anything beyond it (network,
-/// other folders, `.git`); without a sandbox given, `codex` would default to read-only. Plan
-/// mode runs the same way; Codex itself holds back from changing things while planning.
+/// other folders, `.git`); without a sandbox given, `codex` would default to read-only.
+/// "manual": asks before any change, as the other agents' manual modes do. Plan mode runs as
+/// "auto"; Codex itself holds back from changing things while planning.
 fn preset(mode: Option<&str>) -> (&'static str, &'static str) {
     match mode {
-        Some("readOnly") => ("read-only", "on-request"),
+        Some("manual") => ("read-only", "on-request"),
         Some("fullAccess") => ("danger-full-access", "never"),
         _ => ("workspace-write", "on-request"),
     }
@@ -106,8 +107,10 @@ pub struct Conversation {
     /// See [`PERMISSION_MODES`].
     mode: Option<String>,
     /// Whether Codex may use its own sandbox. Not under a wrapper, unless asked for: it sandboxes
-    /// Codex itself, and Codex can't start its bubblewrap inside another one, so every command
-    /// would fail. Without it Codex is told the sandbox is external, and runs inside the wrapper's.
+    /// Codex itself, and many sandboxes can't have Codex's bubblewrap inside them, so every command
+    /// would fail. Without it Codex is told the sandbox is external, and runs anything the wrapper
+    /// allows: "auto" and "plan" ask only before commands Codex thinks are dangerous (`rm -rf`),
+    /// "fullAccess" refuses those, and "manual" asks before everything else too.
     own_sandbox: bool,
     /// Reasoning effort for the turn, if chosen.
     effort: Option<String>,
@@ -251,9 +254,10 @@ impl Conversation {
                 // Also given when resuming: the session's mode or model may have changed, and a
                 // thread first run by `codex exec` would otherwise keep its read-only sandbox.
                 let (sandbox, approval) = preset(self.mode.as_deref());
-                // Without its own sandbox nothing holds read-only back, so Codex asks before every
-                // command it doesn't know to be safe, and file changes are declined (see `on_request`).
-                let approval = if self.read_only_by_approval() { "untrusted" } else { approval };
+                // Without its own sandbox, manual is kept by asking: before every command Codex
+                // doesn't know to be safe, and every edit.
+                let manual = !self.own_sandbox && self.mode.as_deref() == Some("manual");
+                let approval = if manual { "untrusted" } else { approval };
                 let sandbox = if self.own_sandbox { sandbox } else { "danger-full-access" };
                 let mut params = json!({ "approvalPolicy": approval, "sandbox": sandbox });
                 if let Some(cwd) = &self.cwd {
@@ -337,10 +341,6 @@ impl Conversation {
             .or(p["turnId"].as_str())
             .unwrap_or_default();
         let request_id = format!("{scope}/{id}");
-        if method == "item/fileChange/requestApproval" && self.read_only_by_approval() {
-            let decline = json!({ "id": id, "result": { "decision": "decline" } });
-            return (vec![], vec![decline.to_string()]);
-        }
         let Some(ask) = self.ask(method, p) else {
             let message = format!("Bach can't answer `{method}` yet.");
             let error = json!({ "id": id, "error": { "code": -32601, "message": message } });
@@ -369,11 +369,6 @@ impl Conversation {
             }],
             vec![],
         )
-    }
-
-    /// Read-only without Codex's own sandbox (under a wrapper): kept by asking instead.
-    fn read_only_by_approval(&self) -> bool {
-        !self.own_sandbox && self.mode.as_deref() == Some("readOnly")
     }
 
     fn ask(&self, method: &str, p: &Value) -> Option<Ask> {
@@ -1257,7 +1252,7 @@ mod tests {
         assert_eq!(modes(None), m("workspace-write", "on-request", "default"));
         // A mode left over from Claude Code means the default.
         assert_eq!(modes(Some("acceptEdits")), m("workspace-write", "on-request", "default"));
-        assert_eq!(modes(Some("readOnly")), m("read-only", "on-request", "default"));
+        assert_eq!(modes(Some("manual")), m("read-only", "on-request", "default"));
         assert_eq!(modes(Some("fullAccess")), m("danger-full-access", "never", "default"));
         assert_eq!(modes(Some("plan")), m("workspace-write", "on-request", "plan"));
 
@@ -1282,17 +1277,16 @@ mod tests {
         let (_, turn) = opening(None, None);
         assert!(turn.get("sandboxPolicy").is_none());
 
-        // Read-only there asks before commands it doesn't know are safe, and changes no files.
-        let mut c = Conversation::new(&Turn { prompt: "hi", permission_mode: Some("readOnly"), ..Default::default() });
+        // Manual there asks before commands it doesn't know are safe, and before edits.
+        let mut c = Conversation::new(&Turn { prompt: "hi", permission_mode: Some("manual"), ..Default::default() });
         c.own_sandbox = false;
         let (_, sent) = c.on_line(&json!({ "id": 1, "result": {} }));
         let thread: Value = serde_json::from_str(&sent[1]).unwrap();
         assert_eq!(thread["params"]["approvalPolicy"], "untrusted");
-        let (ev, replies) = c.on_line(&json!({ "id": 7, "method": "item/fileChange/requestApproval",
+        let (ev, replies) = ask(&mut c, json!({ "id": 7, "method": "item/fileChange/requestApproval",
             "params": { "itemId": "i1", "turnId": "t1" } }));
-        assert!(ev.is_empty(), "not shown: {ev:?}");
-        let reply: Value = serde_json::from_str(&replies[0]).unwrap();
-        assert_eq!((reply["id"].clone(), reply["result"]["decision"].clone()), (json!(7), json!("decline")));
+        assert!(matches!(&ev, Some(AgentEvent::Approval { tool_name, .. }) if tool_name == "Edit"), "{ev:?}");
+        assert!(replies.is_empty());
     }
 
     #[test]

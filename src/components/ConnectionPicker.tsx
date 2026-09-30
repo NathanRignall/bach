@@ -285,7 +285,7 @@ function ConnectionDialog({ status, onClose }: { status: ConnectionStatus; onClo
                         checked={wrapper.codexSandbox}
                         onCheckedChange={(on) => setWrapper({ ...wrapper, codexSandbox: on })}
                       />
-                      Codex's own sandbox too (off: full access, inside the wrapper's)
+                      Codex's own sandbox too (off: Codex runs anything the wrapper allows)
                     </label>
                   )}
                 </div>

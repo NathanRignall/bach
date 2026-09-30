@@ -234,6 +234,7 @@ pub fn list_agents() -> Vec<bach_protocol::AgentInfo> {
             kind,
             name: kind.display_name().into(),
             installed: crate::wrapper::installed(kind.binary()),
+            unsandboxed: kind == AgentKind::Codex && !crate::wrapper::codex_sandbox(),
         })
         .collect()
 }

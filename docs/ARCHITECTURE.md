@@ -114,7 +114,7 @@ ssh -L 3421:localhost:3421 <remote>        # then open http://<remote>:3420
 | `BACH_ALLOWED_ORIGINS` | Comma-separated browser origins, replacing the defaults. |
 | `VITE_BACH_WS` | Where the UI connects (default `ws://localhost:3421`). |
 | `BACH_AGENT_WRAPPER` | A command to start the agent CLIs through (`sandbox` runs `sandbox claude …`), fixed when the server starts; `restart` keeps it. Needs bach-server built with `--features agent-wrapper`, which otherwise refuses to start. |
-| `BACH_AGENT_WRAPPER_CODEX_SANDBOX` | `1` keeps Codex's own sandbox inside the wrapper's; otherwise Codex runs with full access there. |
+| `BACH_AGENT_WRAPPER_CODEX_SANDBOX` | `1` keeps Codex's own sandbox inside the wrapper's. Otherwise Codex runs anything the wrapper allows, asking only before commands it thinks are dangerous (Manual asks before any change), and the app's mode picker says so. |
 | `VITE_BACH_AGENT_WRAPPER` | Set when building the UI to show "Start agents through" in the SSH settings, passed to the server when the app starts or restarts it. |
 | `BACH_DB` | Session database (default `~/.local/share/bach/bach.db`); the socket, lock and `server.log` move with it. |
 

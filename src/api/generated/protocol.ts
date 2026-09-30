@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "1d1504223d85b33b";
+export const PROTOCOL = "5a89fd365f09bc58";
 
 /**
  * Agent-independent events the UI renders.
@@ -28,7 +28,12 @@ directories: Array<string>, } | { "type": "approval_cancelled", requestId: strin
  */
 activity?: string, toolUses?: number, tokens?: number, durationMs?: number, summary?: string, background?: boolean, } | { "type": "context", used: number, } | { "type": "context_windows", windows: { [key in string]: number }, } | { "type": "limits", usage: PlanUsage, } | { "type": "done", costUsd: number | null, isError: boolean, } | { "type": "error", message: string, } | { "type": "cancelled" } | { "type": "raw", line: string, };
 
-export type AgentInfo = { kind: AgentKind, name: string, installed: boolean, };
+export type AgentInfo = { kind: AgentKind, name: string, installed: boolean, 
+/**
+ * Its own sandbox is off (Codex under a wrapper): only the wrapper limits what it runs, so
+ * its permission modes mean less, and the UI says so.
+ */
+unsandboxed: boolean, };
 
 export type AgentKind = "claude" | "codex" | "opencode";
 
@@ -39,9 +44,9 @@ export type AgentKind = "claude" | "codex" | "opencode";
  */
 export type AgentWrapper = { command: string, 
 /**
- * Codex's own sandbox inside the wrapper's (`BACH_AGENT_WRAPPER_CODEX_SANDBOX`). Off, Codex
- * runs with full access and the wrapper's sandbox is the only one: Codex can't start its
- * bubblewrap inside another.
+ * Codex's own sandbox inside the wrapper's (`BACH_AGENT_WRAPPER_CODEX_SANDBOX`). Off, the
+ * wrapper's sandbox is the only one (many can't have Codex's inside them), and Codex's modes
+ * are kept by asking instead (see [`AgentInfo::unsandboxed`]).
  */
 codexSandbox: boolean, };
 
