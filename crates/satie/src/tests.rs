@@ -986,6 +986,31 @@
     }
 
     #[tokio::test]
+    async fn remembers_whether_a_task_is_interactive() {
+        let dir = tmp("interactive");
+        let satie = satie_in(&dir).await;
+        let run = run_in(&dir);
+        let text = satie
+            .call(&run, "task_start", &json!({ "command": "sleep 4706", "name": "tests", "interactive": false }))
+            .await
+            .unwrap();
+        assert!(text.contains("not interactive"), "{text}");
+        let quiet = text.split_whitespace().nth(1).unwrap().to_string();
+        let text = satie.call(&run, "task_start", &json!({ "command": "sleep 4707", "name": "dev" })).await.unwrap();
+        assert!(!text.contains("interactive"), "{text}");
+        let dev = text.split_whitespace().nth(1).unwrap().to_string();
+        assert!(!satie.get(&quiet).unwrap().interactive);
+        assert!(satie.get(&dev).unwrap().interactive, "interactive unless said otherwise");
+
+        drop(satie);
+        let after = satie_in(&dir).await;
+        assert!(!after.get(&quiet).unwrap().interactive, "saved with the task");
+        after.stop_task(&quiet).await.unwrap();
+        after.stop_task(&dev).await.unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn adopts_tasks_recorded_by_an_older_version() {
         let dir = tmp("import");
         let satie = satie_in(&dir).await;
@@ -999,6 +1024,7 @@
         });
         let task = crate::parse_task(old).expect("old tasks still parse");
         assert_eq!(task.owner.as_deref(), Some("run-9"));
+        assert!(task.interactive, "tasks from before the flag are the user's");
         assert_eq!(satie.import(vec![task.clone()]), 1);
         assert_eq!(satie.import(vec![task]), 0, "already known");
         // Its process is long gone, which the import notices straight away.

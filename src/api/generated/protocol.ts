@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "dff56938c2003526";
+export const PROTOCOL = "ee028e2a59d9ff40";
 
 /**
  * Agent-independent events the UI renders.
@@ -612,7 +612,12 @@ expectedPorts: Array<number>,
 /**
  * For a process-compose project started by Satie: its compose file.
  */
-composeFile: string | null, };
+composeFile: string | null, 
+/**
+ * Whether the user is meant to open it (a dev server they browse to) rather than only the
+ * agent using it (a server for tests). Only interactive tasks' ports are forwarded automatically.
+ */
+interactive: boolean, };
 
 /**
  * A change to the task list.
@@ -704,7 +709,12 @@ expectedPorts: Array<number>,
 /**
  * For a process-compose project started by Satie: its compose file.
  */
-composeFile: string | null, };
+composeFile: string | null, 
+/**
+ * Whether the user is meant to open it (a dev server they browse to) rather than only the
+ * agent using it (a server for tests). Only interactive tasks' ports are forwarded automatically.
+ */
+interactive: boolean, };
 
 export type TerminalEvent = { "type": "opened", terminal: TerminalInfo, } | { "type": "output", terminalId: string, seq: number, data: string, } | { "type": "exited", terminalId: string, status: ExitStatus, } | { "type": "closed", terminalId: string, };
 

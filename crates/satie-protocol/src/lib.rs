@@ -45,6 +45,14 @@ pub struct Task {
     /// For a process-compose project started by Satie: its compose file.
     #[serde(default)]
     pub compose_file: Option<String>,
+    /// Whether the user is meant to open it (a dev server they browse to) rather than only the
+    /// agent using it (a server for tests). Only interactive tasks' ports are forwarded automatically.
+    #[serde(default = "yes")]
+    pub interactive: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// A task plus what is only known by looking at the machine right now.

@@ -127,6 +127,11 @@ function TaskCard({
 
       <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
         {task.project && <Badge variant="outline">{projectName(task.project)}</Badge>}
+        {!task.interactive && (
+          <Badge variant="outline" title="Only the agent uses it, so its ports aren't forwarded automatically">
+            Not interactive
+          </Badge>
+        )}
         <span className="tabular-nums" title={new Date(task.startedAt).toLocaleString()}>
           {running ? `up ${duration(now - task.startedAt)}` : `ran ${duration((task.endedAt ?? now) - task.startedAt)}`}
         </span>
