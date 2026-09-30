@@ -18,6 +18,7 @@ import {
 } from "@/api";
 import { Button } from "@/components/ui/button";
 import { projectName } from "@/session";
+import { onThemeChange } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
 /**
@@ -135,10 +136,9 @@ function TerminalView({ id, visible }: { id: string; visible: boolean }) {
     // Fit to the panel whenever it changes size (only while shown: hidden, it has no size).
     const ro = new ResizeObserver(() => el.current?.offsetParent && f.fit());
     ro.observe(el.current!);
-    // Follow light/dark (main.tsx switches the class first).
-    const media = matchMedia("(prefers-color-scheme: dark)");
-    const onScheme = () => setTimeout(() => (t.options.theme = theme()), 0);
-    media.addEventListener("change", onScheme);
+    // xterm copies the colours, so it has to be told when the app's theme changes: the mode or
+    // accent picked in Settings, as well as the system switching light/dark.
+    const unTheme = onThemeChange(() => (t.options.theme = theme()));
 
     return () => {
       disposed = true;
@@ -148,7 +148,7 @@ function TerminalView({ id, visible }: { id: string; visible: boolean }) {
       resized.dispose();
       clearTimeout(resizing);
       ro.disconnect();
-      media.removeEventListener("change", onScheme);
+      unTheme();
       t.dispose();
     };
   }, [id, shown, fontLoaded]);
