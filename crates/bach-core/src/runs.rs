@@ -1,5 +1,6 @@
 use crate::{
-    adapters::{codex_answer, permission_modes, AgentCli, AgentEvent, AgentKind, Conversation, Turn},
+    opencode_server,
+    adapters::{codex_answer, opencode, permission_modes, AgentCli, AgentEvent, AgentKind, Conversation, Turn},
 };
 pub use bach_protocol::Decision;
 use bach_protocol::ApiError;
@@ -17,7 +18,7 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{ChildStdin, Command},
-    sync::{oneshot, Mutex},
+    sync::{broadcast, oneshot, Mutex},
 };
 
 /// Where a run's events go (the session it belongs to).
@@ -68,7 +69,43 @@ struct Live {
     /// Open for agents driven over stdin, so approvals can be answered; closed when the run ends.
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     /// Requests the agent is waiting on. What was asked is kept here, not taken from the client.
-    pending: Arc<std::sync::Mutex<HashMap<String, PendingApproval>>>,
+    pending: Pending,
+    /// For opencode, answered over HTTP: its server, and the project folder it runs in.
+    opencode: Option<(opencode_server::Server, String)>,
+}
+
+type Pending = Arc<std::sync::Mutex<HashMap<String, PendingApproval>>>;
+
+/// Notes what `ev` means for the run's open approvals (and trims an approval's folders to those
+/// outside the project). False when it isn't worth passing on: cancelling an approval that was
+/// already answered.
+fn track(ev: &mut AgentEvent, pending: &Pending, project: Option<&std::path::Path>) -> bool {
+    // The agent offers to "add" the file's folder even when it is the project itself; only
+    // folders truly outside are worth showing.
+    if let (AgentEvent::Approval { directories, .. }, Some(project)) = (&mut *ev, project) {
+        directories.retain(|d| {
+            let d = std::path::PathBuf::from(d);
+            !d.canonicalize().unwrap_or(d).starts_with(project)
+        });
+    }
+    match ev {
+        AgentEvent::Approval { request_id, tool_name, input, suggestions, rules, .. } => {
+            pending.lock().unwrap().insert(
+                request_id.clone(),
+                PendingApproval {
+                    rules: rules.clone(),
+                    tool_name: tool_name.clone(),
+                    input: input.clone(),
+                    suggestions: suggestions.clone(),
+                },
+            );
+            true
+        }
+        AgentEvent::ApprovalCancelled { request_id } => {
+            pending.lock().unwrap().remove(request_id.as_str()).is_some()
+        }
+        _ => true,
+    }
 }
 
 /// Tracks live agent processes so they can be cancelled and their approvals answered.
@@ -229,7 +266,130 @@ async fn send(stdin: &Mutex<Option<ChildStdin>>, lines: &[String]) {
     }
 }
 
+/// One opencode turn: what to ask, and how.
+struct OpencodeTurn {
+    dir: String,
+    session_id: Option<String>,
+    prompt: String,
+    model: Option<String>,
+    mode: Option<String>,
+    allowed: Vec<String>,
+}
+
 impl Runs {
+    /// Starts a turn of an opencode session in the shared server: the session (created, or its
+    /// permissions brought up to date), then the prompt, then its events until it goes idle.
+    async fn start_opencode(
+        &self,
+        emit: Emit,
+        run_id: String,
+        session_key: Option<String>,
+        turn: OpencodeTurn,
+        image_files: ImageFiles,
+        project: PathBuf,
+    ) -> Result<String, String> {
+        let server = opencode_server::server().await?;
+        // Listening before prompting, so nothing is missed.
+        let mut events = server.subscribe();
+        let dir = turn.dir;
+        let mode = turn.mode.as_deref();
+        let permission = json!({ "permission": opencode::permission_rules(mode, &turn.allowed) });
+        let emit = {
+            let id = run_id.clone();
+            move |event: AgentEvent| emit(RunEvent { run_id: id.clone(), event })
+        };
+        let session = match turn.session_id {
+            Some(id) => {
+                server.patch(&format!("/session/{id}"), &dir, &permission).await?;
+                id
+            }
+            None => {
+                let s = server.post("/session", &dir, &permission).await?;
+                let id = s["id"].as_str().ok_or("opencode didn't make a session.")?.to_string();
+                emit(AgentEvent::Session { id: id.clone(), model: None });
+                id
+            }
+        };
+
+        let pending: Pending = Arc::default();
+        let (cancel_tx, mut cancel_rx) = oneshot::channel();
+        self.live.lock().await.insert(
+            run_id.clone(),
+            Live {
+                agent: AgentKind::Opencode,
+                session_key,
+                cancel: Some(cancel_tx),
+                stdin: Arc::default(),
+                pending: pending.clone(),
+                opencode: Some((server.clone(), dir.clone())),
+            },
+        );
+
+        let mut prompt = json!({
+            "parts": opencode::prompt_parts(&turn.prompt, &image_files.paths),
+            "agent": opencode::agent(mode),
+        });
+        if let Some(model) = turn.model.as_deref().and_then(opencode::model) {
+            prompt["model"] = model;
+        }
+        if let Err(e) = server
+            .post(&format!("/session/{session}/prompt_async"), &dir, &prompt)
+            .await
+        {
+            self.live.lock().await.remove(&run_id);
+            return Err(e);
+        }
+
+        let runs = self.live.clone();
+        let id = run_id.clone();
+        tokio::spawn(async move {
+            let _image_files = image_files; // removed when the run ends
+            let mut stream = opencode::Stream::new(&session, &turn.allowed);
+            let path = format!("/session/{session}/abort");
+            loop {
+                tokio::select! {
+                    _ = &mut cancel_rx => {
+                        let _ = server.post(&path, &dir, &json!({})).await;
+                        emit(AgentEvent::Cancelled);
+                        break;
+                    }
+                    event = events.recv() => {
+                        let event = match event {
+                            Ok(e) => e,
+                            Err(broadcast::error::RecvError::Lagged(n)) => {
+                                eprintln!("run {id}: missed {n} opencode events");
+                                continue;
+                            }
+                            Err(broadcast::error::RecvError::Closed) => json!({ "type": opencode_server::LOST }),
+                        };
+                        if event["type"] == opencode_server::LOST {
+                            emit(AgentEvent::Error { message: "opencode's server stopped.".into() });
+                            emit(AgentEvent::Done { cost_usd: None, is_error: true });
+                            break;
+                        }
+                        let (evs, replies) = stream.on_event(&event);
+                        for r in replies {
+                            let _ = server.post(&r.path, &dir, &r.body).await;
+                        }
+                        let mut done = false;
+                        for mut ev in evs {
+                            if !track(&mut ev, &pending, Some(&project)) {
+                                continue;
+                            }
+                            done |= matches!(ev, AgentEvent::Done { .. });
+                            emit(ev);
+                        }
+                        if done {
+                            break;
+                        }
+                    }
+                }
+            }
+            runs.lock().await.remove(&id);
+        });
+        Ok(run_id)
+    }
+
     pub fn with_satie(satie: Option<Satie>) -> Self {
         Self {
             satie,
@@ -304,6 +464,24 @@ impl Runs {
         } else {
             ImageFiles::NONE
         };
+
+        // opencode runs in its shared server rather than a process of its own.
+        if agent == AgentKind::Opencode {
+            let dir = project
+                .clone()
+                .ok_or("An opencode session needs its project folder.")?;
+            let turn = OpencodeTurn {
+                dir: dir.to_string_lossy().into_owned(),
+                session_id,
+                prompt,
+                model,
+                mode: permission_mode,
+                allowed: allowed_tools,
+            };
+            return self
+                .start_opencode(emit, run_id, session_key, turn, image_files, dir)
+                .await;
+        }
         let (mut conversation, opening) = Conversation::new(
             agent,
             &Turn {
@@ -330,8 +508,6 @@ impl Runs {
 
         let mut cmd = Command::new(agent.binary());
         cmd.args(agent.args(
-            &prompt,
-            &image_files.paths,
             session_id.as_deref(),
             model.as_deref(),
             permission_mode.as_deref(),
@@ -364,6 +540,7 @@ impl Runs {
             run_id.clone(),
             Live {
                 agent,
+                opencode: None,
                 session_key,
                 cancel: Some(cancel_tx),
                 stdin: stdin.clone(),
@@ -428,32 +605,10 @@ impl Runs {
                             let (events, replies) = conversation.on_line(&line);
                             send(&stdin, &replies).await;
                             for mut ev in events {
-                                // The agent offers to "add" the file's folder even when it is the
-                                // project itself; only folders truly outside are worth showing.
-                                if let (AgentEvent::Approval { directories, .. }, Some(project)) = (&mut ev, &project) {
-                                    directories.retain(|d| {
-                                        let d = std::path::PathBuf::from(d);
-                                        !d.canonicalize().unwrap_or(d).starts_with(project)
-                                    });
+                                if !track(&mut ev, &pending, project.as_deref()) {
+                                    continue;
                                 }
                                 match &ev {
-                                    AgentEvent::Approval { request_id, tool_name, input, suggestions, rules, .. } => {
-                                        pending.lock().unwrap().insert(
-                                            request_id.clone(),
-                                            PendingApproval {
-                                                rules: rules.clone(),
-                                                tool_name: tool_name.clone(),
-                                                input: input.clone(),
-                                                suggestions: suggestions.clone(),
-                                            },
-                                        );
-                                    }
-                                    // One already answered needs no cancelling.
-                                    AgentEvent::ApprovalCancelled { request_id } => {
-                                        if pending.lock().unwrap().remove(request_id).is_none() {
-                                            continue;
-                                        }
-                                    }
                                     AgentEvent::Task { id, status: Some(status), background: bg, agent_type, .. } => {
                                         if status != "running" {
                                             background.remove(id);
@@ -562,10 +717,10 @@ impl Runs {
         answers: Option<HashMap<String, String>>,
     ) -> Result<Vec<String>, ApiError> {
         let finished = || ApiError::not_found("That run has already finished.");
-        let (agent, stdin, pending) = {
+        let (agent, stdin, pending, opencode) = {
             let runs = self.live.lock().await;
             let live = runs.get(run_id).ok_or_else(finished)?;
-            (live.agent, live.stdin.clone(), live.pending.clone())
+            (live.agent, live.stdin.clone(), live.pending.clone(), live.opencode.clone())
         };
         // Build (and so validate) the reply before taking the request off the list: a rejected
         // answer must leave the agent's question open to be answered properly.
@@ -575,6 +730,12 @@ impl Runs {
                 .get(request_id)
                 .ok_or_else(|| ApiError::not_found("That approval is no longer pending."))?;
             let line = match agent {
+                AgentKind::Opencode => {
+                    let reply = opencode::answer(&approval.suggestions, decision, message, answers.as_ref())
+                        .map_err(ApiError::invalid)?;
+                    serde_json::to_string(&json!({ "path": reply.path, "body": reply.body }))
+                        .expect("json serializes")
+                }
                 AgentKind::Codex => codex_answer(&approval.suggestions, decision, answers.as_ref())
                     .map_err(ApiError::invalid)?,
                 _ => {
@@ -591,6 +752,15 @@ impl Runs {
             (line, rules)
         };
         let (line, rules) = response;
+
+        if let Some((server, dir)) = opencode {
+            let reply: Value = serde_json::from_str(&line).expect("built above");
+            server
+                .post(reply["path"].as_str().unwrap_or_default(), &dir, &reply["body"])
+                .await
+                .map_err(|e| ApiError::failed(format!("Couldn't answer the agent: {e}")))?;
+            return Ok(rules);
+        }
 
         let mut guard = stdin.lock().await;
         let w = guard.as_mut().ok_or_else(finished)?;
@@ -649,11 +819,11 @@ mod tests {
             let err = runs.start(noop(), r).await.unwrap_err();
             assert!(err.contains("isn't a permission mode"), "{m}: {err}");
         }
-        let a = AgentKind::Claude.args("hi", &[], None, None, Some("auto"), &[], None);
+        let a = AgentKind::Claude.args(None, None, Some("auto"), &[], None);
         let at = a.iter().position(|x| x == "--permission-mode").unwrap();
         assert_eq!(a[at + 1], "auto");
         assert!(!AgentKind::Claude
-            .args("hi", &[], None, None, None, &[], None)
+            .args(None, None, None, &[], None)
             .contains(&"--permission-mode".to_string()));
     }
 

@@ -313,15 +313,8 @@ impl Launcher {
             images,
             cwd: s.workdir.clone().or(Some(s.cwd.clone())),
             session_id: s.agent_session_id.clone(),
-            // opencode takes neither yet.
-            model: s
-                .model_choice
-                .clone()
-                .filter(|_| s.agent != AgentKind::Opencode),
-            permission_mode: s
-                .permission_mode
-                .clone()
-                .filter(|_| s.agent != AgentKind::Opencode),
+            model: s.model_choice.clone(),
+            permission_mode: s.permission_mode.clone(),
             allowed_tools: s.allow_rules.clone(),
             session_key: Some(id.to_string()),
             run_id: Some(run_id.clone()),

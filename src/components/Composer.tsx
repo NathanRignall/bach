@@ -72,7 +72,13 @@ function modelChoices(agent: string, models: ModelInfo[], value: string) {
   const fallback = models.find((m) => m.isDefault);
   const choices = [
     { value: "default", label: "Default model", description: fallback ? `${fallback.name}, ${agent}'s default` : `Whatever ${agent} picks` },
-    ...models.map((m) => ({ value: m.id, label: m.name, description: m.description })),
+    // `provider/model` ids (opencode) are set apart by provider.
+    ...models.map((m, i) => ({
+      value: m.id,
+      label: m.name,
+      description: m.description,
+      separated: i > 0 && m.id.includes("/") && m.id.split("/")[0] !== models[i - 1].id.split("/")[0],
+    })),
   ];
   if (!choices.some((c) => c.value === value)) choices.push({ value, label: value, description: "Chosen earlier" });
   return choices;
@@ -90,6 +96,13 @@ const PERMISSION_MODES: Partial<Record<AgentKind, Choice[]>> = {
   codex: [
     { value: "auto", label: "Auto", description: "Edit the project; ask before anything else" },
     { value: "readOnly", label: "Read only", description: "Ask before any change" },
+    { value: "plan", label: "Plan", description: "Create a plan before making changes" },
+    { value: "fullAccess", label: "Full access", description: "Run everything without asking" },
+  ],
+  // opencode has no sandbox, so even its default asks before shell commands.
+  opencode: [
+    { value: "auto", label: "Auto", description: "Edit the project; ask before shell commands" },
+    { value: "readOnly", label: "Manual", description: "Ask before edits and shell commands" },
     { value: "plan", label: "Plan", description: "Create a plan before making changes" },
     { value: "fullAccess", label: "Full access", description: "Run everything without asking" },
   ],
@@ -177,7 +190,6 @@ export function Composer(p: Props) {
   }));
   const canSend = (!!p.draft.trim() || p.images.length > 0) && !p.blockedReason && !p.starting;
   const agentName = p.agents.find((a) => a.kind === p.agent)?.name ?? p.agent;
-  // Agents without modes (opencode) have no model choice either.
   const modes = PERMISSION_MODES[p.agent];
   const models = useModels(p.agent);
   const [dragging, setDragging] = useState(false);

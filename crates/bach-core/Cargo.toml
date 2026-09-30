@@ -8,6 +8,8 @@ description = "Agent adapters, runs, git, storage and Satie behind Bach (no UI o
 bach-protocol = { path = "../bach-protocol" }
 base64 = "0.23"
 portable-pty = "0.9"
+# Talks to `opencode serve` on loopback; plain HTTP, so no TLS.
+reqwest = { version = "0.13", default-features = false, features = ["json", "query"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 satie = { path = "../satie" }
 satie-protocol = { path = "../satie-protocol" }
