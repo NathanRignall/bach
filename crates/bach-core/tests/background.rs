@@ -52,6 +52,7 @@ async fn a_background_sub_agent_keeps_the_run_going() {
                 session_id: None,
                 model: None,
                 permission_mode: None,
+                effort: None,
                 allowed_tools: vec![],
                 session_key: None,
                 run_id: None,

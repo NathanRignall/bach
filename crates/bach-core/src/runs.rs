@@ -45,6 +45,8 @@ pub struct RunRequest {
     pub model: Option<String>,
     /// Claude Code's `--permission-mode` (`acceptEdits`, `auto`, …); none for its default.
     pub permission_mode: Option<String>,
+    /// Thinking effort, one of the model's levels (`low`, `high`, …); none for its default.
+    pub effort: Option<String>,
     /// Permission rules approved earlier in this session.
     pub allowed_tools: Vec<String>,
     /// The session this run belongs to, so deleting the session stops it.
@@ -273,6 +275,8 @@ struct OpencodeTurn {
     prompt: String,
     model: Option<String>,
     mode: Option<String>,
+    /// The model's variant (opencode's name for its thinking levels).
+    effort: Option<String>,
     allowed: Vec<String>,
 }
 
@@ -333,6 +337,9 @@ impl Runs {
         });
         if let Some(model) = turn.model.as_deref().and_then(opencode::model) {
             prompt["model"] = model;
+        }
+        if let Some(variant) = &turn.effort {
+            prompt["variant"] = json!(variant);
         }
         if let Err(e) = server
             .post(&format!("/session/{session}/prompt_async"), &dir, &prompt)
@@ -409,6 +416,7 @@ impl Runs {
             session_id,
             model,
             permission_mode,
+            effort,
             allowed_tools,
             session_key,
             run_id,
@@ -433,6 +441,15 @@ impl Runs {
         if let Some(m) = &permission_mode {
             if !permission_modes(agent).contains(&m.as_str()) {
                 return Err(format!("`{m}` isn't a permission mode."));
+            }
+        }
+        // Also passed to the CLI: a plain word.
+        let effort = effort
+            .map(|e| e.trim().to_string())
+            .filter(|e| !e.is_empty() && e != "default");
+        if let Some(e) = &effort {
+            if e.len() > 20 || !e.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return Err(format!("`{e}` isn't a thinking effort."));
             }
         }
         if let Some(bad) = allowed_tools.iter().find(|r| !valid_rule(r)) {
@@ -479,6 +496,7 @@ impl Runs {
                 prompt,
                 model,
                 mode: permission_mode,
+                effort,
                 allowed: allowed_tools,
             };
             return self
@@ -496,6 +514,7 @@ impl Runs {
                 allowed_tools: &allowed_tools,
                 model: model.as_deref(),
                 permission_mode: permission_mode.as_deref(),
+                effort: effort.as_deref(),
             },
         );
 
@@ -514,6 +533,7 @@ impl Runs {
             session_id.as_deref(),
             model.as_deref(),
             permission_mode.as_deref(),
+            effort.as_deref(),
             &allowed_tools,
             grant.as_ref(),
         ))
@@ -793,6 +813,7 @@ mod tests {
             session_id: None,
             model: model.map(String::from),
             permission_mode: None,
+            effort: None,
             allowed_tools: rules.iter().map(|r| r.to_string()).collect(),
             session_key: None,
             run_id: None,
@@ -822,11 +843,11 @@ mod tests {
             let err = runs.start(noop(), r).await.unwrap_err();
             assert!(err.contains("isn't a permission mode"), "{m}: {err}");
         }
-        let a = AgentKind::Claude.args(None, None, Some("auto"), &[], None);
+        let a = AgentKind::Claude.args(None, None, Some("auto"), None, &[], None);
         let at = a.iter().position(|x| x == "--permission-mode").unwrap();
         assert_eq!(a[at + 1], "auto");
         assert!(!AgentKind::Claude
-            .args(None, None, None, &[], None)
+            .args(None, None, None, None, &[], None)
             .contains(&"--permission-mode".to_string()));
     }
 
@@ -853,6 +874,17 @@ mod tests {
             .join("bach-images")
             .join(&run_id)
             .exists());
+    }
+
+    #[tokio::test]
+    async fn rejects_odd_efforts() {
+        let runs = Runs::default();
+        for e in ["--dangerously-skip-permissions", "high; rm", "a b"] {
+            let mut r = req(Some("/tmp"), None, &[]);
+            r.effort = Some(e.into());
+            let err = runs.start(noop(), r).await.unwrap_err();
+            assert!(err.contains("isn't a thinking effort"), "{e}: {err}");
+        }
     }
 
     #[tokio::test]

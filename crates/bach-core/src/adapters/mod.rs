@@ -16,7 +16,8 @@ pub trait AgentCli: Copy {
     /// Arguments for a headless, JSON-streaming invocation.
     ///
     /// `model` is only honoured by Claude Code so far (`--model`, e.g. `opus` or a full id),
-    /// as is `permission_mode` (`--permission-mode`, e.g. `acceptEdits` or `auto`).
+    /// as is `permission_mode` (`--permission-mode`, e.g. `acceptEdits` or `auto`) and `effort`
+    /// (`--effort`); the other agents get theirs over their protocols ([`Turn`]).
     ///
     /// `satie` adds Bach's background-task launcher as an MCP server, with guidance steering the
     /// agent to it (Claude Code, which also gets a hook, and Codex).
@@ -29,6 +30,7 @@ pub trait AgentCli: Copy {
         session_id: Option<&str>,
         model: Option<&str>,
         permission_mode: Option<&str>,
+        effort: Option<&str>,
         allowed_tools: &[String],
         satie: Option<&Grant>,
     ) -> Vec<String>;
@@ -62,12 +64,13 @@ impl AgentCli for AgentKind {
         session_id: Option<&str>,
         model: Option<&str>,
         permission_mode: Option<&str>,
+        effort: Option<&str>,
         allowed_tools: &[String],
         satie: Option<&Grant>,
     ) -> Vec<String> {
         match self {
             AgentKind::Claude => {
-                claude::args(session_id, model, permission_mode, allowed_tools, satie)
+                claude::args(session_id, model, permission_mode, effort, allowed_tools, satie)
             }
             AgentKind::Codex => codex::args(satie),
             // opencode runs through its shared server (`crate::opencode_server`), not a command.
@@ -125,6 +128,8 @@ pub struct Turn<'a> {
     pub allowed_tools: &'a [String],
     pub model: Option<&'a str>,
     pub permission_mode: Option<&'a str>,
+    /// Thinking effort, one of the model's levels.
+    pub effort: Option<&'a str>,
 }
 
 /// One run's exchange with the agent process over stdin/stdout.
@@ -278,6 +283,14 @@ mod tests {
     }
 
     #[test]
+    fn claude_effort_is_a_flag() {
+        let a = AgentKind::Claude.args(None, None, None, Some("xhigh"), &[], None);
+        let at = a.iter().position(|x| x == "--effort").unwrap();
+        assert_eq!(a[at + 1], "xhigh");
+        assert!(!AgentKind::Claude.args(None, None, None, None, &[], None).contains(&"--effort".to_string()));
+    }
+
+    #[test]
     fn claude_text_streams_but_sub_agents_dont() {
         // Recorded from `claude -p --include-partial-messages`.
         let delta = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" I'm Claude"}},"session_id":"s","parent_tool_use_id":null,"uuid":"u"}"#;
@@ -296,7 +309,7 @@ mod tests {
             [AgentEvent::Delta { kind: bach_protocol::DeltaKind::Thinking, text, .. }] if text == "Hmm"
         ));
         assert!(AgentKind::Claude
-            .args(None, None, None, &[], None)
+            .args(None, None, None, None, &[], None)
             .contains(&"--include-partial-messages".to_string()));
     }
 

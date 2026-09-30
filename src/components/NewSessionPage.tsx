@@ -59,9 +59,11 @@ export function NewSessionPage({ session, agents, draft, onDraft, images, onImag
           cwd={session.cwd}
           agentLocked={false}
           indicator={indicator}
-          onAgent={(agent: AgentKind) => onChange({ agent, modelChoice: null, permissionMode: "auto" })}
+          onAgent={(agent: AgentKind) => onChange({ agent, modelChoice: null, permissionMode: "auto", effort: null })}
           modelChoice={session.modelChoice ?? undefined}
           onModel={(modelChoice) => onChange({ modelChoice })}
+          effort={session.effort ?? undefined}
+          onEffort={(effort) => onChange({ effort: effort || null })}
           permissionMode={session.permissionMode ?? undefined}
           onPermissionMode={(permissionMode) => onChange({ permissionMode })}
           left={

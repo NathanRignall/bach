@@ -178,6 +178,8 @@ pub struct StartSessionArgs {
     pub new_branch: Option<String>,
     pub model_choice: Option<String>,
     pub permission_mode: Option<String>,
+    /// Thinking effort (one of the model's levels); `""` for the model's default.
+    pub effort: Option<String>,
     pub prompt: String,
     /// Images sent with the prompt, as `data:` URLs.
     #[serde(default)]
@@ -244,6 +246,8 @@ pub struct UpdateSessionArgs {
     pub title: Option<String>,
     pub model_choice: Option<String>,
     pub permission_mode: Option<String>,
+    /// Thinking effort (one of the model's levels); `""` for the model's default.
+    pub effort: Option<String>,
     pub archived: Option<bool>,
 }
 

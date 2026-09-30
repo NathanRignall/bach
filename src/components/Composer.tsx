@@ -1,5 +1,7 @@
 import { DragEvent, Fragment, ReactNode, useEffect, useState } from "react";
-import { ArrowUp, ImagePlus, ListPlus, Pencil, Square, X } from "lucide-react";
+import { ArrowUp, Brain, ImagePlus, ListPlus, Pencil, Square, X } from "lucide-react";
+import { Slider } from "@base-ui/react/slider";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { AgentInfo, AgentKind, ModelInfo, QueuedMessage, listModels } from "@/api";
 import { AgentBadge } from "@/components/AgentBadge";
 import { Button } from "@/components/ui/button";
@@ -37,6 +39,9 @@ interface Props {
   /** Permission mode ("default", "acceptEdits", "auto", …); offered for Claude Code and Codex. */
   permissionMode?: string;
   onPermissionMode?: (m: string) => void;
+  /** Thinking effort, one of the model's levels (none for its default); `""` asks for the default. */
+  effort?: string;
+  onEffort?: (e: string) => void;
   /** The project folder the agent runs in (opencode's models depend on it). */
   cwd?: string;
   /** Extra controls shown before the agent picker (project, branch, …). */
@@ -88,6 +93,65 @@ function modelChoices(agent: string, models: ModelInfo[], value: string) {
   ];
   if (!choices.some((c) => c.value === value)) choices.push({ value, label: value, description: "Chosen earlier" });
   return choices;
+}
+
+/** The model a choice runs: the chosen one, or the agent's default (Claude Code's are alike, so any will do). */
+function modelFor(models: ModelInfo[], choice: string, agent: AgentKind): ModelInfo | undefined {
+  if (choice !== "default") return models.find((m) => m.id === choice);
+  return models.find((m) => m.isDefault) ?? (agent === "claude" ? models[0] : undefined);
+}
+
+/**
+ * How hard the model thinks: a slider over its effort levels, least to most. Hidden for models
+ * without levels; "Default" leaves it to the model.
+ */
+function EffortPicker({ model, value, onChange }: { model?: ModelInfo; value?: string; onChange: (e: string) => void }) {
+  const levels = model?.efforts ?? [];
+  if (!levels.length) return null;
+  const chosen = value && levels.includes(value) ? value : undefined;
+  const fallback = model?.defaultEffort && levels.includes(model.defaultEffort) ? model.defaultEffort : undefined;
+  const shown = chosen ?? fallback;
+  const at = shown ? levels.indexOf(shown) : Math.floor((levels.length - 1) / 2);
+  return (
+    <Popover>
+      <PopoverTrigger render={<Button variant="outline" size="sm" aria-label="Thinking effort" className="gap-1.5 font-normal" />}>
+        <Brain className="size-3.5" />
+        {chosen ?? "Default"}
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-64">
+        <div className="flex items-baseline justify-between">
+          <span className="text-xs font-medium text-muted-foreground">Thinking</span>
+          <span className="text-xs">{chosen ? chosen : `Default${fallback ? ` (${fallback})` : ""}`}</span>
+        </div>
+        <Slider.Root
+          aria-label="Thinking effort"
+          min={0}
+          max={levels.length - 1}
+          step={1}
+          value={at}
+          onValueChange={(i) => onChange(levels[i as number])}
+          className="px-1.5 pt-1"
+        >
+          <Slider.Control className="flex h-5 w-full items-center">
+            <Slider.Track className="h-1 w-full rounded-full bg-muted">
+              <Slider.Indicator className={cn("rounded-full", chosen ? "bg-primary" : "bg-muted-foreground/40")} />
+              <Slider.Thumb className="size-4 rounded-full border-2 border-primary bg-background shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+            </Slider.Track>
+          </Slider.Control>
+        </Slider.Root>
+        <div className="flex justify-between px-0.5 text-[11px] text-muted-foreground">
+          {levels.map((l) => (
+            <button key={l} type="button" className={cn("hover:text-foreground", l === shown && "font-medium text-foreground")} onClick={() => onChange(l)}>
+              {l}
+            </button>
+          ))}
+        </div>
+        <Button variant="ghost" size="sm" className="self-start" disabled={!chosen} onClick={() => onChange("")}>
+          Use the model's default
+        </Button>
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 /** Each agent's permission modes, worded as its own picker does; the first is what "none chosen" means. */
@@ -314,8 +378,19 @@ export function Composer(p: Props) {
           <Picker heading="Mode" label="Permission mode" choices={modes} value={modeValue(p.agent, p.permissionMode)} onChange={p.onPermissionMode} />
         )}
         {modes && p.onModel && (
-          <Picker heading="Model" label="Model" choices={modelChoices(agentName, models, p.modelChoice ?? "default")} value={p.modelChoice ?? "default"} onChange={p.onModel} />
+          <Picker
+            heading="Model"
+            label="Model"
+            choices={modelChoices(agentName, models, p.modelChoice ?? "default")}
+            value={p.modelChoice ?? "default"}
+            onChange={(m) => {
+              p.onModel?.(m);
+              // A level the new model doesn't have goes back to its default.
+              if (p.effort && !(modelFor(models, m, p.agent)?.efforts ?? []).includes(p.effort)) p.onEffort?.("");
+            }}
+          />
         )}
+        {modes && p.onEffort && <EffortPicker model={modelFor(models, p.modelChoice ?? "default", p.agent)} value={p.effort} onChange={p.onEffort} />}
         {p.agentLocked ? (
           // A session keeps its agent, so there's nothing to choose; say which it is instead of a dead menu.
           <AgentBadge kind={p.agent} className="h-7 px-2.5 text-[0.8rem]">

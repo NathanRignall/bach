@@ -329,6 +329,7 @@ export function App() {
           worktree: !!newDraft.worktree,
           newBranch: newDraft.worktree ? newDraft.newBranch?.trim() || undefined : undefined,
           modelChoice: newDraft.modelChoice ?? undefined,
+          effort: newDraft.effort ?? undefined,
           permissionMode: newDraft.permissionMode ?? undefined,
           prompt,
           images,
@@ -562,6 +563,8 @@ export function App() {
                 indicator={<UsageIndicator context={active.context} usage={planUsage} />}
                 modelChoice={active.modelChoice ?? undefined}
                 onModel={(modelChoice) => void update({ sessionId: active.id, modelChoice })}
+                effort={active.effort ?? undefined}
+                onEffort={(effort) => void update({ sessionId: active.id, effort })}
                 permissionMode={active.permissionMode ?? undefined}
                 onPermissionMode={(permissionMode) => void update({ sessionId: active.id, permissionMode })}
               />

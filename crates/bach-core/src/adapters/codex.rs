@@ -95,6 +95,8 @@ pub struct Conversation {
     choice: Option<String>,
     /// See [`PERMISSION_MODES`].
     mode: Option<String>,
+    /// Reasoning effort for the turn, if chosen.
+    effort: Option<String>,
     /// The model the thread runs (chosen, or Codex's default).
     model: Option<String>,
     /// Whether the model's context window has been reported (it doesn't change mid-turn).
@@ -152,6 +154,7 @@ impl Conversation {
             allowed: turn.allowed_tools.to_vec(),
             choice: turn.model.map(String::from),
             mode: turn.permission_mode.map(String::from),
+            effort: turn.effort.map(String::from),
             model: None,
             window_sent: false,
             turn_id: None,
@@ -254,12 +257,15 @@ impl Conversation {
                         .map(|p| json!({ "type": "localImage", "path": p })),
                 );
                 let mut params = json!({ "threadId": id, "input": input });
+                if let Some(effort) = &self.effort {
+                    params["effort"] = json!(effort);
+                }
                 // Always said, so leaving plan mode takes effect on a resumed thread too.
                 if let Some(model) = &self.model {
                     let mode = if self.mode.as_deref() == Some("plan") { "plan" } else { "default" };
                     params["collaborationMode"] = json!({
                         "mode": mode,
-                        "settings": { "model": model, "reasoning_effort": null, "developer_instructions": null },
+                        "settings": { "model": model, "reasoning_effort": self.effort, "developer_instructions": null },
                     });
                 }
                 (
@@ -706,6 +712,13 @@ fn models_from(result: &Value) -> Vec<ModelInfo> {
             name: m["displayName"].as_str().unwrap_or(m["model"].as_str().unwrap_or_default()).into(),
             description: s(&m["description"]),
             is_default: m["isDefault"] == true,
+            efforts: m["supportedReasoningEfforts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e["reasoningEffort"].as_str().map(String::from))
+                .collect(),
+            default_effort: m["defaultReasoningEffort"].as_str().map(String::from),
         })
         .filter(|m| !m.id.is_empty())
         .collect()
@@ -1183,14 +1196,31 @@ mod tests {
     }
 
     #[test]
+    fn effort_goes_with_the_turn() {
+        let mut c = Conversation::new(&Turn { prompt: "hi", effort: Some("high"), permission_mode: Some("plan"), ..Default::default() });
+        c.on_line(&json!({ "id": 1, "result": {} }));
+        let (_, sent) = c.on_line(&json!({ "id": 2, "result": { "thread": { "id": "t1" }, "model": "gpt-x" } }));
+        let turn: Value = serde_json::from_str(&sent[0]).unwrap();
+        assert_eq!(turn["params"]["effort"], "high");
+        assert_eq!(turn["params"]["collaborationMode"]["settings"]["reasoning_effort"], "high");
+        // None chosen: Codex's default.
+        let (_, turn) = opening(None, None);
+        assert!(turn.get("effort").is_none());
+    }
+
+    #[test]
     fn lists_visible_models() {
         let models = models_from(&json!({ "data": [
-            { "model": "gpt-a", "displayName": "GPT A", "description": "fast", "hidden": false, "isDefault": true },
+            { "model": "gpt-a", "displayName": "GPT A", "description": "fast", "hidden": false, "isDefault": true,
+              "supportedReasoningEfforts": [{ "reasoningEffort": "low", "description": "" }, { "reasoningEffort": "high", "description": "" }],
+              "defaultReasoningEffort": "low" },
             { "model": "gpt-old", "displayName": "Old", "description": "", "hidden": true, "isDefault": false },
             { "model": "gpt-b", "displayName": null, "description": "big", "hidden": false, "isDefault": false },
         ]}));
         let got: Vec<_> = models.iter().map(|m| (m.id.as_str(), m.name.as_str(), m.is_default)).collect();
         assert_eq!(got, [("gpt-a", "GPT A", true), ("gpt-b", "gpt-b", false)]);
+        assert_eq!((models[0].efforts.clone(), models[0].default_effort.as_deref()), (vec!["low".to_string(), "high".into()], Some("low")));
+        assert!(models[1].efforts.is_empty());
     }
 
     #[test]

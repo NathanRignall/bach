@@ -93,11 +93,22 @@ pub fn models_from(providers: &Value, default: Option<&str>) -> Vec<ModelInfo> {
                 is_default: default == Some(id.as_str()),
                 name: m["name"].as_str().unwrap_or(&id).to_string(),
                 description: provider.to_string(),
+                efforts: variants(&m["variants"]),
+                default_effort: None,
                 id,
             });
         }
     }
     out
+}
+
+/// A model's variants (opencode's thinking levels), least first. Their names vary by provider
+/// (`minimal`, `low`, `high`, …); unknown ones go last.
+fn variants(v: &Value) -> Vec<String> {
+    const ORDER: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+    let mut names: Vec<String> = v.as_object().into_iter().flatten().map(|(k, _)| k.clone()).collect();
+    names.sort_by_key(|n| ORDER.iter().position(|o| o == n).unwrap_or(ORDER.len()));
+    names
 }
 
 /// A reply to the server: `POST path` with `body`.
@@ -521,6 +532,19 @@ mod tests {
         );
         assert_eq!(list.len(), 1);
         assert_eq!((list[0].id.as_str(), list[0].name.as_str(), list[0].is_default), ("google/gemini-x", "Gemini X", true));
+    }
+
+    #[test]
+    fn variants_are_effort_levels_least_first() {
+        let list = models_from(
+            &json!({ "providers": [{ "id": "google", "name": "Google", "models": {
+                "g": { "name": "G", "variants": { "high": {}, "turbo": {}, "minimal": {} } },
+                "plain": { "name": "Plain" },
+            } }] }),
+            None,
+        );
+        assert_eq!(list[0].efforts, ["minimal", "high", "turbo"]);
+        assert!(list[1].efforts.is_empty());
     }
 
     #[test]

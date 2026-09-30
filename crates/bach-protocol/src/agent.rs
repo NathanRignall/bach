@@ -34,6 +34,10 @@ pub struct ModelInfo {
     pub description: String,
     /// The one the agent uses when none is chosen.
     pub is_default: bool,
+    /// Its thinking effort levels, least first (none if it can't be set).
+    pub efforts: Vec<String>,
+    /// The level it uses when none is chosen, if known.
+    pub default_effort: Option<String>,
 }
 
 /// What a [`AgentEvent::Delta`] adds to.

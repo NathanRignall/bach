@@ -16,6 +16,7 @@ fn request(dir: &Path, prompt: &str, session_id: Option<&str>, rules: &[&str]) -
         session_id: session_id.map(String::from),
         model: None,
         permission_mode: None,
+        effort: None,
         allowed_tools: rules.iter().map(|r| r.to_string()).collect(),
         session_key: None,
         run_id: None,
