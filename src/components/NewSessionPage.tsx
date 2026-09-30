@@ -56,6 +56,7 @@ export function NewSessionPage({ session, agents, draft, onDraft, images, onImag
           placeholder={hasFolder ? "Message the agent…" : "Choose a project folder, then describe the task…"}
           agents={agents}
           agent={session.agent}
+          cwd={session.cwd}
           agentLocked={false}
           indicator={indicator}
           onAgent={(agent: AgentKind) => onChange({ agent, modelChoice: null, permissionMode: "auto" })}

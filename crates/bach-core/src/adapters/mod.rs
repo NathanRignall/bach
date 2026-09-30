@@ -3,7 +3,7 @@
 
 mod claude;
 mod codex;
-mod opencode;
+pub mod opencode;
 
 use satie::Grant;
 pub use bach_protocol::{AgentEvent, AgentKind};
@@ -24,12 +24,8 @@ pub trait AgentCli: Copy {
     /// `allowed_tools` are permission rules (e.g. `Bash(tmux ls *)`) approved earlier in the
     /// session; only Claude Code takes them.
     ///
-    /// `image_files` are paths of images to attach, for agents that take them as files (see
-    /// [`AgentCli::images_as_files`]).
     fn args(
         self,
-        prompt: &str,
-        image_files: &[String],
         session_id: Option<&str>,
         model: Option<&str>,
         permission_mode: Option<&str>,
@@ -63,8 +59,6 @@ impl AgentCli for AgentKind {
 
     fn args(
         self,
-        prompt: &str,
-        image_files: &[String],
         session_id: Option<&str>,
         model: Option<&str>,
         permission_mode: Option<&str>,
@@ -76,7 +70,8 @@ impl AgentCli for AgentKind {
                 claude::args(session_id, model, permission_mode, allowed_tools, satie)
             }
             AgentKind::Codex => codex::args(satie),
-            AgentKind::Opencode => opencode::args(prompt, image_files, session_id, model),
+            // opencode runs through its shared server (`crate::opencode_server`), not a command.
+            AgentKind::Opencode => vec![],
         }
     }
 
@@ -109,7 +104,8 @@ impl AgentCli for AgentKind {
             AgentKind::Claude => claude::parse(&v),
             // Codex's lines only make sense within their conversation; this reads one alone.
             AgentKind::Codex => codex::Conversation::new(&Turn::default()).on_line(&v).0,
-            AgentKind::Opencode => opencode::parse(&v),
+            // Its events are read in their session's context ([`opencode::Stream`]).
+            AgentKind::Opencode => vec![AgentEvent::Raw { line: v.to_string() }],
         }
     }
 }
@@ -202,16 +198,19 @@ pub fn permission_modes(agent: AgentKind) -> &'static [&'static str] {
     match agent {
         AgentKind::Claude => crate::runs::PERMISSION_MODES,
         AgentKind::Codex => codex::PERMISSION_MODES,
-        AgentKind::Opencode => &[],
+        AgentKind::Opencode => opencode::PERMISSION_MODES,
     }
 }
 
-/// The models `agent` can run, for the model picker.
-pub async fn list_models(agent: AgentKind) -> Result<Vec<bach_protocol::ModelInfo>, String> {
+/// The models `agent` can run, for the model picker (opencode's in folder `cwd`).
+pub async fn list_models(agent: AgentKind, cwd: Option<&str>) -> Result<Vec<bach_protocol::ModelInfo>, String> {
     match agent {
         AgentKind::Claude => Ok(claude::models()),
         AgentKind::Codex => codex::list_models().await,
-        AgentKind::Opencode => Ok(vec![]),
+        AgentKind::Opencode => {
+            let dir = cwd.ok_or("Choose a project folder to see opencode's models.")?;
+            crate::opencode_server::list_models(dir).await
+        }
     }
 }
 
@@ -274,22 +273,6 @@ mod tests {
 
     #[test]
     fn codex_and_opencode_take_images_as_files() {
-        let files = ["/tmp/a.png".to_string(), "/tmp/b.jpg".to_string()];
-        let opencode = AgentKind::Opencode.args("hi", &files, Some("s1"), None, None, &[], None);
-        assert_eq!(
-            opencode,
-            [
-                "run",
-                "--format",
-                "json",
-                "--session",
-                "s1",
-                "--file=/tmp/a.png",
-                "--file=/tmp/b.jpg",
-                "--",
-                "hi"
-            ]
-        );
         assert!(AgentKind::Codex.images_as_files() && AgentKind::Opencode.images_as_files());
         assert!(!AgentKind::Claude.images_as_files());
     }
@@ -313,7 +296,7 @@ mod tests {
             [AgentEvent::Delta { kind: bach_protocol::DeltaKind::Thinking, text, .. }] if text == "Hmm"
         ));
         assert!(AgentKind::Claude
-            .args("hi", &[], None, None, None, &[], None)
+            .args(None, None, None, &[], None)
             .contains(&"--include-partial-messages".to_string()));
     }
 

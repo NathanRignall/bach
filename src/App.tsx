@@ -556,6 +556,7 @@ export function App() {
                 placeholder={active.workdirRemoved ? "This session's worktree was removed" : "Message the agent…"}
                 agents={agents}
                 agent={active.agent}
+                cwd={active.workdir ?? active.cwd}
                 agentLocked
                 onAgent={() => {}}
                 indicator={<UsageIndicator context={active.context} usage={planUsage} />}

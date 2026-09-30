@@ -37,6 +37,8 @@ interface Props {
   /** Permission mode ("default", "acceptEdits", "auto", …); offered for Claude Code and Codex. */
   permissionMode?: string;
   onPermissionMode?: (m: string) => void;
+  /** The project folder the agent runs in (opencode's models depend on it). */
+  cwd?: string;
   /** Extra controls shown before the agent picker (project, branch, …). */
   left?: ReactNode;
   /** Shown next to the model picker (usage). */
@@ -46,24 +48,28 @@ interface Props {
 }
 
 /** The chat input card, shared by the new-session page and the running chat. */
-/** Each agent's models, as the backend lists them (Codex is asked for its current ones). */
-const modelLists = new Map<AgentKind, Promise<ModelInfo[]>>();
+/** Each agent's models, as the backend lists them (Codex and opencode are asked for their current ones). */
+const modelLists = new Map<string, Promise<ModelInfo[]>>();
 
-function useModels(agent: AgentKind): ModelInfo[] {
+/** `cwd`: the project folder, which opencode's list depends on (it has none without one). */
+function useModels(agent: AgentKind, cwd?: string): ModelInfo[] {
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const folder = agent === "opencode" ? cwd?.trim() || undefined : undefined;
   useEffect(() => {
     let current = true;
     setModels([]);
-    let list = modelLists.get(agent);
+    if (agent === "opencode" && !folder) return;
+    const key = `${agent}\u0000${folder ?? ""}`;
+    let list = modelLists.get(key);
     if (!list) {
-      list = listModels(agent);
-      modelLists.set(agent, list);
+      list = listModels(agent, folder);
+      modelLists.set(key, list);
       // Ask again next time rather than keep a failure.
-      list.catch(() => modelLists.delete(agent));
+      list.catch(() => modelLists.delete(key));
     }
     list.then((m) => current && setModels(m), () => {});
     return () => void (current = false);
-  }, [agent]);
+  }, [agent, folder]);
   return models;
 }
 
@@ -72,7 +78,13 @@ function modelChoices(agent: string, models: ModelInfo[], value: string) {
   const fallback = models.find((m) => m.isDefault);
   const choices = [
     { value: "default", label: "Default model", description: fallback ? `${fallback.name}, ${agent}'s default` : `Whatever ${agent} picks` },
-    ...models.map((m) => ({ value: m.id, label: m.name, description: m.description })),
+    // `provider/model` ids (opencode) are set apart by provider.
+    ...models.map((m, i) => ({
+      value: m.id,
+      label: m.name,
+      description: m.description,
+      separated: i > 0 && m.id.includes("/") && m.id.split("/")[0] !== models[i - 1].id.split("/")[0],
+    })),
   ];
   if (!choices.some((c) => c.value === value)) choices.push({ value, label: value, description: "Chosen earlier" });
   return choices;
@@ -90,6 +102,13 @@ const PERMISSION_MODES: Partial<Record<AgentKind, Choice[]>> = {
   codex: [
     { value: "auto", label: "Auto", description: "Edit the project; ask before anything else" },
     { value: "readOnly", label: "Read only", description: "Ask before any change" },
+    { value: "plan", label: "Plan", description: "Create a plan before making changes" },
+    { value: "fullAccess", label: "Full access", description: "Run everything without asking" },
+  ],
+  // opencode has no sandbox, so even its default asks before shell commands.
+  opencode: [
+    { value: "auto", label: "Auto", description: "Edit the project; ask before shell commands" },
+    { value: "readOnly", label: "Manual", description: "Ask before edits and shell commands" },
     { value: "plan", label: "Plan", description: "Create a plan before making changes" },
     { value: "fullAccess", label: "Full access", description: "Run everything without asking" },
   ],
@@ -177,9 +196,8 @@ export function Composer(p: Props) {
   }));
   const canSend = (!!p.draft.trim() || p.images.length > 0) && !p.blockedReason && !p.starting;
   const agentName = p.agents.find((a) => a.kind === p.agent)?.name ?? p.agent;
-  // Agents without modes (opencode) have no model choice either.
   const modes = PERMISSION_MODES[p.agent];
-  const models = useModels(p.agent);
+  const models = useModels(p.agent, p.cwd);
   const [dragging, setDragging] = useState(false);
   const [imageError, setImageError] = useState<string>();
 

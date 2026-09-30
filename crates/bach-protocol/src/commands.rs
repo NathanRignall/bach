@@ -134,12 +134,16 @@ commands! {
 #[derive(Debug, Default, Deserialize, TS)]
 pub struct ListAgentsArgs {}
 
-/// The models an agent can run. Codex is asked for its current list (kept for a while);
-/// Claude Code's are its aliases.
+/// The models an agent can run. Codex and opencode are asked for their current lists (kept for
+/// a while); Claude Code's are its aliases. opencode's depend on the project folder (`cwd`),
+/// which may add providers of its own.
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ListModelsArgs {
     pub agent: AgentKind,
+    #[serde(default)]
+    #[ts(optional)]
+    pub cwd: Option<String>,
 }
 
 /// The account's usage limits as last reported by an agent run (none before the first run).
