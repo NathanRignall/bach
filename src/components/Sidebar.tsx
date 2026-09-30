@@ -33,7 +33,8 @@ interface Props {
 }
 
 export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onArchive, onDelete, onRename, onOpenCleanup, tasks, onToggleTasks, onOpenSettings, width, onWidth }: Props) {
-  const runningTasks = tasks.filter((t) => t.status === "running").length;
+  // Tasks only agents use (not interactive) are hidden from the panel by default, so not counted.
+  const runningTasks = tasks.filter((t) => t.status === "running" && t.interactive).length;
   const [showArchived, setShowArchived] = useState(false);
   const live = sessions.filter((s) => !s.archived);
   const archived = sessions.filter((s) => s.archived);
