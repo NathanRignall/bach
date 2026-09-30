@@ -107,7 +107,7 @@ pub struct Conversation {
     mode: Option<String>,
     /// Whether Codex may use its own sandbox. Not under a wrapper, unless asked for: it sandboxes
     /// Codex itself, and Codex can't start its bubblewrap inside another one, so every command
-    /// would fail. Without it Codex runs with full access, inside the wrapper's sandbox.
+    /// would fail. Without it Codex is told the sandbox is external, and runs inside the wrapper's.
     own_sandbox: bool,
     /// Reasoning effort for the turn, if chosen.
     effort: Option<String>,
@@ -293,6 +293,11 @@ impl Conversation {
                         .map(|f| json!({ "type": "localImage", "path": f.path })),
                 );
                 let mut params = json!({ "threadId": id, "input": input });
+                // Under a wrapper: sandboxed, just not by Codex. Only a turn can say so (a thread
+                // takes the plain modes), and the network is the wrapper's to allow.
+                if !self.own_sandbox {
+                    params["sandboxPolicy"] = json!({ "type": "externalSandbox", "networkAccess": "enabled" });
+                }
                 if let Some(effort) = &self.effort {
                     params["effort"] = json!(effort);
                 }
@@ -1270,6 +1275,12 @@ mod tests {
         let thread: Value = serde_json::from_str(&sent[1]).unwrap();
         assert_eq!(thread["params"]["sandbox"], "danger-full-access");
         assert_eq!(thread["params"]["approvalPolicy"], "on-request");
+        let (_, sent) = c.on_line(&json!({ "id": 2, "result": { "thread": { "id": "t1" }, "model": "gpt-x" } }));
+        let turn: Value = serde_json::from_str(&sent[0]).unwrap();
+        assert_eq!(turn["params"]["sandboxPolicy"], json!({ "type": "externalSandbox", "networkAccess": "enabled" }));
+        // With its own sandbox, the thread's mode stands.
+        let (_, turn) = opening(None, None);
+        assert!(turn.get("sandboxPolicy").is_none());
 
         // Read-only there asks before commands it doesn't know are safe, and changes no files.
         let mut c = Conversation::new(&Turn { prompt: "hi", permission_mode: Some("readOnly"), ..Default::default() });
