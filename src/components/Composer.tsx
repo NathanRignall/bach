@@ -37,7 +37,7 @@ interface Props {
   /** Model choice ("default", "opus", …); offered for Claude Code and Codex. */
   modelChoice?: string;
   onModel?: (m: string) => void;
-  /** Permission mode ("default", "acceptEdits", "auto", …); offered for Claude Code and Codex. */
+  /** Permission mode, one of the agent's `permissionModes` (none for its default). */
   permissionMode?: string;
   onPermissionMode?: (m: string) => void;
   /** Thinking effort, one of the model's levels (none for its default); `""` asks for the default. */
@@ -155,46 +155,15 @@ function EffortPicker({ model, value, onChange }: { model?: ModelInfo; value?: s
   );
 }
 
-/** Each agent's permission modes, worded as its own picker does; the first is what "none chosen" means. */
-const PERMISSION_MODES: Partial<Record<AgentKind, Choice[]>> = {
-  claude: [
-    { value: "auto", label: "Auto", description: "Claude handles permission decisions" },
-    { value: "default", label: "Manual", description: "Always ask before making changes" },
-    { value: "acceptEdits", label: "Accept edits", description: "Automatically accept all file edits" },
-    { value: "plan", label: "Plan", description: "Create a plan before making changes" },
-    { value: "bypassPermissions", label: "Bypass permissions", description: "Run everything without asking" },
-  ],
-  codex: [
-    { value: "auto", label: "Auto", description: "Edit the project; ask before anything else" },
-    { value: "manual", label: "Manual", description: "Ask before any change" },
-    { value: "plan", label: "Plan", description: "Create a plan before making changes" },
-    { value: "fullAccess", label: "Full access", description: "Run everything without asking" },
-  ],
-  // opencode has no sandbox, so even its default asks before shell commands.
-  opencode: [
-    { value: "auto", label: "Auto", description: "Edit the project; ask before shell commands" },
-    { value: "manual", label: "Manual", description: "Ask before edits and shell commands" },
-    { value: "plan", label: "Plan", description: "Create a plan before making changes" },
-    { value: "fullAccess", label: "Full access", description: "Run everything without asking" },
-  ],
-};
-
-/**
- * Codex's modes without its own sandbox (under an agent wrapper): only the wrapper limits what it
- * runs, and Codex asks before the commands it thinks are dangerous.
- */
-const UNSANDBOXED_CODEX_MODES: Choice[] = [
-  { value: "auto", label: "Auto", description: "Run anything the wrapper allows; ask before risky commands like rm -rf" },
-  { value: "manual", label: "Manual", description: "Ask before edits and any command that could change something" },
-  { value: "plan", label: "Plan", description: "Create a plan first; like Auto, only the wrapper stops changes" },
-  { value: "fullAccess", label: "Full access", description: "Run anything the wrapper allows without asking; refuse risky commands" },
-];
+/** The picker's modes for an agent, as the server describes them (Codex's depend on how it runs agents). */
+function modeChoices(info?: AgentInfo): Choice[] {
+  return (info?.permissionModes ?? []).map((m) => ({ value: m.id, label: m.name, description: m.description }));
+}
 
 /** The mode a session is in: its choice if the agent has it, or what the agent does by default. */
-function modeValue(agent: AgentKind, mode?: string): string {
-  const modes = PERMISSION_MODES[agent] ?? [];
-  if (agent === "claude") return mode ?? "default";
-  return modes.some((m) => m.value === mode) ? mode! : (modes[0]?.value ?? "default");
+function modeValue(info: AgentInfo | undefined, mode?: string): string {
+  const modes = info?.permissionModes ?? [];
+  return modes.some((m) => m.id === mode) ? mode! : (modes.find((m) => m.isDefault)?.id ?? "default");
 }
 
 const AGENT_DESCRIPTIONS: Record<AgentKind, string> = {
@@ -273,7 +242,7 @@ export function Composer(p: Props) {
   const canSend = (!!p.draft.trim() || p.images.length > 0) && !p.blockedReason && !p.starting;
   const info = p.agents.find((a) => a.kind === p.agent);
   const agentName = info?.name ?? p.agent;
-  const modes = p.agent === "codex" && info?.unsandboxed ? UNSANDBOXED_CODEX_MODES : PERMISSION_MODES[p.agent];
+  const modes = modeChoices(info);
   const models = useModels(p.agent, p.cwd);
   const [dragging, setDragging] = useState(false);
   const [attachError, setAttachError] = useState<string>();
@@ -395,10 +364,10 @@ export function Composer(p: Props) {
       {/* How it runs: usage, mode, model and agent, below the card. */}
       <div className="flex flex-wrap items-center justify-end gap-2 px-1">
         {p.indicator}
-        {modes && p.onPermissionMode && (
-          <Picker heading="Mode" label="Permission mode" choices={modes} value={modeValue(p.agent, p.permissionMode)} onChange={p.onPermissionMode} />
+        {modes.length > 0 && p.onPermissionMode && (
+          <Picker heading="Mode" label="Permission mode" choices={modes} value={modeValue(info, p.permissionMode)} onChange={p.onPermissionMode} />
         )}
-        {modes && p.onModel && (
+        {p.onModel && (
           <Picker
             heading="Model"
             label="Model"
@@ -411,11 +380,11 @@ export function Composer(p: Props) {
             }}
           />
         )}
-        {modes && p.onEffort && <EffortPicker model={modelFor(models, p.modelChoice ?? "default", p.agent)} value={p.effort} onChange={p.onEffort} />}
+        {p.onEffort && <EffortPicker model={modelFor(models, p.modelChoice ?? "default", p.agent)} value={p.effort} onChange={p.onEffort} />}
         {p.agentLocked ? (
           // A session keeps its agent, so there's nothing to choose; say which it is instead of a dead menu.
           <AgentBadge kind={p.agent} className="h-7 px-2.5 text-[0.8rem]">
-            {p.agents.find((a) => a.kind === p.agent)?.name ?? p.agent}
+            {agentName}
           </AgentBadge>
         ) : (
           <Picker heading="Agent" label="Agent" choices={agents} value={p.agent} onChange={(v) => p.onAgent(v as AgentKind)} />

@@ -1,4 +1,4 @@
-use super::AgentEvent;
+use super::{mode, AgentEvent, SATIE_LOOK_ONLY};
 use crate::attachments::{Attachment, Kind};
 use bach_protocol::{DeltaKind, LimitWindow, PlanUsage};
 use satie::Grant;
@@ -98,26 +98,25 @@ pub fn args(
     if let Some(grant) = satie {
         a.extend(["--mcp-config".into(), mcp_config(grant)]);
     }
-    // Reading a task's state or output changes nothing, so those never need a card; starting
-    // and stopping still do.
-    let read_only = satie.iter().flat_map(|_| {
-        [
-            "mcp__satie__task_list",
-            "mcp__satie__task_logs",
-            "mcp__satie__port_info",
-            "mcp__satie__http_check",
-        ]
-    });
-    let allowed: Vec<String> = allowed_tools
-        .iter()
-        .cloned()
-        .chain(read_only.map(String::from))
-        .collect();
+    let look_only = satie.iter().flat_map(|_| SATIE_LOOK_ONLY.map(|t| format!("mcp__satie__{t}")));
+    let allowed: Vec<String> = allowed_tools.iter().cloned().chain(look_only).collect();
     if !allowed.is_empty() {
         a.push("--allowedTools".into());
         a.extend(allowed);
     }
     a
+}
+
+/// Claude Code's permission modes (`--permission-mode`), worded as its own picker does. "default"
+/// passes none: Claude Code asks before changes.
+pub fn permission_modes() -> Vec<bach_protocol::PermissionModeInfo> {
+    vec![
+        mode("auto", "Auto", "Claude handles permission decisions", false),
+        mode("default", "Manual", "Always ask before making changes", true),
+        mode("acceptEdits", "Accept edits", "Automatically accept all file edits", false),
+        mode("plan", "Plan", "Create a plan before making changes", false),
+        mode("bypassPermissions", "Bypass permissions", "Run everything without asking", false),
+    ]
 }
 
 /// Claude Code's `--effort` levels.

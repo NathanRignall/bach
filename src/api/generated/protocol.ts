@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "5a89fd365f09bc58";
+export const PROTOCOL = "382c021c2ad258d2";
 
 /**
  * Agent-independent events the UI renders.
@@ -30,10 +30,9 @@ activity?: string, toolUses?: number, tokens?: number, durationMs?: number, summ
 
 export type AgentInfo = { kind: AgentKind, name: string, installed: boolean, 
 /**
- * Its own sandbox is off (Codex under a wrapper): only the wrapper limits what it runs, so
- * its permission modes mean less, and the UI says so.
+ * The modes a session can choose, in picker order; the only ones a run accepts.
  */
-unsandboxed: boolean, };
+permissionModes: Array<PermissionModeInfo>, };
 
 export type AgentKind = "claude" | "codex" | "opencode";
 
@@ -46,7 +45,7 @@ export type AgentWrapper = { command: string,
 /**
  * Codex's own sandbox inside the wrapper's (`BACH_AGENT_WRAPPER_CODEX_SANDBOX`). Off, the
  * wrapper's sandbox is the only one (many can't have Codex's inside them), and Codex's modes
- * are kept by asking instead (see [`AgentInfo::unsandboxed`]).
+ * are kept by asking instead (see [`AgentInfo::permission_modes`]).
  */
 codexSandbox: boolean, };
 
@@ -422,6 +421,24 @@ export type OpenTerminalArgs = {
  * Defaults to the home directory.
  */
 cwd?: string, cols: number, rows: number, };
+
+/**
+ * A permission mode an agent can run in, for the mode picker.
+ */
+export type PermissionModeInfo = { 
+/**
+ * What to pass as the session's permission mode.
+ */
+id: string, name: string, 
+/**
+ * What it lets the agent do, as it behaves on this server (Codex's modes mean less under a
+ * wrapper).
+ */
+description: string, 
+/**
+ * The one the agent runs in when none is chosen.
+ */
+isDefault: boolean, };
 
 /**
  * The account's usage limits as the agent last reported them. Only updated while agents run.
