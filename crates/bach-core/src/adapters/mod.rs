@@ -5,6 +5,7 @@ mod claude;
 mod codex;
 pub mod opencode;
 
+use crate::attachments::SavedFile;
 use satie::Grant;
 pub use bach_protocol::{AgentEvent, AgentKind};
 use serde_json::Value;
@@ -36,13 +37,13 @@ pub trait AgentCli: Copy {
     ) -> Vec<String>;
 
     /// For agents driven over stdin (Claude Code, so it can ask for approvals): the first
-    /// line to send, with `images` (`data:` URLs) alongside the text. Those agents stay open
-    /// for control messages until the run ends.
-    fn stdin_prompt(self, prompt: &str, images: &[String]) -> Option<String>;
+    /// line to send, with `attachments` (`data:` URLs) alongside the text. Those agents stay
+    /// open for control messages until the run ends.
+    fn stdin_prompt(self, prompt: &str, attachments: &[String]) -> Option<String>;
 
-    /// Whether images must be written to files and passed by path (Codex, opencode) rather
-    /// than sent inline with the prompt (Claude Code).
-    fn images_as_files(self) -> bool;
+    /// Whether attachments must be written to files and passed by path (Codex, opencode)
+    /// rather than sent inline with the prompt (Claude Code).
+    fn attachments_as_files(self) -> bool;
 
     fn parse_line(self, line: &str) -> Vec<AgentEvent>;
 
@@ -78,15 +79,15 @@ impl AgentCli for AgentKind {
         }
     }
 
-    fn stdin_prompt(self, prompt: &str, images: &[String]) -> Option<String> {
+    fn stdin_prompt(self, prompt: &str, attachments: &[String]) -> Option<String> {
         match self {
-            AgentKind::Claude => Some(claude::user_message(prompt, images)),
+            AgentKind::Claude => Some(claude::user_message(prompt, attachments)),
             // Codex gets its prompt as part of a conversation (see [`Conversation`]).
             _ => None,
         }
     }
 
-    fn images_as_files(self) -> bool {
+    fn attachments_as_files(self) -> bool {
         self != AgentKind::Claude
     }
 
@@ -117,10 +118,10 @@ impl AgentCli for AgentKind {
 #[derive(Default)]
 pub struct Turn<'a> {
     pub prompt: &'a str,
-    /// `data:` URLs (Claude Code).
-    pub images: &'a [String],
-    /// The same images saved as files (the others).
-    pub image_files: &'a [String],
+    /// Attachments as `data:` URLs (Claude Code).
+    pub attachments: &'a [String],
+    /// The same attachments saved as files (the others).
+    pub files: &'a [SavedFile],
     /// The agent's own session id, to continue.
     pub session_id: Option<&'a str>,
     pub cwd: Option<&'a str>,
@@ -151,7 +152,7 @@ impl Conversation {
             }
             _ => (
                 Self::Lines(agent),
-                agent.stdin_prompt(turn.prompt, turn.images).into_iter().collect(),
+                agent.stdin_prompt(turn.prompt, turn.attachments).into_iter().collect(),
             ),
         }
     }
@@ -234,6 +235,7 @@ pub fn list_agents() -> Vec<bach_protocol::AgentInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn claude_stream_maps_to_events() {
@@ -277,9 +279,30 @@ mod tests {
     }
 
     #[test]
-    fn codex_and_opencode_take_images_as_files() {
-        assert!(AgentKind::Codex.images_as_files() && AgentKind::Opencode.images_as_files());
-        assert!(!AgentKind::Claude.images_as_files());
+    fn claude_prompt_pdfs_and_text_become_documents() {
+        let files = [
+            "data:application/pdf;name=a%20b.pdf;base64,AAAA".to_string(),
+            "data:text/plain;name=notes.md;base64,aGk=".to_string(),
+            "data:text/plain;base64,aGk=".to_string(),
+        ];
+        let v: Value = serde_json::from_str(&AgentKind::Claude.stdin_prompt("read", &files).unwrap()).unwrap();
+        let content = &v["message"]["content"];
+        assert_eq!(
+            content[0],
+            json!({ "type": "document", "title": "a b.pdf", "source": { "type": "base64", "media_type": "application/pdf", "data": "AAAA" } })
+        );
+        assert_eq!(
+            content[1],
+            json!({ "type": "document", "title": "notes.md", "source": { "type": "text", "media_type": "text/plain", "data": "hi" } })
+        );
+        assert!(content[2].get("title").is_none());
+        assert_eq!(content[3]["text"], "read");
+    }
+
+    #[test]
+    fn codex_and_opencode_take_attachments_as_files() {
+        assert!(AgentKind::Codex.attachments_as_files() && AgentKind::Opencode.attachments_as_files());
+        assert!(!AgentKind::Claude.attachments_as_files());
     }
 
     #[test]

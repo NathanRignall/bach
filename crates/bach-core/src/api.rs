@@ -3,6 +3,7 @@
 //! [`Api::call`], and forward [`Api::subscribe`].
 use crate::{
     adapters::list_agents,
+    attachments::Attachment,
     git::Git,
     runs::{Emit, RunRequest, Runs},
     sessions::{OnFinish, Sessions},
@@ -137,22 +138,27 @@ fn branch_name_for(prompt: &str) -> String {
     format!("bach/{slug}-{}", &uuid::Uuid::new_v4().simple().to_string()[..4])
 }
 
-fn title_for(prompt: &str) -> String {
+/// The prompt's start or, without one, the first attachment's name.
+fn title_for(prompt: &str, attachments: &[String]) -> String {
     let title: String = prompt.trim().chars().take(40).collect();
-    if title.is_empty() {
-        "Image".into()
-    } else {
-        title
+    if !title.is_empty() {
+        return title;
+    }
+    match attachments.first().and_then(|a| Attachment::parse(a)) {
+        Some(Attachment { name: Some(name), .. }) => name.chars().take(40).collect(),
+        _ => "Image".into(),
     }
 }
 
-/// A message needs text or images.
-fn check_message(prompt: &str, images: &[String]) -> Result<(), ApiError> {
-    if prompt.is_empty() && images.is_empty() {
+/// A message needs text or attachments.
+fn check_message(prompt: &str, attachments: &[String]) -> Result<(), ApiError> {
+    if prompt.is_empty() && attachments.is_empty() {
         return Err(ApiError::invalid("Write a message first."));
     }
-    if images.iter().any(|i| !i.starts_with("data:image/")) {
-        return Err(ApiError::invalid("Images must be sent as `data:image/…` URLs."));
+    if attachments.iter().any(|a| Attachment::parse(a).is_none()) {
+        return Err(ApiError::invalid(
+            "Attachments must be images, PDFs or text files, sent as base64 `data:` URLs.",
+        ));
     }
     Ok(())
 }
@@ -458,7 +464,7 @@ impl Handler for Api {
         let now = now_ms();
         let session = Session {
             id: uuid::Uuid::new_v4().to_string(),
-            title: title_for(&prompt),
+            title: title_for(&prompt, &a.images),
             title_edited: false,
             agent: a.agent,
             cwd,

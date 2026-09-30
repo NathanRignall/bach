@@ -181,7 +181,7 @@ pub struct StartSessionArgs {
     /// Thinking effort (one of the model's levels); `""` for the model's default.
     pub effort: Option<String>,
     pub prompt: String,
-    /// Images sent with the prompt, as `data:` URLs.
+    /// Images, PDFs and text files sent with the prompt, as `data:` URLs (see `Entry::User`).
     #[serde(default)]
     #[ts(as = "Option<Vec<String>>")]
     pub images: Vec<String>,
@@ -194,7 +194,7 @@ pub struct StartSessionArgs {
 pub struct SendMessageArgs {
     pub session_id: String,
     pub prompt: String,
-    /// Images sent with the prompt, as `data:` URLs.
+    /// Images, PDFs and text files sent with the prompt, as `data:` URLs (see `Entry::User`).
     #[serde(default)]
     #[ts(as = "Option<Vec<String>>")]
     pub images: Vec<String>,

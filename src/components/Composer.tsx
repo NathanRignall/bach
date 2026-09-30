@@ -1,20 +1,21 @@
 import { DragEvent, Fragment, ReactNode, useEffect, useState } from "react";
-import { ArrowUp, Brain, ImagePlus, ListPlus, Pencil, Square, X } from "lucide-react";
+import { ArrowUp, Brain, ListPlus, Paperclip, Pencil, Square, X } from "lucide-react";
 import { Slider } from "@base-ui/react/slider";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { AgentInfo, AgentKind, ModelInfo, QueuedMessage, listModels } from "@/api";
 import { AgentBadge } from "@/components/AgentBadge";
+import { FileChip } from "@/components/FileChip";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { imageFiles, toDataUrl } from "@/lib/images";
+import { describe, toAttachment } from "@/lib/attachments";
 import { cn } from "@/lib/utils";
 
 interface Props {
   draft: string;
   onDraft: (v: string) => void;
-  /** Images to send with the draft, as `data:` URLs (dropped or pasted in). */
+  /** Images, PDFs and text files to send with the draft, as `data:` URLs (dropped or pasted in). */
   images: string[];
   onImages: (images: string[]) => void;
   onSend: () => void;
@@ -263,14 +264,15 @@ export function Composer(p: Props) {
   const modes = PERMISSION_MODES[p.agent];
   const models = useModels(p.agent, p.cwd);
   const [dragging, setDragging] = useState(false);
-  const [imageError, setImageError] = useState<string>();
+  const [attachError, setAttachError] = useState<string>();
 
   async function attach(files: File[]) {
     if (!files.length) return;
-    setImageError(undefined);
-    const read = await Promise.allSettled(files.map(toDataUrl));
+    setAttachError(undefined);
+    const read = await Promise.allSettled(files.map(toAttachment));
     const ok = read.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
-    if (ok.length < files.length) setImageError("Some images couldn't be read.");
+    const failed = read.flatMap((r) => (r.status === "rejected" ? [r.reason instanceof Error ? r.reason.message : String(r.reason)] : []));
+    if (failed.length) setAttachError(failed.length === 1 ? failed[0] : `${failed.length} files couldn't be attached: ${failed.join(" ")}`);
     p.onImages([...p.images, ...ok]);
   }
 
@@ -285,7 +287,7 @@ export function Composer(p: Props) {
     if (!hasFiles(e)) return;
     e.preventDefault();
     setDragging(false);
-    void attach(imageFiles(e.dataTransfer.files));
+    void attach(Array.from(e.dataTransfer.files));
   };
 
   return (
@@ -308,28 +310,35 @@ export function Composer(p: Props) {
       >
         {dragging && (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-2xl bg-card/90 text-sm text-muted-foreground">
-            <ImagePlus className="size-4" /> Drop images to attach
+            <Paperclip className="size-4" /> Drop images, PDFs or text files to attach
           </div>
         )}
         {p.images.length > 0 && (
           <div className="flex flex-wrap gap-2 px-1 pt-1">
-            {p.images.map((src, i) => (
-              <div key={i} className="group/img relative">
-                <img src={src} alt={`Attached image ${i + 1}`} className="size-16 rounded-lg border object-cover" />
-                <button
-                  type="button"
-                  title="Remove image"
-                  aria-label={`Remove image ${i + 1}`}
-                  className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full border bg-background text-muted-foreground opacity-0 shadow-sm group-hover/img:opacity-100 hover:text-foreground focus-visible:opacity-100"
-                  onClick={() => p.onImages(p.images.filter((_, j) => j !== i))}
-                >
-                  <X className="size-3" />
-                </button>
-              </div>
-            ))}
+            {p.images.map((src, i) => {
+              const a = describe(src);
+              return (
+                <div key={i} className="group/img relative">
+                  {a.image ? (
+                    <img src={src} alt={`Attached image ${i + 1}`} className="size-16 rounded-lg border object-cover" />
+                  ) : (
+                    <FileChip name={a.name} pdf={a.pdf} className="h-16" />
+                  )}
+                  <button
+                    type="button"
+                    title="Remove"
+                    aria-label={a.image ? `Remove image ${i + 1}` : `Remove ${a.name}`}
+                    className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full border bg-background text-muted-foreground opacity-0 shadow-sm group-hover/img:opacity-100 hover:text-foreground focus-visible:opacity-100"
+                    onClick={() => p.onImages(p.images.filter((_, j) => j !== i))}
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
-        {imageError && <p className="px-1 text-xs text-destructive">{imageError}</p>}
+        {attachError && <p className="px-1 text-xs text-destructive">{attachError}</p>}
         <div className="flex items-end gap-2">
           <Textarea
             autoFocus={p.autoFocus}
@@ -338,7 +347,7 @@ export function Composer(p: Props) {
             className={cn("resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent", p.tall ? "min-h-24" : "min-h-14")}
             onChange={(e) => p.onDraft(e.target.value)}
             onPaste={(e) => {
-              const files = imageFiles(e.clipboardData.files);
+              const files = Array.from(e.clipboardData.files);
               if (!files.length) return;
               e.preventDefault();
               void attach(files);
@@ -415,9 +424,14 @@ function QueuedList(p: Props & { queued: QueuedMessage[] }) {
         <div key={m.id} className="group flex items-start gap-2 text-sm">
           {!!m.images?.length && (
             <div className="flex shrink-0 gap-1 py-1">
-              {m.images.map((src, i) => (
-                <img key={i} src={src} alt={`Queued image ${i + 1}`} className="size-8 rounded border object-cover" />
-              ))}
+              {m.images.map((src, i) => {
+                const a = describe(src);
+                return a.image ? (
+                  <img key={i} src={src} alt={`Queued image ${i + 1}`} className="size-8 rounded border object-cover" />
+                ) : (
+                  <FileChip key={i} name={a.name} pdf={a.pdf} className="h-8 max-w-32" />
+                );
+              })}
             </div>
           )}
           <span className="line-clamp-2 min-w-0 flex-1 py-1 whitespace-pre-wrap">{m.text}</span>
