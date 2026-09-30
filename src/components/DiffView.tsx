@@ -359,9 +359,9 @@ const startsOpen = (f: FileDiff) => f.status !== "deleted" && f.additions + f.de
 /** A part of the changes (the staged ones, or the rest) with what can be done to all of it. */
 function SectionHeading({ title, count, action }: { title: string; count: number; action?: ReactNode }) {
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-      <span>{title}</span>
-      <span className="rounded-full bg-muted px-1.5 tabular-nums">{count}</span>
+    <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium whitespace-nowrap text-muted-foreground uppercase">
+      <span className="min-w-0 truncate">{title}</span>
+      <span className="shrink-0 rounded-full bg-muted px-1.5 tabular-nums">{count}</span>
       {action}
     </div>
   );
@@ -580,7 +580,7 @@ export function DiffView({
                         count={sec.files.length}
                         action={
                           sec.all && (
-                            <Button size="xs" variant="ghost" className="ml-auto" disabled={acting} onClick={() => void act(() => gitStage(path, paths(sec.files), sec.all.stage))}>
+                            <Button size="xs" variant="ghost" className="ml-auto shrink-0 px-1.5" disabled={acting} onClick={() => void act(() => gitStage(path, paths(sec.files), sec.all.stage))}>
                               {sec.all.icon} {sec.all.label}
                             </Button>
                           )
