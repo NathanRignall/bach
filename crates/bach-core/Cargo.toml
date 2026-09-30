@@ -6,7 +6,7 @@ description = "Agent adapters, runs, git, storage and Satie behind Bach (no UI o
 
 [features]
 # Starting the agent CLIs through a wrapper command (see `wrapper`). Off: agents start directly,
-# `BACH_AGENT_WRAPPER` is ignored and `set_agent_wrapper` accepts only `""`.
+# and a server started with `BACH_AGENT_WRAPPER` refuses to run.
 agent-wrapper = []
 
 [dependencies]

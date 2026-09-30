@@ -3,6 +3,7 @@ pub mod api;
 pub mod attachments;
 pub mod fs;
 pub mod git;
+pub mod login_shell;
 pub mod opencode_server;
 pub mod runs;
 pub mod sessions;

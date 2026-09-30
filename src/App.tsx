@@ -34,6 +34,7 @@ import { Composer } from "@/components/Composer";
 import { NewSessionPage } from "@/components/NewSessionPage";
 import { SessionHeader, SessionView } from "@/components/SessionHeader";
 import { DiffMode, DiffView, diffBase, useDiff } from "@/components/DiffView";
+import { ConnectionBanner, pausedReason, useConnection } from "@/components/ConnectionPicker";
 import { SIDEBAR_WIDTH, Sidebar } from "@/components/Sidebar";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -82,6 +83,7 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [connectionError, setConnectionError] = useState<string>();
+  const paused = pausedReason(useConnection());
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
@@ -439,6 +441,7 @@ export function App() {
       )}
 
       <main className="flex min-w-0 flex-1 flex-col">
+        <ConnectionBanner inset={!sidebarOpen} />
         {!inTauri && connectionError?.includes("different version") && (
           <div className="flex items-center gap-3 border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive" role="alert">
             <p className="min-w-0 flex-1">{connectionError}</p>
@@ -463,6 +466,7 @@ export function App() {
             onChange={(p) => setNewDraft((d) => ({ ...d, ...p }))}
             indicator={<UsageIndicator usage={planUsage} />}
             error={connectionError}
+            paused={paused}
           />
         )}
         {active && (
@@ -553,7 +557,7 @@ export function App() {
                 onStop={() => void stopSession(active.id).catch((e) => setConnectionError(message(e)))}
                 running={running}
                 starting={starting}
-                blockedReason={canRun(active) ? undefined : "This session can't be continued"}
+                blockedReason={canRun(active) ? paused : "This session can't be continued"}
                 placeholder={active.workdirRemoved ? "This session's worktree was removed" : "Message the agent…"}
                 agents={agents}
                 agent={active.agent}

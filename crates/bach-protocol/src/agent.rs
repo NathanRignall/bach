@@ -52,6 +52,19 @@ pub enum DeltaKind {
     Output,
 }
 
+/// A command bach-server starts the agent CLIs through, taking their command line after it:
+/// `sandbox` runs Claude Code as `sandbox claude …`. Fixed when the server starts
+/// (`BACH_AGENT_WRAPPER`); `""` starts them directly.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentWrapper {
+    pub command: String,
+    /// Codex's own sandbox inside the wrapper's (`BACH_AGENT_WRAPPER_CODEX_SANDBOX`). Off, Codex
+    /// runs with full access and the wrapper's sandbox is the only one: Codex can't start its
+    /// bubblewrap inside another.
+    pub codex_sandbox: bool,
+}
+
 #[derive(Clone, Debug, Serialize, TS)]
 pub struct AgentInfo {
     pub kind: AgentKind,

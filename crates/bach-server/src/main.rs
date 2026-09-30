@@ -10,7 +10,8 @@
 //!   an old one running, the app and the server disagree on the protocol).
 //!
 //! Env: BACH_DB (session database, default ~/.local/share/bach/bach.db), BACH_PORT (default
-//! 3421), BACH_ALLOWED_ORIGINS (comma-separated browser origins, replaces the defaults).
+//! 3421), BACH_ALLOWED_ORIGINS (comma-separated browser origins, replaces the defaults),
+//! BACH_AGENT_WRAPPER (see `bach_core::wrapper`).
 mod connection;
 mod local;
 mod ws;
@@ -78,7 +79,13 @@ async fn serve(paths: Paths) {
             .map(|h| format!("http://{h}:3420"))
             .collect(),
     };
-    let api = Arc::new(Api::open(&paths.db).await.expect("open Bach's database"));
+    let api = match Api::open(&paths.db).await {
+        Ok(api) => Arc::new(api),
+        Err(e) => {
+            eprintln!("bach-server: {e}");
+            std::process::exit(1);
+        }
+    };
     eprintln!("sessions in {}", paths.db.display());
     eprintln!("satie (MCP) on {}", api.satie().url());
 

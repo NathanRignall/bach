@@ -105,8 +105,9 @@ pub struct Conversation {
     choice: Option<String>,
     /// See [`PERMISSION_MODES`].
     mode: Option<String>,
-    /// Whether to ask for Codex's own sandbox. Not under a wrapper: it sandboxes Codex itself,
-    /// and Codex can't start its bubblewrap inside another one, so every command would fail.
+    /// Whether Codex may use its own sandbox. Not under a wrapper, unless asked for: it sandboxes
+    /// Codex itself, and Codex can't start its bubblewrap inside another one, so every command
+    /// would fail. Without it Codex runs with full access, inside the wrapper's sandbox.
     own_sandbox: bool,
     /// Reasoning effort for the turn, if chosen.
     effort: Option<String>,
@@ -182,7 +183,7 @@ impl Conversation {
             allowed: turn.allowed_tools.to_vec(),
             choice: turn.model.map(String::from),
             mode: turn.permission_mode.map(String::from),
-            own_sandbox: !crate::wrapper::active(),
+            own_sandbox: crate::wrapper::codex_sandbox(),
             effort: turn.effort.map(String::from),
             model: None,
             window_sent: false,
@@ -250,10 +251,8 @@ impl Conversation {
                 // Also given when resuming: the session's mode or model may have changed, and a
                 // thread first run by `codex exec` would otherwise keep its read-only sandbox.
                 let (sandbox, approval) = preset(self.mode.as_deref());
-                let mut params = json!({ "approvalPolicy": approval });
-                if self.own_sandbox {
-                    params["sandbox"] = json!(sandbox);
-                }
+                let sandbox = if self.own_sandbox { sandbox } else { "danger-full-access" };
+                let mut params = json!({ "approvalPolicy": approval, "sandbox": sandbox });
                 if let Some(cwd) = &self.cwd {
                     params["cwd"] = json!(cwd);
                 }
@@ -1252,12 +1251,12 @@ mod tests {
         let (thread, _) = opening(None, None);
         assert!(thread.get("model").is_none());
 
-        // Under a wrapper, the wrapper's sandbox stands.
+        // Under a wrapper, Codex's own sandbox is off and the wrapper's stands.
         let mut c = Conversation::new(&Turn { prompt: "hi", ..Default::default() });
         c.own_sandbox = false;
         let (_, sent) = c.on_line(&json!({ "id": 1, "result": {} }));
         let thread: Value = serde_json::from_str(&sent[1]).unwrap();
-        assert!(thread["params"].get("sandbox").is_none());
+        assert_eq!(thread["params"]["sandbox"], "danger-full-access");
         assert_eq!(thread["params"]["approvalPolicy"], "on-request");
     }
 

@@ -13,7 +13,7 @@ use bach_client::{
 use bach_core::Api;
 use bach_protocol::{
     app::{Connection, ConnectionState, ConnectionStatus, Forwarding, PortForward},
-    ApiError, ErrorCode, CONNECTION_CHANNEL, EVENT_CHANNEL,
+    AgentWrapper, ApiError, ErrorCode, CONNECTION_CHANNEL, EVENT_CHANNEL,
 };
 use serde_json::Value;
 use std::{
@@ -53,25 +53,34 @@ fn status(connection: Connection, state: ConnectionState) -> ConnectionStatus {
         retrying: false,
         incompatible: false,
         version: None,
+        wrapper: None,
+        wrapper_mismatch: false,
     }
 }
 
 /// `ssh <host> <command> attach`, never prompting (there's no terminal to answer in), noticing a
 /// dead connection within a minute, and serving as the master that port forwards are added to.
-fn ssh_command(host: &str, command: &str) -> Vec<String> {
+fn ssh_command(host: &str, command: &str, wrapper: &AgentWrapper) -> Vec<String> {
     let master = forward::master_options(&forward::control_path());
     ["ssh".to_string()]
         .into_iter()
         .chain(master)
-        .chain(ssh_args(host, command))
+        .chain(ssh_args_for(host, command, wrapper, "attach"))
         .collect()
 }
 
-fn ssh_args(host: &str, command: &str) -> Vec<String> {
-    ssh_args_for(host, command, "attach")
-}
-
-fn ssh_args_for(host: &str, command: &str, verb: &str) -> Vec<String> {
+/// `wrapper` goes in the server's environment, for when this starts it; a server already running
+/// keeps its own, which the app checks once connected.
+fn ssh_args_for(host: &str, command: &str, wrapper: &AgentWrapper, verb: &str) -> Vec<String> {
+    let mut env = String::new();
+    if !wrapper.command.is_empty() {
+        let quoted = shlex::try_quote(&wrapper.command).expect("no NUL bytes in a command");
+        // `env`, so it works whatever the login shell there is (csh has no `VAR=value cmd`).
+        env = format!("env BACH_AGENT_WRAPPER={quoted} ");
+        if wrapper.codex_sandbox {
+            env.push_str("BACH_AGENT_WRAPPER_CODEX_SANDBOX=1 ");
+        }
+    }
     [
         "-T",
         "-o",
@@ -87,7 +96,7 @@ fn ssh_args_for(host: &str, command: &str, verb: &str) -> Vec<String> {
     ]
     .into_iter()
     .map(String::from)
-    .chain([format!("{command} {verb}")])
+    .chain([format!("{env}{command} {verb}")])
     .collect()
 }
 
@@ -172,10 +181,10 @@ impl App {
                     .await;
                 let (events, statuses) = (self.handle.clone(), self.handle.clone());
                 let (g1, g2) = (self.generation.clone(), self.generation.clone());
-                let (conn, wrapper) = (connection.clone(), wrapper.clone());
+                let conn = connection.clone();
                 let remote = Remote::connect(
                     host.clone(),
-                    ssh_command(host, command),
+                    ssh_command(host, command, wrapper),
                     move |ev: Value| {
                         if g1.load(Ordering::SeqCst) != generation {
                             return;
@@ -195,26 +204,20 @@ impl App {
                         }
                         let app = statuses.state::<App>();
                         if matches!(s, Status::Connected { .. }) {
-                            // (Re)connected: tell the server how to start agents (it may be
-                            // new), reopen forwards and catch up on running tasks.
-                            let (handle, wrapper) = (statuses.clone(), wrapper.clone());
+                            // (Re)connected: reopen forwards and catch up on running tasks.
+                            let handle = statuses.clone();
                             tauri::async_runtime::spawn(async move {
                                 let remote = match &*handle.state::<App>().backend.lock().unwrap() {
                                     Some(Backend::Remote(r)) => Some(r.clone()),
                                     _ => None,
                                 };
                                 let tasks = match remote {
-                                    Some(r) => {
-                                        let args = serde_json::json!({ "wrapper": wrapper });
-                                        if let Err(e) = r.call("set_agent_wrapper", args).await {
-                                            eprintln!("agent wrapper `{wrapper}`: {}", e.message);
-                                        }
-                                        r.call("list_tasks", Value::Null)
-                                            .await
-                                            .ok()
-                                            .and_then(|v| v.as_array().cloned())
-                                            .unwrap_or_default()
-                                    }
+                                    Some(r) => r
+                                        .call("list_tasks", Value::Null)
+                                        .await
+                                        .ok()
+                                        .and_then(|v| v.as_array().cloned())
+                                        .unwrap_or_default(),
                                     None => vec![],
                                 };
                                 handle.state::<ports::Ports>().connected(tasks).await;
@@ -222,8 +225,10 @@ impl App {
                         }
                         app.set_status(match s {
                             Status::Connecting => status(conn.clone(), ConnectionState::Connecting),
-                            Status::Connected { version } => ConnectionStatus {
+                            Status::Connected { version, wrapper } => ConnectionStatus {
                                 version: Some(version),
+                                wrapper_mismatch: wrapper_mismatch(&conn, &wrapper),
+                                wrapper: Some(wrapper),
                                 ..status(conn.clone(), ConnectionState::Connected)
                             },
                             Status::Disconnected {
@@ -252,9 +257,28 @@ fn load_connection(path: &PathBuf) -> Connection {
         .unwrap_or(Connection::Local)
 }
 
+/// Whether the server's agent wrapper isn't the one `connection` asks for. None asked for leaves
+/// the server's own, whatever it is.
+fn wrapper_mismatch(connection: &Connection, server: &AgentWrapper) -> bool {
+    match connection {
+        Connection::Ssh { wrapper, .. } => !wrapper.command.is_empty() && wrapper != server,
+        Connection::Local => false,
+    }
+}
+
+/// The commands that start an agent turn.
+const STARTS_A_TURN: [&str; 3] = ["start_session", "send_message", "send_queued"];
+
 #[tauri::command]
 async fn rpc(app: State<'_, App>, name: String, args: Option<Value>) -> Result<Value, ApiError> {
     let args = args.unwrap_or_default();
+    // Agents would run without the sandbox asked for.
+    if STARTS_A_TURN.contains(&name.as_str()) && app.status.lock().unwrap().wrapper_mismatch {
+        return Err(ApiError::new(
+            ErrorCode::Unavailable,
+            "bach-server wasn't started with the agent wrapper set here; restart it first.",
+        ));
+    }
     let backend = match &*app.backend.lock().unwrap() {
         Some(Backend::Local(api)) => Some(Backend::Local(api.clone())),
         Some(Backend::Remote(r)) => Some(Backend::Remote(r.clone())),
@@ -311,15 +335,15 @@ async fn set_auto_forward(ports: State<'_, ports::Ports>, auto: bool) -> Result<
 
 /// Replaces the server on the SSH host with the one installed there (`bach-server restart`), then
 /// connects again. For when the app and the server disagree on the protocol because an update
-/// left an old server running.
+/// left an old server running, or on the agent wrapper, which only a new server takes.
 #[tauri::command]
 async fn restart_server(app: State<'_, App>) -> Result<(), String> {
     let connection = load_connection(&app.config);
-    let Connection::Ssh { host, command, .. } = &connection else {
+    let Connection::Ssh { host, command, wrapper } = &connection else {
         return Err("This app runs its own backend; relaunch it instead.".into());
     };
     let mut ssh = tokio::process::Command::new("ssh");
-    ssh.args(ssh_args_for(host, command, "restart"))
+    ssh.args(ssh_args_for(host, command, wrapper, "restart"))
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
     let out = tokio::time::timeout(std::time::Duration::from_secs(45), ssh.output())
@@ -360,7 +384,7 @@ async fn set_connection(app: State<'_, App>, connection: Connection) -> Result<(
                 return Err(format!("`{host}` isn't a host ssh can connect to."));
             }
             let command = command.trim();
-            bach_core::wrapper::parse(&wrapper)?;
+            bach_core::wrapper::parse(&wrapper.command)?;
             Connection::Ssh {
                 host,
                 command: if command.is_empty() {
@@ -368,7 +392,10 @@ async fn set_connection(app: State<'_, App>, connection: Connection) -> Result<(
                 } else {
                     command.to_string()
                 },
-                wrapper: wrapper.trim().to_string(),
+                wrapper: AgentWrapper {
+                    command: wrapper.command.trim().to_string(),
+                    ..wrapper
+                },
             }
         }
         local => local,
@@ -385,34 +412,13 @@ async fn set_connection(app: State<'_, App>, connection: Connection) -> Result<(
     Ok(())
 }
 
-/// Apps started from the Finder get a bare PATH, without Homebrew, Nix or ~/.local/bin, so
-/// `claude`, `git` and whatever `ssh` needs (a ProxyCommand) wouldn't be found. Take the PATH a
-/// login shell sets up instead.
-#[cfg(target_os = "macos")]
-fn use_login_shell_path() {
-    use std::{process::Command, sync::mpsc, time::Duration};
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let out = Command::new(shell)
-            .args(["-l", "-c", "printf '%s' \"$PATH\""])
-            .stdin(std::process::Stdio::null())
-            .output();
-        let _ = tx.send(out);
-    });
-    // A shell profile that hangs mustn't hang the app.
-    if let Ok(Ok(out)) = rx.recv_timeout(Duration::from_secs(5)) {
-        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if out.status.success() && !path.is_empty() {
-            std::env::set_var("PATH", path);
-        }
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Opened from the Finder, the app gets a bare PATH (see `login_shell`).
     #[cfg(target_os = "macos")]
-    use_login_shell_path();
+    if let Some(path) = bach_core::login_shell::path() {
+        std::env::set_var("PATH", path);
+    }
 
     tauri::Builder::default()
         .setup(|app| {
@@ -458,4 +464,36 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bach");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wrapper_asked_for_must_be_the_servers() {
+        let ssh = |command: &str| Connection::Ssh {
+            host: "h".into(),
+            command: "bach-server".into(),
+            wrapper: AgentWrapper { command: command.into(), codex_sandbox: false },
+        };
+        let server = |command: &str| AgentWrapper { command: command.into(), codex_sandbox: false };
+        assert!(!wrapper_mismatch(&ssh("sandbox"), &server("sandbox")));
+        assert!(wrapper_mismatch(&ssh("sandbox"), &server("")));
+        assert!(wrapper_mismatch(&ssh("sandbox"), &AgentWrapper { codex_sandbox: true, ..server("sandbox") }));
+        // None asked for: the server's own stands, whatever it is.
+        assert!(!wrapper_mismatch(&ssh(""), &server("sandbox")));
+        assert!(!wrapper_mismatch(&Connection::Local, &server("")));
+    }
+
+    #[test]
+    fn the_wrapper_goes_in_the_servers_environment() {
+        let args = |w| ssh_args_for("h", "bach-server", &w, "attach").last().unwrap().clone();
+        assert_eq!(args(AgentWrapper::default()), "bach-server attach");
+        let w = AgentWrapper { command: "sandbox --net".into(), codex_sandbox: true };
+        assert_eq!(
+            args(w),
+            "env BACH_AGENT_WRAPPER='sandbox --net' BACH_AGENT_WRAPPER_CODEX_SANDBOX=1 bach-server attach"
+        );
+    }
 }

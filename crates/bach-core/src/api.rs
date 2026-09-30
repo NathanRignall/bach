@@ -46,6 +46,7 @@ impl Api {
     /// Opens (creating if needed) the session database at `db`. Worktrees and Satie's files go
     /// in folders next to it. Starts Satie's MCP server on a free loopback port.
     pub async fn open(db: &Path) -> Result<Api, String> {
+        crate::wrapper::init()?;
         let dir = db.parent().unwrap_or(Path::new("."));
         let store = Store::open(db)?;
         // Nothing survives a restart of the backend: no run is live any more.
@@ -390,13 +391,6 @@ fn satie_error(e: satie::Error) -> ApiError {
 impl Handler for Api {
     async fn list_agents(&self, _: ListAgentsArgs) -> Result<Vec<AgentInfo>, ApiError> {
         Ok(list_agents())
-    }
-
-    async fn set_agent_wrapper(&self, a: SetAgentWrapperArgs) -> Result<(), ApiError> {
-        crate::wrapper::set(&a.wrapper).map_err(ApiError::invalid)?;
-        // Through another wrapper, an agent may offer other models.
-        self.models.lock().unwrap().clear();
-        Ok(())
     }
 
     async fn list_models(&self, a: ListModelsArgs) -> Result<Vec<ModelInfo>, ApiError> {

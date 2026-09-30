@@ -58,6 +58,8 @@ pub enum ServerFrame {
     Hello {
         protocol: String,
         version: String,
+        /// How the server starts agents; see [`AgentWrapper`].
+        wrapper: AgentWrapper,
     },
     Reply { id: u64, result: Value },
     Error { id: u64, error: ApiError },

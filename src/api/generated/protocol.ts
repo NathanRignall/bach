@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "372063d29d824248";
+export const PROTOCOL = "1d1504223d85b33b";
 
 /**
  * Agent-independent events the UI renders.
@@ -31,6 +31,19 @@ activity?: string, toolUses?: number, tokens?: number, durationMs?: number, summ
 export type AgentInfo = { kind: AgentKind, name: string, installed: boolean, };
 
 export type AgentKind = "claude" | "codex" | "opencode";
+
+/**
+ * A command bach-server starts the agent CLIs through, taking their command line after it:
+ * `sandbox` runs Claude Code as `sandbox claude …`. Fixed when the server starts
+ * (`BACH_AGENT_WRAPPER`); `""` starts them directly.
+ */
+export type AgentWrapper = { command: string, 
+/**
+ * Codex's own sandbox inside the wrapper's (`BACH_AGENT_WRAPPER_CODEX_SANDBOX`). Off, Codex
+ * runs with full access and the wrapper's sandbox is the only one: Codex can't start its
+ * bubblewrap inside another.
+ */
+codexSandbox: boolean, };
 
 /**
  * Answers an approval request (or a question) the session's agent is waiting on.
@@ -94,10 +107,10 @@ host: string,
  */
 command: string, 
 /**
- * A command there that starts the agent CLIs, taking theirs after it: `sandbox` runs
- * Claude Code as `sandbox claude …`. Empty to start them directly.
+ * Given to bach-server there when the app starts or restarts it. An empty command leaves
+ * the server's own (`BACH_AGENT_WRAPPER`): the app never takes a wrapper away.
  */
-wrapper: string, };
+wrapper: AgentWrapper, };
 
 export type ConnectionState = "connecting" | "connected" | "disconnected";
 
@@ -121,7 +134,16 @@ incompatible: boolean,
 /**
  * The server's version, once connected.
  */
-version: string | null, };
+version: string | null, 
+/**
+ * How the server starts agents, once connected.
+ */
+wrapper: AgentWrapper | null, 
+/**
+ * The server was started with another agent wrapper than the one set here (and only a new
+ * server takes it): new agent turns are refused until it restarts.
+ */
+wrapperMismatch: boolean, };
 
 /**
  * How much of the model's context window a session's conversation fills.
@@ -503,7 +525,11 @@ export type ServerEvent = { "topic": "session", "data": SessionEvent } | { "topi
  * What the WebSocket bridge (and `bach-server attach`) sends: first a `hello`, then replies to
  * commands, and events.
  */
-export type ServerFrame = { "kind": "hello", protocol: string, version: string, } | { "kind": "reply", id: number, result: JsonValue, } | { "kind": "error", id: number, error: ApiError, } | { "kind": "event", event: ServerEvent, };
+export type ServerFrame = { "kind": "hello", protocol: string, version: string, 
+/**
+ * How the server starts agents; see [`AgentWrapper`].
+ */
+wrapper: AgentWrapper, } | { "kind": "reply", id: number, result: JsonValue, } | { "kind": "error", id: number, error: ApiError, } | { "kind": "event", event: ServerEvent, };
 
 export type Session = { id: string, title: string, 
 /**
@@ -599,12 +625,6 @@ export type SessionEvent = { "type": "changed", session: Session, } | { "type": 
  * A session with (part of) its transcript.
  */
 export type SessionLog = { session: Session, entries: Array<LogEntry>, };
-
-/**
- * Starts the agent CLIs through `wrapper` from now on, a command that takes the agent's command
- * line after it: `sandbox` runs Claude Code as `sandbox claude …`. `""` starts them directly.
- */
-export type SetAgentWrapperArgs = { wrapper: string, };
 
 /**
  * Creates a session and sends its first message. Readies where it runs first: switches `cwd` to
@@ -842,11 +862,6 @@ export type Commands = {
    * The agent CLIs Bach knows, and which are installed on the backend host.
    */
   list_agents: { args: ListAgentsArgs; output: Array<AgentInfo> };
-  /**
-   * Starts the agent CLIs through `wrapper` from now on, a command that takes the agent's command
-   * line after it: `sandbox` runs Claude Code as `sandbox claude …`. `""` starts them directly.
-   */
-  set_agent_wrapper: { args: SetAgentWrapperArgs; output: null };
   /**
    * The models an agent can run. Codex and opencode are asked for their current lists (kept for
    * a while); Claude Code's are its aliases. opencode's depend on the project folder (`cwd`),

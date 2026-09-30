@@ -86,8 +86,9 @@ pub async fn listen(paths: &Paths, api: Arc<Api>) -> std::io::Result<()> {
 }
 
 /// Starts `bach-server serve` detached from us (own session, output to the log), so it outlives
-/// the SSH connection that started it.
-fn start_server(paths: &Paths) -> std::io::Result<()> {
+/// the SSH connection that started it. `env` is added to ours, and the PATH is the login shell's:
+/// ssh runs `attach` without a profile, so ours wouldn't have the agent CLIs on it.
+fn start_server(paths: &Paths, env: &[(String, String)]) -> std::io::Result<()> {
     if let Some(dir) = paths.log.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -96,7 +97,11 @@ fn start_server(paths: &Paths) -> std::io::Result<()> {
         .append(true)
         .open(&paths.log)?;
     let mut cmd = std::process::Command::new(std::env::current_exe()?);
+    if let Some(path) = bach_core::login_shell::path() {
+        cmd.env("PATH", path);
+    }
     cmd.arg("serve")
+        .envs(env.iter().cloned())
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
@@ -155,6 +160,17 @@ fn lock_holders(paths: &Paths) -> Vec<i32> {
         .collect()
 }
 
+/// The agent wrapper settings (see `bach_core::wrapper`) process `pid` was started with.
+fn wrapper_env(pid: i32) -> Vec<(String, String)> {
+    let environ = std::fs::read(format!("/proc/{pid}/environ")).unwrap_or_default();
+    environ
+        .split(|b| *b == 0)
+        .filter_map(|kv| std::str::from_utf8(kv).ok()?.split_once('='))
+        .filter(|(k, _)| k.starts_with("BACH_AGENT_WRAPPER"))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
 /// Whether a server holds the lock (taking it, briefly, if not).
 fn server_running(paths: &Paths) -> bool {
     matches!(lock(paths), Ok(None))
@@ -162,10 +178,15 @@ fn server_running(paths: &Paths) -> bool {
 
 /// Stops the running server, if any, and starts this binary's in its place: how a server left
 /// running from an older build gets replaced. Agent turns in progress end with it; background
-/// tasks don't (Satie detaches them).
+/// tasks don't (Satie detaches them). The new server keeps the old one's agent wrapper unless
+/// we were given one (`BACH_AGENT_WRAPPER`): a restart never takes a wrapper away.
 pub async fn restart(paths: &Paths) -> Result<(), String> {
+    let mut env = vec![];
     if server_running(paths) {
         let holders = lock_holders(paths);
+        if std::env::var_os("BACH_AGENT_WRAPPER").is_none() {
+            env = holders.first().map(|pid| wrapper_env(*pid)).unwrap_or_default();
+        }
         if holders.is_empty() {
             return Err(format!(
                 "bach-server is running for {} but I can't tell which process it is; stop it yourself.",
@@ -193,7 +214,7 @@ pub async fn restart(paths: &Paths) -> Result<(), String> {
     }
     // Whatever is left is from the server that just ended; connecting must reach the new one.
     let _ = std::fs::remove_file(&paths.socket);
-    start_server(paths).map_err(|e| format!("couldn't start bach-server: {e}"))?;
+    start_server(paths, &env).map_err(|e| format!("couldn't start bach-server: {e}"))?;
     wait_for_socket(paths).await.map(drop)
 }
 
@@ -202,7 +223,7 @@ pub async fn attach(paths: &Paths) -> Result<(), String> {
     let stream = match UnixStream::connect(&paths.socket).await {
         Ok(s) => s,
         Err(_) => {
-            start_server(paths).map_err(|e| format!("couldn't start bach-server: {e}"))?;
+            start_server(paths, &[]).map_err(|e| format!("couldn't start bach-server: {e}"))?;
             wait_for_socket(paths).await?
         }
     };

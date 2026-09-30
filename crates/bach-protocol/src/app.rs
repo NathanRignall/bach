@@ -1,5 +1,6 @@
 //! The desktop app's own commands (not the backend's): where its agents run, and how that
 //! connection is doing.
+use crate::AgentWrapper;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -16,10 +17,10 @@ pub enum Connection {
         /// How to run bach-server there (default `bach-server`).
         #[serde(default = "default_command")]
         command: String,
-        /// A command there that starts the agent CLIs, taking theirs after it: `sandbox` runs
-        /// Claude Code as `sandbox claude …`. Empty to start them directly.
+        /// Given to bach-server there when the app starts or restarts it. An empty command leaves
+        /// the server's own (`BACH_AGENT_WRAPPER`): the app never takes a wrapper away.
         #[serde(default)]
-        wrapper: String,
+        wrapper: AgentWrapper,
     },
 }
 
@@ -50,6 +51,11 @@ pub struct ConnectionStatus {
     pub incompatible: bool,
     /// The server's version, once connected.
     pub version: Option<String>,
+    /// How the server starts agents, once connected.
+    pub wrapper: Option<AgentWrapper>,
+    /// The server was started with another agent wrapper than the one set here (and only a new
+    /// server takes it): new agent turns are refused until it restarts.
+    pub wrapper_mismatch: bool,
 }
 
 /// A port on the agents' machine reachable on this computer.

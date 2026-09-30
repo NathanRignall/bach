@@ -15,6 +15,7 @@ pub fn hello() -> ServerFrame {
     ServerFrame::Hello {
         protocol: fingerprint(),
         version: env!("CARGO_PKG_VERSION").into(),
+        wrapper: bach_core::wrapper::get().clone(),
     }
 }
 
