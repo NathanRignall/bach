@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import Markdown, { type Components, defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, ImageOff, MessageSquarePlus, RotateCcw, ScrollText, ServerCog, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
+import { AlertCircle, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, Cog, EyeOff, Folder, GitBranch, ImageOff, Network, MessageSquarePlus, RotateCcw, ScrollText, ServerCog, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
 import { AgentKind, Decision, Forwarding, TaskView, readImage } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,8 @@ export interface TranscriptActions {
   showTask?: (id: string) => void;
   /** Opens another session (one this transcript's agent started). */
   showSession?: (id: string) => void;
+  /** The session works in a git repository (so sessions it starts get worktrees by default). */
+  inRepo?: boolean;
 }
 export const TranscriptContext = createContext<TranscriptActions>({ decide: async () => {} });
 
@@ -39,6 +41,8 @@ export const TranscriptContext = createContext<TranscriptActions>({ decide: asyn
 const summaryClass =
   "group/trigger flex w-full items-center gap-2 rounded-lg border bg-card px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent";
 const preClass = "max-h-72 overflow-auto rounded-lg border bg-muted p-3 font-mono text-xs whitespace-pre-wrap break-all";
+const proseClass =
+  "prose prose-sm max-w-none dark:prose-invert prose-a:text-primary prose-code:rounded prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-pre:border prose-pre:bg-muted prose-pre:text-foreground prose-pre:[&_code]:bg-transparent prose-pre:[&_code]:p-0";
 const chevron = "size-3.5 shrink-0 transition-transform group-data-[panel-open]/trigger:rotate-90";
 
 /** react-markdown's URL sanitising, except that `file://` images survive for {@link MarkdownImage}. */
@@ -49,6 +53,17 @@ const markdownComponents: Components = {
   a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />,
   img: ({ src, alt }) => <MarkdownImage key={String(src)} src={typeof src === "string" ? src : undefined} alt={alt} />,
 };
+
+/** Markdown, as the agent's messages show it. */
+function Prose({ text, className }: { text: string; className?: string }) {
+  return (
+    <div className={proseClass + (className ? " " + className : "")}>
+      <Markdown remarkPlugins={[remarkGfm]} urlTransform={keepFileUrls} components={markdownComponents}>
+        {text}
+      </Markdown>
+    </div>
+  );
+}
 
 /** `mcp__github__get_issue` -> `github · get_issue`; other names are unchanged. */
 function toolLabel(name: string): string {
@@ -86,15 +101,7 @@ export function BlockView({ block, live }: { block: Block; live: boolean }) {
 
     case "text":
       return (
-        <div className="prose prose-sm max-w-none dark:prose-invert prose-a:text-primary prose-code:rounded prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-pre:border prose-pre:bg-muted prose-pre:text-foreground prose-pre:[&_code]:bg-transparent prose-pre:[&_code]:p-0">
-          <Markdown
-            remarkPlugins={[remarkGfm]}
-            urlTransform={keepFileUrls}
-            components={markdownComponents}
-          >
-            {block.text}
-          </Markdown>
-        </div>
+        <Prose text={block.text} />
       );
 
     case "thinking":
@@ -259,12 +266,12 @@ function ToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
 const BACH = "mcp__bach__";
 
 /** What a call to Bach's MCP server did, in words, and the task it was about (if any). */
-function describeBachTool(block: ToolBlock, taskName?: string): { verb: string; target?: string; detail?: string } {
-  const a = (block.input ?? {}) as Record<string, unknown>;
+function describeBachTool(name: string, input: unknown, taskName?: string): { verb: string; target?: string; detail?: string } {
+  const a = (input ?? {}) as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
   const ports = [...(Array.isArray(a.ports) ? a.ports : []), ...(a.port ? [a.port] : [])].map((p) => `:${p}`).join(" ");
   const task = taskName ?? str(a.id);
-  switch (block.name.slice(BACH.length)) {
+  switch (name.slice(BACH.length)) {
     case "task_start":
       return { verb: "Start", target: str(a.name) ?? taskName ?? str(a.command), detail: str(a.command) };
     case "compose_start":
@@ -286,7 +293,7 @@ function describeBachTool(block: ToolBlock, taskName?: string): { verb: string; 
     case "start_session":
       return { verb: "New session", target: str(a.prompt)?.split("\n")[0], detail: [str(a.agent), str(a.model)].filter(Boolean).join(" · ") || undefined };
     default:
-      return { verb: toolLabel(block.name), detail: JSON.stringify(block.input) };
+      return { verb: toolLabel(name), detail: JSON.stringify(input) };
   }
 }
 
@@ -303,7 +310,7 @@ function BachToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
   const id = typeof input.id === "string" ? input.id : said?.[1];
   const task = id ? tasks?.find((t) => t.id === id) : undefined;
   // A removed task is only known by the name the result gave it.
-  const { verb, target, detail } = describeBachTool(block, task?.name ?? (said?.[1] === id ? said?.[2] : undefined));
+  const { verb, target, detail } = describeBachTool(block.name, block.input, task?.name ?? (said?.[1] === id ? said?.[2] : undefined));
   const starts = /^(task|compose)_start$/.test(block.name.slice(BACH.length));
   // `start_session` says `Started session <id> ...`.
   const session = !block.isError && block.name === BACH + "start_session" ? /^Started session (\S+)/.exec(block.output ?? "")?.[1] : undefined;
@@ -531,12 +538,121 @@ const DECIDED: Record<string, string> = {
   expired: "No longer needed",
 };
 
+/** What the agent asks to do with one of Bach's own tools, as a sentence ("wants to …"). */
+function bachAsk(name: string, input: unknown): string {
+  const a = (input ?? {}) as Record<string, unknown>;
+  switch (name.slice(BACH.length)) {
+    case "start_session":
+      return "start a new session";
+    case "task_start":
+      return "start a background task";
+    case "compose_start":
+      return "run a process-compose project";
+    case "task_stop":
+      return "stop a background task";
+    case "task_process":
+      return `${typeof a.action === "string" ? a.action : "control"} a process`;
+    case "task_list":
+      return "list background tasks";
+    case "task_logs":
+      return "read a task's output";
+    case "port_info":
+      return "see what is listening on ports";
+    case "http_check":
+      return "check a local URL";
+    default:
+      return `use ${toolLabel(name)}`;
+  }
+}
+
+/** A small label with an icon, for the settings an approval asks for. */
+function Chip({ icon: Icon, children }: { icon: typeof Bot; children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-0.5 text-xs text-muted-foreground">
+      <Icon className="size-3.5 shrink-0" />
+      {children}
+    </span>
+  );
+}
+
+/** The body of an approval for one of Bach's own tools: what it would do, not its JSON. */
+function BachApprovalBody({ name, input }: { name: string; input: unknown }) {
+  const { agent = "claude", inRepo, tasks } = useContext(TranscriptContext);
+  const a = (input ?? {}) as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+  const ports = [...(Array.isArray(a.ports) ? a.ports : []), ...(a.port ? [a.port] : [])].map((p) => `:${p}`);
+  const task = str(a.id) && tasks?.find((t) => t.id === a.id);
+
+  switch (name.slice(BACH.length)) {
+    case "start_session": {
+      const other = str(a.agent) && a.agent !== agent ? (a.agent as AgentKind) : undefined;
+      const worktree = typeof a.worktree === "boolean" ? a.worktree : inRepo;
+      return (
+        <>
+          <div className="max-h-72 overflow-auto rounded-lg border bg-background px-3 py-2">
+            <Prose text={str(a.prompt) ?? ""} />
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Chip icon={Bot}>{other ? AGENT_NAMES[other] : `${AGENT_NAMES[agent]}, like this session`}</Chip>
+            <Chip icon={Brain}>{str(a.model) ?? (other ? "Default model" : "Same model")}</Chip>
+            <Chip icon={worktree ? GitBranch : Folder}>{worktree ? "New worktree and branch" : "In the project folder"}</Chip>
+          </div>
+          <p className="text-xs text-muted-foreground">It works on its own and shows up in the sidebar.</p>
+        </>
+      );
+    }
+    case "task_start":
+    case "compose_start": {
+      const what = str(a.command) ?? str(a.file);
+      return (
+        <>
+          {what && <pre className={preClass + " bg-background"}>{what}</pre>}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {str(a.name) && <Chip icon={ServerCog}>{str(a.name)}</Chip>}
+            {str(a.cwd) && <Chip icon={Folder}>{str(a.cwd)}</Chip>}
+            {ports.length > 0 && <Chip icon={Network}>{ports.join(" ")}</Chip>}
+            {a.interactive === false && <Chip icon={EyeOff}>Only for the agent</Chip>}
+          </div>
+          <p className="text-xs text-muted-foreground">It keeps running after this turn; you can stop it from Background tasks.</p>
+        </>
+      );
+    }
+    case "task_stop":
+    case "task_process":
+    case "task_logs":
+      return (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Chip icon={ServerCog}>{task ? task.name : str(a.id) ?? "unknown task"}</Chip>
+          {str(a.process) && <Chip icon={Cog}>{str(a.process)}</Chip>}
+        </div>
+      );
+    default: {
+      const { main, rest } = describeInput(input);
+      return <pre className={preClass + " bg-background"}>{main || rest}</pre>;
+    }
+  }
+}
+
+/** An answered approval for one of Bach's tools, in the words its tool card uses. */
+function BachDecided({ name, input }: { name: string; input: unknown }) {
+  const { tasks } = useContext(TranscriptContext);
+  const id = (input as { id?: unknown } | null)?.id;
+  const { verb, target } = describeBachTool(name, input, tasks?.find((t) => t.id === id)?.name);
+  return (
+    <>
+      <span className="shrink-0 font-semibold whitespace-nowrap text-foreground">{verb}</span>
+      {target && <span className="min-w-0 flex-1 truncate">{target}</span>}
+    </>
+  );
+}
+
 /** A tool the agent wants to use. It waits here until the user answers. */
 function ApprovalCard({ block, live }: { block: ApprovalBlock; live: boolean }) {
   const { decide, agent = "claude" } = useContext(TranscriptContext);
   const [busy, setBusy] = useState(false);
   const { main, rest } = describeInput(block.input);
   const always = alwaysSavesTo(agent, block.toolName);
+  const bach = block.toolName.startsWith(BACH);
 
   if (block.decision || !live) {
     const decision = block.decision ?? "expired";
@@ -545,8 +661,14 @@ function ApprovalCard({ block, live }: { block: ApprovalBlock; live: boolean }) 
       <p className="flex items-center gap-2 px-1 text-xs text-muted-foreground" title={block.rules.join("\n")}>
         <Icon className="size-3.5 shrink-0" />
         <span>{DECIDED[decision]}</span>
-        <span className="font-semibold text-foreground">{toolLabel(block.toolName)}</span>
-        <code className="min-w-0 flex-1 truncate font-mono">{main ?? rest?.replace(/\s+/g, " ")}</code>
+        {bach ? (
+          <BachDecided name={block.toolName} input={block.input} />
+        ) : (
+          <>
+            <span className="font-semibold text-foreground">{toolLabel(block.toolName)}</span>
+            <code className="min-w-0 flex-1 truncate font-mono">{main ?? rest?.replace(/\s+/g, " ")}</code>
+          </>
+        )}
       </p>
     );
   }
@@ -561,7 +683,15 @@ function ApprovalCard({ block, live }: { block: ApprovalBlock; live: boolean }) 
       <div className="flex items-center gap-2 text-sm">
         <ShieldAlert className="size-4 shrink-0 text-primary" />
         <span>
-          {AGENT_NAMES[agent]} wants to use <span className="font-semibold">{toolLabel(block.toolName)}</span>
+          {bach ? (
+            <>
+              {AGENT_NAMES[agent]} wants to <span className="font-semibold">{bachAsk(block.toolName, block.input)}</span>
+            </>
+          ) : (
+            <>
+              {AGENT_NAMES[agent]} wants to use <span className="font-semibold">{toolLabel(block.toolName)}</span>
+            </>
+          )}
         </span>
         {block.reason && <span className="text-xs text-muted-foreground">· {block.reason}</span>}
       </div>
@@ -575,8 +705,14 @@ function ApprovalCard({ block, live }: { block: ApprovalBlock; live: boolean }) 
           </span>
         </p>
       )}
-      {main && <pre className={preClass + " bg-background"}>{main}</pre>}
-      {rest && <pre className={preClass + " bg-background"}>{rest}</pre>}
+      {bach ? (
+        <BachApprovalBody name={block.toolName} input={block.input} />
+      ) : (
+        <>
+          {main && <pre className={preClass + " bg-background"}>{main}</pre>}
+          {rest && <pre className={preClass + " bg-background"}>{rest}</pre>}
+        </>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" disabled={busy} onClick={() => void answer("allow")}>
           Allow
