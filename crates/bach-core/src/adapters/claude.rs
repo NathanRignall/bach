@@ -62,6 +62,7 @@ pub fn args(
     session_id: Option<&str>,
     model: Option<&str>,
     permission_mode: Option<&str>,
+    effort: Option<&str>,
     allowed_tools: &[String],
     satie: Option<&Grant>,
 ) -> Vec<String> {
@@ -91,6 +92,10 @@ pub fn args(
         a.push("--permission-mode".into());
         a.push(m.into());
     }
+    if let Some(e) = effort {
+        a.push("--effort".into());
+        a.push(e.into());
+    }
     if let Some(grant) = satie {
         a.extend(["--mcp-config".into(), mcp_config(grant)]);
         a.extend(["--append-system-prompt".into(), GUIDANCE.into()]);
@@ -118,6 +123,9 @@ pub fn args(
     a
 }
 
+/// Claude Code's `--effort` levels.
+const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
 /// Claude Code's model aliases (`--model`), which follow the latest of each family.
 pub fn models() -> Vec<bach_protocol::ModelInfo> {
     [
@@ -130,6 +138,8 @@ pub fn models() -> Vec<bach_protocol::ModelInfo> {
         name: name.into(),
         description: description.into(),
         is_default: false,
+        efforts: EFFORTS.map(String::from).into(),
+        default_effort: None,
     })
     .into()
 }
@@ -411,7 +421,7 @@ mod tests {
             .await
             .unwrap();
         let grant = satie.grant(satie::Scope::default());
-        let a = args(None, None, None, &[], Some(&grant));
+        let a = args(None, None, None, None, &[], Some(&grant));
         let after = |flag: &str| a[a.iter().position(|x| x == flag).unwrap() + 1].clone();
 
         let cfg: Value = serde_json::from_str(&after("--mcp-config")).unwrap();

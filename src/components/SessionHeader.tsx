@@ -1,4 +1,4 @@
-import { Cpu, FileDiff, GitBranch, GitFork, MessageSquare } from "lucide-react";
+import { Brain, Cpu, FileDiff, GitBranch, GitFork, MessageSquare } from "lucide-react";
 import { Session, macTitleBar } from "@/api";
 import { cn } from "@/lib/utils";
 
@@ -73,6 +73,13 @@ export function SessionHeader({
         <span className="ml-auto flex shrink-0 items-center gap-1.5" title="Model used on the latest run">
           <Cpu className="size-3.5" />
           <span className="font-mono">{session.model}</span>
+          {/* Only a level chosen for the session; the model's default isn't always known. */}
+          {session.effort && (
+            <span className="flex items-center gap-1" title="Thinking effort">
+              · <Brain className="size-3.5" />
+              {session.effort}
+            </span>
+          )}
         </span>
       )}
     </header>

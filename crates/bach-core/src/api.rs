@@ -163,6 +163,11 @@ fn model_choice(m: Option<String>) -> Option<String> {
         .filter(|m| !m.is_empty() && m != "default")
 }
 
+/// No choice, "" and "default" all mean the model's default effort.
+fn effort(e: Option<String>) -> Option<String> {
+    model_choice(e)
+}
+
 /// No choice, "" and "default" all mean the agent's default permission mode.
 fn permission_mode(m: Option<String>) -> Option<String> {
     m.map(|m| m.trim().to_string())
@@ -319,6 +324,7 @@ impl Launcher {
             session_id: s.agent_session_id.clone(),
             model: s.model_choice.clone(),
             permission_mode: s.permission_mode.clone(),
+            effort: s.effort.clone(),
             allowed_tools: s.allow_rules.clone(),
             session_key: Some(id.to_string()),
             run_id: Some(run_id.clone()),
@@ -460,6 +466,7 @@ impl Handler for Api {
             worktree: ws.worktree,
             model_choice: model_choice(a.model_choice),
             permission_mode: permission_mode(a.permission_mode),
+            effort: effort(a.effort),
             workdir: Some(ws.workdir),
             git_branch: ws.branch,
             workdir_removed: false,
@@ -576,6 +583,9 @@ impl Handler for Api {
             }
             if a.permission_mode.is_some() {
                 s.permission_mode = permission_mode(a.permission_mode);
+            }
+            if a.effort.is_some() {
+                s.effort = effort(a.effort);
             }
             Ok(())
         })

@@ -31,6 +31,10 @@ pub struct Session {
     /// default: asking before anything that isn't read-only.
     #[serde(default)]
     pub permission_mode: Option<String>,
+    /// How hard the agent thinks: one of its model's effort levels (`low`, `high`, …), or none
+    /// for the model's default.
+    #[serde(default)]
+    pub effort: Option<String>,
 
     /// Where the agent runs (a worktree, or `cwd`).
     #[serde(default)]

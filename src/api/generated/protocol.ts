@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "43eb795b7747e735";
+export const PROTOCOL = "b1d1ea1d4b88c7c5";
 
 /**
  * Agent-independent events the UI renders.
@@ -371,7 +371,15 @@ id: string, name: string, description: string,
 /**
  * The one the agent uses when none is chosen.
  */
-isDefault: boolean, };
+isDefault: boolean, 
+/**
+ * Its thinking effort levels, least first (none if it can't be set).
+ */
+efforts: Array<string>, 
+/**
+ * The level it uses when none is chosen, if known.
+ */
+defaultEffort: string | null, };
 
 /**
  * Starts your shell in a terminal on the backend host.
@@ -517,6 +525,11 @@ modelChoice: string | null,
  */
 permissionMode: string | null, 
 /**
+ * How hard the agent thinks: one of its model's effort levels (`low`, `high`, …), or none
+ * for the model's default.
+ */
+effort: string | null, 
+/**
  * Where the agent runs (a worktree, or `cwd`).
  */
 workdir: string | null, 
@@ -589,7 +602,11 @@ export type StartSessionArgs = { agent: AgentKind, cwd: string, branch?: string,
 /**
  * The worktree's branch name; made up from the prompt when not given.
  */
-newBranch?: string, modelChoice?: string, permissionMode?: string, prompt: string, 
+newBranch?: string, modelChoice?: string, permissionMode?: string, 
+/**
+ * Thinking effort (one of the model's levels); `""` for the model's default.
+ */
+effort?: string, prompt: string, 
 /**
  * Images sent with the prompt, as `data:` URLs.
  */
@@ -784,7 +801,11 @@ export type TerminalSnapshotArgs = { terminalId: string, };
  * Renames a session, archives or restores it, or changes the model or permission mode its next
  * messages use (`""` for the default). Archiving stops its run.
  */
-export type UpdateSessionArgs = { sessionId: string, title?: string, modelChoice?: string, permissionMode?: string, archived?: boolean, };
+export type UpdateSessionArgs = { sessionId: string, title?: string, modelChoice?: string, permissionMode?: string, 
+/**
+ * Thinking effort (one of the model's levels); `""` for the model's default.
+ */
+effort?: string, archived?: boolean, };
 
 /**
  * A worktree Bach created.

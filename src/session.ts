@@ -72,6 +72,8 @@ export interface NewSession {
   /** The worktree's branch name; the backend makes one up from the message when empty. */
   newBranch?: string;
   modelChoice?: string | null;
+  /** Thinking effort, one of the model's levels; none for its default. */
+  effort?: string | null;
   permissionMode?: string | null;
   /** Why the last attempt to start it failed. */
   blocks: Block[];
