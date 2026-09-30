@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "31ee14841da2b0ac";
+export const PROTOCOL = "23500fd836ed520d";
 
 /**
  * Agent-independent events the UI renders.
@@ -429,6 +429,11 @@ seq: number,
 at: number, entry: Entry, };
 
 /**
+ * Says someone has looked at the session: clears its `unseen` outcome (done or failed).
+ */
+export type MarkSeenArgs = { sessionId: string, };
+
+/**
  * A model an agent can run, for the model picker.
  */
 export type ModelInfo = { 
@@ -571,6 +576,11 @@ deleteBranch?: boolean, };
 export type ResizeTerminalArgs = { terminalId: string, cols: number, rows: number, };
 
 /**
+ * How an agent run ended.
+ */
+export type RunOutcome = "done" | "failed";
+
+/**
  * Sends a message to a session's agent; while it is busy, the message is queued instead.
  */
 export type SendMessageArgs = { sessionId: string, prompt: string, 
@@ -670,6 +680,12 @@ runId: string | null,
  * Approval requests the running agent is waiting on.
  */
 openApprovals: Array<string>, 
+/**
+ * How the latest run ended, until someone has looked at the session: what "done" and
+ * "failed" mean in a session list. Set when a run ends (not when the user stopped it),
+ * cleared by `mark_seen` or by the next run.
+ */
+unseen: RunOutcome | null, 
 /**
  * Messages sent while the agent was busy, oldest first. The next one goes when a run
  * finishes cleanly; a stopped or failed run leaves them waiting.
@@ -974,6 +990,10 @@ export type Commands = {
    * Answers an approval request (or a question) the session's agent is waiting on.
    */
   answer_approval: { args: AnswerApprovalArgs; output: null };
+  /**
+   * Says someone has looked at the session: clears its `unseen` outcome (done or failed).
+   */
+  mark_seen: { args: MarkSeenArgs; output: Session };
   /**
    * Renames a session, archives or restores it, or changes the model or permission mode its next
    * messages use (`""` for the default). Archiving stops its run.

@@ -68,6 +68,11 @@ pub struct Session {
     /// Approval requests the running agent is waiting on.
     #[serde(default)]
     pub open_approvals: Vec<String>,
+    /// How the latest run ended, until someone has looked at the session: what "done" and
+    /// "failed" mean in a session list. Set when a run ends (not when the user stopped it),
+    /// cleared by `mark_seen` or by the next run.
+    #[serde(default)]
+    pub unseen: Option<RunOutcome>,
     /// Messages sent while the agent was busy, oldest first. The next one goes when a run
     /// finishes cleanly; a stopped or failed run leaves them waiting.
     #[serde(default)]
@@ -79,6 +84,14 @@ pub struct Session {
     /// `seq` of the latest transcript entry (0 when there are none).
     #[serde(default)]
     pub last_seq: u64,
+}
+
+/// How an agent run ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RunOutcome {
+    Done,
+    Failed,
 }
 
 /// A message waiting for the agent to finish its current run.

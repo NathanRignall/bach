@@ -1,7 +1,7 @@
 //! Sessions through the API, as a client drives them: start, approvals, follow-up messages,
 //! renames, deletion. A stand-in `claude` asks for one approval per turn.
 use bach_core::Api;
-use bach_protocol::{Entry, ErrorCode, ServerEvent, Session, SessionEvent};
+use bach_protocol::{Entry, ErrorCode, RunOutcome, ServerEvent, Session, SessionEvent};
 use serde_json::{json, Value};
 use std::{os::unix::fs::PermissionsExt, path::Path, time::Duration};
 use tokio::sync::broadcast;
@@ -212,6 +212,7 @@ async fn a_session_from_first_message_to_deletion() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let (s, _) = session(&api, &id).await;
     assert!(s.run_id.is_none() && s.queued.len() == 1, "{s:?}");
+    assert_eq!(s.unseen, None, "a run the user stopped isn't news: {s:?}");
     api.call("send_queued", json!({ "sessionId": id, "messageId": waiting }))
         .await
         .unwrap();
@@ -226,6 +227,12 @@ async fn a_session_from_first_message_to_deletion() {
     .await
     .unwrap();
     until(&api, &id, "the last run to end", |s| s.run_id.is_none()).await;
+    // A run that finished on its own is waiting to be looked at until someone says they have.
+    let (s, _) = session(&api, &id).await;
+    assert_eq!(s.unseen, Some(RunOutcome::Done), "{s:?}");
+    let s: Session =
+        serde_json::from_value(api.call("mark_seen", json!({ "sessionId": id })).await.unwrap()).unwrap();
+    assert_eq!(s.unseen, None);
     let e = api
         .call(
             "answer_approval",

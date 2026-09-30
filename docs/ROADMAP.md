@@ -19,9 +19,9 @@ Planned features and known issues, roughly grouped by area.
 
 ## Sessions
 
-- [ ] **Notifications**: a native notification (and dock badge) when a turn finishes,
+- [x] **Notifications**: a native notification (and dock badge) when a turn finishes,
   an approval is waiting or an agent asks a question.
-- [ ] **Status in the sidebar**: show whether each session is working, waiting on you,
+- [x] **Status in the sidebar**: show whether each session is working, waiting on you,
   done or failed.
 - [ ] **Search**: find past sessions by title or transcript text.
 - [ ] **Fork or rewind**: branch a session from an earlier message to try another

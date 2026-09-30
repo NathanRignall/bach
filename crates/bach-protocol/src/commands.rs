@@ -100,6 +100,7 @@ commands! {
     remove_queued(RemoveQueuedArgs) -> Session;
     stop_session(StopSessionArgs) -> ();
     answer_approval(AnswerApprovalArgs) -> ();
+    mark_seen(MarkSeenArgs) -> Session;
     update_session(UpdateSessionArgs) -> Session;
     delete_session(DeleteSessionArgs) -> ();
 
@@ -222,6 +223,13 @@ pub struct RemoveQueuedArgs {
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct StopSessionArgs {
+    pub session_id: String,
+}
+
+/// Says someone has looked at the session: clears its `unseen` outcome (done or failed).
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkSeenArgs {
     pub session_id: String,
 }
 

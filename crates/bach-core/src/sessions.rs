@@ -5,7 +5,7 @@ use crate::{
     store::Store,
 };
 use bach_protocol::{
-    AgentEvent, ApiError, ContextUsage, Entry, LogEntry, PlanUsage, ServerEvent, Session,
+    AgentEvent, ApiError, ContextUsage, Entry, LogEntry, PlanUsage, RunOutcome, ServerEvent, Session,
     SessionEvent,
 };
 use std::sync::Arc;
@@ -171,12 +171,23 @@ impl Sessions {
             }
             AgentEvent::Done { .. } | AgentEvent::Cancelled => {
                 let clean = matches!(event, AgentEvent::Done { is_error: false, .. });
+                // A run the user stopped isn't news to them.
+                let outcome = match event {
+                    AgentEvent::Done { is_error: false, .. } => Some(RunOutcome::Done),
+                    AgentEvent::Done { .. } => Some(RunOutcome::Failed),
+                    _ => None,
+                };
                 Some(Box::new(move |s| {
                     if s.run_id.as_deref() == Some(&run_id) {
                         s.run_id = None;
                         s.open_approvals.clear();
+                        s.unseen = outcome;
                         if let (true, Some(f)) = (clean, on_finish) {
                             f(s, &run_id);
+                            // The next queued message is already running: not finished yet.
+                            if s.run_id.is_some() {
+                                s.unseen = None;
+                            }
                         }
                     }
                 }))

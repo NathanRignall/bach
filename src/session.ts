@@ -106,6 +106,22 @@ export function groupByProject(sessions: Session[]): [string, Session[]][] {
 
 export const awaitingApproval = (s: Session) => s.openApprovals.length > 0;
 
+/**
+ * Where a session stands, from state the backend keeps and pushes: a pending approval or question
+ * (`openApprovals`), a run in progress (`runId`, which stays set while background sub-agents keep
+ * it going after the agent's first result), and how the last run ended until someone looked
+ * (`unseen`). Waiting wins over working: an agent blocked on you isn't really busy.
+ */
+export type SessionStatus = "waiting" | "working" | "failed" | "done" | "idle";
+
+export function sessionStatus(s: Session): SessionStatus {
+  if (awaitingApproval(s)) return "waiting";
+  if (s.runId) return "working";
+  if (s.unseen === "failed") return "failed";
+  if (s.unseen === "done") return "done";
+  return "idle";
+}
+
 /** Most recently active first, like the backend lists them. */
 export const byActivity = (a: Session, b: Session) => b.updatedAt - a.updatedAt;
 

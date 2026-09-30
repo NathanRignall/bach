@@ -315,6 +315,7 @@ impl Launcher {
             run_id: None,
             archived: false,
             open_approvals: vec![],
+            unseen: None,
             queued: vec![],
             created_at: now,
             updated_at: now,
@@ -355,6 +356,7 @@ impl Launcher {
                 return Ok(());
             }
             s.run_id = Some(run_id.clone());
+            s.unseen = None;
             // Talking to it again brings it back.
             s.archived = false;
             Ok(())
@@ -387,6 +389,7 @@ impl Launcher {
                 .ok_or_else(|| ApiError::not_found("That message isn't queued any more."))?;
             message = Some(s.queued.remove(i));
             s.run_id = Some(run_id.clone());
+            s.unseen = None;
             s.archived = false;
             Ok(())
         })?;
@@ -437,6 +440,7 @@ impl Launcher {
                 self.sessions.update(id, |s| {
                     if s.run_id.as_deref() == Some(&run_id) {
                         s.run_id = None;
+                        s.unseen = Some(RunOutcome::Failed);
                     }
                     Ok(())
                 })?;
@@ -538,6 +542,16 @@ impl Handler for Api {
         self.launcher
             .send_queued(&a.session_id, &a.message_id)
             .await
+    }
+
+    async fn mark_seen(&self, a: MarkSeenArgs) -> Result<Session, ApiError> {
+        if self.sessions.get(&a.session_id)?.unseen.is_none() {
+            return self.sessions.get(&a.session_id);
+        }
+        self.sessions.update(&a.session_id, |s| {
+            s.unseen = None;
+            Ok(())
+        })
     }
 
     async fn remove_queued(&self, a: RemoveQueuedArgs) -> Result<Session, ApiError> {

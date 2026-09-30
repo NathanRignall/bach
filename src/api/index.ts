@@ -83,6 +83,7 @@ export const sendQueued = (sessionId: string, messageId: string) => call("send_q
 export const removeQueued = (sessionId: string, messageId: string) => call("remove_queued", { sessionId, messageId });
 export const stopSession = (sessionId: string) => call("stop_session", { sessionId });
 export const answerApproval = (args: Args<"answer_approval">) => call("answer_approval", args);
+export const markSeen = (sessionId: string) => call("mark_seen", { sessionId });
 export const updateSession = (args: Args<"update_session">) => call("update_session", args);
 export const deleteSession = (sessionId: string) => call("delete_session", { sessionId });
 
