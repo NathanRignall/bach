@@ -21,7 +21,8 @@ const QUESTION_TOOL: &str = "AskUserQuestion";
 /// (which allow everything but a few things, like folders outside the project).
 ///
 /// opencode has no sandbox, so "auto" asks before shell commands; edits in the project are
-/// fine. "plan" runs opencode's plan agent with the same rules.
+/// fine. "plan" runs opencode's plan agent with the same rules. Satie's tools that only look
+/// never ask, as with the other agents.
 pub fn permission_rules(mode: Option<&str>, allowed: &[String]) -> Value {
     let rule = |permission: &str, pattern: &str, action: &str| {
         json!({ "permission": permission, "pattern": pattern, "action": action })
@@ -31,6 +32,10 @@ pub fn permission_rules(mode: Option<&str>, allowed: &[String]) -> Value {
         Some("readOnly") => vec![rule("edit", "*", "ask"), rule("bash", "*", "ask")],
         _ => vec![rule("bash", "*", "ask")],
     };
+    rules.extend(
+        ["satie_task_list", "satie_task_logs", "satie_port_info", "satie_http_check"]
+            .map(|tool| rule(tool, "*", "allow")),
+    );
     rules.extend(allowed.iter().filter_map(|r| {
         let (permission, pattern) = parse_rule(r)?;
         Some(rule(permission, pattern, "allow"))
@@ -132,6 +137,13 @@ pub struct Stream {
     outputs: HashMap<String, usize>,
     /// Requests shown as cards, by their id.
     asked: HashSet<String>,
+    /// The MCP servers opencode has, whose tools it names `<server>_<tool>`.
+    mcp_servers: Vec<String>,
+    /// Arguments of the tool calls seen, by call id, for their approval cards.
+    inputs: HashMap<String, Value>,
+    /// MCP tool approvals waiting for their call's arguments, which opencode sends just after
+    /// asking.
+    waiting: Vec<AgentEvent>,
     cost: f64,
     failed: bool,
 }
@@ -141,7 +153,8 @@ fn s(v: &Value) -> String {
 }
 
 impl Stream {
-    pub fn new(session_id: &str, allowed: &[String]) -> Self {
+    /// `mcp_servers` are the names of opencode's MCP servers (its `GET /mcp`).
+    pub fn new(session_id: &str, allowed: &[String], mcp_servers: &[String]) -> Self {
         Self {
             session_id: session_id.into(),
             allowed: allowed.to_vec(),
@@ -152,6 +165,9 @@ impl Stream {
             tools: HashSet::new(),
             outputs: HashMap::new(),
             asked: HashSet::new(),
+            mcp_servers: mcp_servers.to_vec(),
+            inputs: HashMap::new(),
+            waiting: vec![],
             cost: 0.0,
             failed: false,
         }
@@ -189,6 +205,7 @@ impl Stream {
             // Answered, or no longer needed; `Runs` drops the ones Bach answered.
             "permission.replied" | "question.replied" | "question.rejected" => {
                 let id = s(&p["requestID"]);
+                self.waiting.retain(|a| !matches!(a, AgentEvent::Approval { request_id, .. } if *request_id == id));
                 if self.asked.remove(&id) {
                     (vec![AgentEvent::ApprovalCancelled { request_id: id }], vec![])
                 } else {
@@ -222,7 +239,8 @@ impl Stream {
             }
             "session.idle" if self.busy => {
                 self.busy = false;
-                let mut events = self.flush(None);
+                let mut events = std::mem::take(&mut self.waiting);
+                events.extend(self.flush(None));
                 events.push(AgentEvent::Done {
                     cost_usd: Some(self.cost),
                     is_error: self.failed,
@@ -315,10 +333,14 @@ impl Stream {
         let state = &part["state"];
         let status = state["status"].as_str().unwrap_or_default();
         let mut events = vec![];
+        if status != "pending" {
+            self.inputs.insert(id.clone(), state["input"].clone());
+            events.extend(self.release(&id));
+        }
         if status != "pending" && self.tools.insert(id.clone()) {
             events.push(AgentEvent::ToolUse {
                 id: id.clone(),
-                name: tool_name(&tool),
+                name: self.tool_name(&tool),
                 input: state["input"].clone(),
                 parent: None,
             });
@@ -383,23 +405,69 @@ impl Stream {
             ),
             // Folders outside the project; the card says so.
             "external_directory" => (json!({ "path": patterns.join(", ") }), patterns.clone()),
-            _ => (json!({ "patterns": patterns, "metadata": meta }), vec![]),
+            // Anything else (an MCP tool) is shown with its call's arguments.
+            _ => (Value::Null, vec![]),
         };
         self.asked.insert(id.clone());
-        (
-            vec![AgentEvent::Approval {
-                request_id: id,
-                tool_use_id: p["tool"]["callID"].as_str().map(String::from),
-                tool_name: tool_name(&permission),
-                input,
-                description: None,
-                reason: None,
-                rules,
-                directories,
-                suggestions: reply,
-            }],
-            vec![],
-        )
+        let call = p["tool"]["callID"].as_str().map(String::from);
+        let approval = AgentEvent::Approval {
+            request_id: id,
+            tool_use_id: call.clone(),
+            tool_name: self.tool_name(&permission),
+            input,
+            description: None,
+            reason: None,
+            rules,
+            directories,
+            suggestions: reply,
+        };
+        self.waiting.push(approval);
+        (call.map(|c| self.release(&c)).unwrap_or_else(|| std::mem::take(&mut self.waiting)), vec![])
+    }
+
+    /// Approvals for call `call` that can be shown now: with the call's arguments filled in,
+    /// once they are known (at once, for requests that describe themselves).
+    fn release(&mut self, call: &str) -> Vec<AgentEvent> {
+        let known = self.inputs.get(call).cloned();
+        let (ready, keep) = std::mem::take(&mut self.waiting).into_iter().partition(|a| match a {
+            AgentEvent::Approval { tool_use_id, input, .. } => {
+                tool_use_id.as_deref() == Some(call) && (!input.is_null() || known.is_some())
+                    || tool_use_id.is_none()
+            }
+            _ => true,
+        });
+        self.waiting = keep;
+        ready
+            .into_iter()
+            .map(|mut a| {
+                if let AgentEvent::Approval { input, .. } = &mut a {
+                    if input.is_null() {
+                        *input = known.clone().unwrap_or_default();
+                    }
+                }
+                a
+            })
+            .collect()
+    }
+
+    /// opencode's tool names, as Bach shows them: the shell as Codex's is, MCP tools as the
+    /// other agents name them (`playwright_browser_navigate` ->
+    /// `mcp__playwright__browser_navigate`), the rest as they are.
+    fn tool_name(&self, tool: &str) -> String {
+        match tool {
+            "bash" => "Shell".into(),
+            "edit" => "Edit".into(),
+            "write" => "Write".into(),
+            "read" => "Read".into(),
+            other => self
+                .mcp_servers
+                .iter()
+                // The longest name first, in case one server's name starts with another's.
+                .filter_map(|server| Some((server, other.strip_prefix(&mcp_prefix(server))?)))
+                .max_by_key(|(server, _)| server.len())
+                .map(|(server, t)| format!("mcp__{server}__{t}"))
+                .unwrap_or_else(|| other.into()),
+        }
     }
 
     fn on_question(&mut self, p: &Value) -> Vec<AgentEvent> {
@@ -433,15 +501,13 @@ impl Stream {
     }
 }
 
-/// opencode's tool names, as Bach shows them (the shell as Codex's is; the rest as they are).
-fn tool_name(tool: &str) -> String {
-    match tool {
-        "bash" => "Shell".into(),
-        "edit" => "Edit".into(),
-        "write" => "Write".into(),
-        "read" => "Read".into(),
-        other => other.into(),
-    }
+/// How opencode starts the names of an MCP server's tools: `chrome-devtools_`.
+fn mcp_prefix(server: &str) -> String {
+    let safe: String = server
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    format!("{safe}_")
 }
 
 /// The reply to an approval request, from what was kept of it (`suggestions`). `answers` are
@@ -510,10 +576,15 @@ mod tests {
             json!([
                 { "permission": "edit", "pattern": "*", "action": "ask" },
                 { "permission": "bash", "pattern": "*", "action": "ask" },
+                { "permission": "satie_task_list", "pattern": "*", "action": "allow" },
+                { "permission": "satie_task_logs", "pattern": "*", "action": "allow" },
+                { "permission": "satie_port_info", "pattern": "*", "action": "allow" },
+                { "permission": "satie_http_check", "pattern": "*", "action": "allow" },
                 { "permission": "bash", "pattern": "git status *", "action": "allow" },
             ])
         );
-        assert_eq!(permission_rules(None, &[]), json!([{ "permission": "bash", "pattern": "*", "action": "ask" }]));
+        assert_eq!(permission_rules(None, &[])[0], json!({ "permission": "bash", "pattern": "*", "action": "ask" }));
+        assert!(!permission_rules(None, &[]).to_string().contains("satie_task_start"), "starting still asks");
         assert_eq!(permission_rules(Some("acceptEdits"), &[]), permission_rules(None, &[]));
         assert_eq!(permission_rules(Some("fullAccess"), &[])[0]["action"], "allow");
         assert_eq!((agent(Some("plan")), agent(None)), ("plan", "build"));
@@ -554,6 +625,43 @@ mod tests {
         assert_eq!(parts[1], json!({ "type": "file", "mime": "image/png", "filename": "a.png", "url": "file:///tmp/1/a.png" }));
         assert_eq!(parts[2], json!({ "type": "file", "mime": "application/pdf", "filename": "b c.pdf", "url": "file:///tmp/2/b c.pdf" }));
         assert_eq!(prompt_parts("", &[]), json!([]));
+    }
+
+    #[test]
+    fn mcp_approvals_wait_for_their_arguments_and_use_mcp_names() {
+        // The order opencode 1.18 sends them in: the call (no arguments yet), the permission
+        // request (no arguments), then the call running with its arguments.
+        let servers = ["playwright".to_string(), "chrome-devtools".to_string(), "satie".to_string()];
+        let mut stream = Stream::new("ses_1", &[], &servers);
+        let tool = |status: &str, input: Value| {
+            json!({ "type": "message.part.updated", "properties": { "part": {
+                "sessionID": "ses_1", "id": "prt_1", "messageID": "msg_1", "type": "tool",
+                "tool": "playwright_browser_navigate", "callID": "call_1",
+                "state": { "status": status, "input": input },
+            }}})
+        };
+        assert!(stream.on_event(&tool("pending", json!({}))).0.is_empty());
+        let asked = json!({ "type": "permission.asked", "properties": {
+            "id": "per_1", "sessionID": "ses_1", "permission": "playwright_browser_navigate",
+            "patterns": ["*"], "metadata": {}, "always": ["*"],
+            "tool": { "messageID": "msg_1", "callID": "call_1" },
+        }});
+        assert!(stream.on_event(&asked).0.is_empty(), "shown before its arguments are known");
+        let (ev, _) = stream.on_event(&tool("running", json!({ "url": "http://127.0.0.1:5173" })));
+        match &ev[0] {
+            AgentEvent::Approval { tool_name, input, rules, .. } => {
+                assert_eq!(tool_name, "mcp__playwright__browser_navigate");
+                assert_eq!(input, &json!({ "url": "http://127.0.0.1:5173" }));
+                assert_eq!(rules, &["playwright_browser_navigate(*)"]);
+            }
+            other => panic!("expected the approval, got {other:?}"),
+        }
+        assert!(matches!(&ev[1], AgentEvent::ToolUse { name, .. } if name == "mcp__playwright__browser_navigate"));
+
+        assert_eq!(stream.tool_name("chrome-devtools_new_page"), "mcp__chrome-devtools__new_page");
+        assert_eq!(stream.tool_name("satie_task_start"), "mcp__satie__task_start");
+        assert_eq!(stream.tool_name("webfetch"), "webfetch");
+        assert_eq!(stream.tool_name("bash"), "Shell");
     }
 
     #[test]

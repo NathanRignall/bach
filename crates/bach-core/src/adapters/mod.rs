@@ -20,8 +20,9 @@ pub trait AgentCli: Copy {
     /// as is `permission_mode` (`--permission-mode`, e.g. `acceptEdits` or `auto`) and `effort`
     /// (`--effort`); the other agents get theirs over their protocols ([`Turn`]).
     ///
-    /// `satie` adds Bach's background-task launcher as an MCP server, with guidance steering the
-    /// agent to it (Claude Code, which also gets a hook, and Codex).
+    /// `satie` adds Bach's background-task launcher as an MCP server, whose instructions steer the
+    /// agent to it (Claude Code, which also gets a hook, and Codex; opencode gets it from its
+    /// server, see `opencode_server`).
     ///
     /// `allowed_tools` are permission rules (e.g. `Bash(tmux ls *)`) approved earlier in the
     /// session; only Claude Code takes them.
@@ -208,26 +209,31 @@ pub fn permission_modes(agent: AgentKind) -> &'static [&'static str] {
     }
 }
 
-/// The models `agent` can run, for the model picker (opencode's in folder `cwd`).
-pub async fn list_models(agent: AgentKind, cwd: Option<&str>) -> Result<Vec<bach_protocol::ModelInfo>, String> {
+/// The models `agent` can run, for the model picker (opencode's in folder `cwd`, whose server
+/// is started with `satie` if it isn't running).
+pub async fn list_models(
+    agent: AgentKind,
+    cwd: Option<&str>,
+    satie: Option<&satie::Satie>,
+) -> Result<Vec<bach_protocol::ModelInfo>, String> {
     match agent {
         AgentKind::Claude => Ok(claude::models()),
         AgentKind::Codex => codex::list_models().await,
         AgentKind::Opencode => {
             let dir = cwd.ok_or("Choose a project folder to see opencode's models.")?;
-            crate::opencode_server::list_models(dir).await
+            crate::opencode_server::list_models(dir, satie).await
         }
     }
 }
 
-/// The agent CLIs Bach knows, and whether each is on the backend host's PATH.
+/// The agent CLIs Bach knows, and whether each (and the wrapper) is on the backend host's PATH.
 pub fn list_agents() -> Vec<bach_protocol::AgentInfo> {
     AgentKind::ALL
         .iter()
         .map(|&kind| bach_protocol::AgentInfo {
             kind,
             name: kind.display_name().into(),
-            installed: which::which(kind.binary()).is_ok(),
+            installed: crate::wrapper::installed(kind.binary()),
         })
         .collect()
 }

@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "cc9c074f9860585d";
+export const PROTOCOL = "372063d29d824248";
 
 /**
  * Agent-independent events the UI renders.
@@ -92,7 +92,12 @@ host: string,
 /**
  * How to run bach-server there (default `bach-server`).
  */
-command: string, };
+command: string, 
+/**
+ * A command there that starts the agent CLIs, taking theirs after it: `sandbox` runs
+ * Claude Code as `sandbox claude …`. Empty to start them directly.
+ */
+wrapper: string, };
 
 export type ConnectionState = "connecting" | "connected" | "disconnected";
 
@@ -596,6 +601,12 @@ export type SessionEvent = { "type": "changed", session: Session, } | { "type": 
 export type SessionLog = { session: Session, entries: Array<LogEntry>, };
 
 /**
+ * Starts the agent CLIs through `wrapper` from now on, a command that takes the agent's command
+ * line after it: `sandbox` runs Claude Code as `sandbox claude …`. `""` starts them directly.
+ */
+export type SetAgentWrapperArgs = { wrapper: string, };
+
+/**
  * Creates a session and sends its first message. Readies where it runs first: switches `cwd` to
  * `branch`, or (with `worktree`) creates a new branch from it in an isolated worktree. Nothing is
  * saved if that, or starting the agent, fails.
@@ -831,6 +842,11 @@ export type Commands = {
    * The agent CLIs Bach knows, and which are installed on the backend host.
    */
   list_agents: { args: ListAgentsArgs; output: Array<AgentInfo> };
+  /**
+   * Starts the agent CLIs through `wrapper` from now on, a command that takes the agent's command
+   * line after it: `sandbox` runs Claude Code as `sandbox claude …`. `""` starts them directly.
+   */
+  set_agent_wrapper: { args: SetAgentWrapperArgs; output: null };
   /**
    * The models an agent can run. Codex and opencode are asked for their current lists (kept for
    * a while); Claude Code's are its aliases. opencode's depend on the project folder (`cwd`),

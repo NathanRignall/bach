@@ -16,6 +16,10 @@ pub enum Connection {
         /// How to run bach-server there (default `bach-server`).
         #[serde(default = "default_command")]
         command: String,
+        /// A command there that starts the agent CLIs, taking theirs after it: `sandbox` runs
+        /// Claude Code as `sandbox claude …`. Empty to start them directly.
+        #[serde(default)]
+        wrapper: String,
     },
 }
 

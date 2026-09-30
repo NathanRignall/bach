@@ -14,6 +14,19 @@ use axum::{
 use serde_json::{json, Value};
 use std::{collections::HashMap, time::Duration};
 
+/// Given to the agent with the tools (MCP `instructions`), so it reaches the agent without taking
+/// its system prompt from anyone else: Claude Code keeps only the last `--append-system-prompt`,
+/// and a wrapper may put its own there.
+const INSTRUCTIONS: &str = "Anything that must keep running after your turn ends (dev servers, simulations, watchers, \
+long jobs) has to be started with the `task_start` tool, not from a shell command in the background (Bash \
+`run_in_background`, `nohup`, a trailing `&` or tmux): processes started those ways are stopped when the turn ends. \
+`task_start` keeps the process running on its own, shows it to the user in the Tasks panel, and `task_logs`, `task_list` \
+and `task_stop` manage it. Pass `port` when the process serves on one, so the call waits until it is up, and \
+`interactive: false` when only you will use it (a server for tests or headless browser checks), so its ports aren't \
+forwarded to the user's computer. For a process-compose project use `compose_start` with the compose file instead of \
+running process-compose yourself: each of its processes then gets its own state and log, and `task_process` restarts one \
+without the rest.";
+
 pub(crate) fn router(satie: Satie) -> Router {
     Router::new()
         .route(
@@ -466,6 +479,7 @@ impl Satie {
                 "protocolVersion": msg["params"]["protocolVersion"].as_str().unwrap_or("2025-03-26"),
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": "satie", "version": env!("CARGO_PKG_VERSION") },
+                "instructions": INSTRUCTIONS,
             })),
             "ping" => reply(json!({})),
             "tools/list" => reply(json!({ "tools": Self::tools() })),

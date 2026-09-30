@@ -392,6 +392,13 @@ impl Handler for Api {
         Ok(list_agents())
     }
 
+    async fn set_agent_wrapper(&self, a: SetAgentWrapperArgs) -> Result<(), ApiError> {
+        crate::wrapper::set(&a.wrapper).map_err(ApiError::invalid)?;
+        // Through another wrapper, an agent may offer other models.
+        self.models.lock().unwrap().clear();
+        Ok(())
+    }
+
     async fn list_models(&self, a: ListModelsArgs) -> Result<Vec<ModelInfo>, ApiError> {
         // Asking takes a second or so, and the lists rarely change. opencode's depend on the
         // project (it may configure providers of its own), and it runs in the session's
@@ -410,7 +417,7 @@ impl Handler for Api {
                 return Ok(models.clone());
             }
         }
-        let models = crate::adapters::list_models(a.agent, cwd.as_deref())
+        let models = crate::adapters::list_models(a.agent, cwd.as_deref(), Some(&self.satie))
             .await
             .map_err(ApiError::failed)?;
         self.models

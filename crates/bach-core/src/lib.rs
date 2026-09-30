@@ -8,5 +8,6 @@ pub mod runs;
 pub mod sessions;
 pub mod store;
 pub mod terminals;
+pub mod wrapper;
 
 pub use api::Api;

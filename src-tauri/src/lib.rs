@@ -150,7 +150,7 @@ impl App {
                     }),
                 }
             }
-            Connection::Ssh { host, command } => {
+            Connection::Ssh { host, command, wrapper } => {
                 let control = forward::control_path();
                 if let Err(e) = forward::prepare_control_dir(&control) {
                     eprintln!("ssh control socket folder: {e}");
@@ -172,7 +172,7 @@ impl App {
                     .await;
                 let (events, statuses) = (self.handle.clone(), self.handle.clone());
                 let (g1, g2) = (self.generation.clone(), self.generation.clone());
-                let conn = connection.clone();
+                let (conn, wrapper) = (connection.clone(), wrapper.clone());
                 let remote = Remote::connect(
                     host.clone(),
                     ssh_command(host, command),
@@ -195,20 +195,26 @@ impl App {
                         }
                         let app = statuses.state::<App>();
                         if matches!(s, Status::Connected { .. }) {
-                            // (Re)connected: reopen forwards and catch up on running tasks.
-                            let handle = statuses.clone();
+                            // (Re)connected: tell the server how to start agents (it may be
+                            // new), reopen forwards and catch up on running tasks.
+                            let (handle, wrapper) = (statuses.clone(), wrapper.clone());
                             tauri::async_runtime::spawn(async move {
                                 let remote = match &*handle.state::<App>().backend.lock().unwrap() {
                                     Some(Backend::Remote(r)) => Some(r.clone()),
                                     _ => None,
                                 };
                                 let tasks = match remote {
-                                    Some(r) => r
-                                        .call("list_tasks", Value::Null)
-                                        .await
-                                        .ok()
-                                        .and_then(|v| v.as_array().cloned())
-                                        .unwrap_or_default(),
+                                    Some(r) => {
+                                        let args = serde_json::json!({ "wrapper": wrapper });
+                                        if let Err(e) = r.call("set_agent_wrapper", args).await {
+                                            eprintln!("agent wrapper `{wrapper}`: {}", e.message);
+                                        }
+                                        r.call("list_tasks", Value::Null)
+                                            .await
+                                            .ok()
+                                            .and_then(|v| v.as_array().cloned())
+                                            .unwrap_or_default()
+                                    }
                                     None => vec![],
                                 };
                                 handle.state::<ports::Ports>().connected(tasks).await;
@@ -309,7 +315,7 @@ async fn set_auto_forward(ports: State<'_, ports::Ports>, auto: bool) -> Result<
 #[tauri::command]
 async fn restart_server(app: State<'_, App>) -> Result<(), String> {
     let connection = load_connection(&app.config);
-    let Connection::Ssh { host, command } = &connection else {
+    let Connection::Ssh { host, command, .. } = &connection else {
         return Err("This app runs its own backend; relaunch it instead.".into());
     };
     let mut ssh = tokio::process::Command::new("ssh");
@@ -343,13 +349,18 @@ fn get_connection(app: State<'_, App>) -> ConnectionStatus {
 #[tauri::command]
 async fn set_connection(app: State<'_, App>, connection: Connection) -> Result<(), String> {
     let connection = match connection {
-        Connection::Ssh { host, command } => {
+        Connection::Ssh {
+            host,
+            command,
+            wrapper,
+        } => {
             let host = host.trim().to_string();
             // Passed to ssh as the destination: never let it look like an option.
             if host.is_empty() || host.starts_with('-') || host.contains(char::is_whitespace) {
                 return Err(format!("`{host}` isn't a host ssh can connect to."));
             }
             let command = command.trim();
+            bach_core::wrapper::parse(&wrapper)?;
             Connection::Ssh {
                 host,
                 command: if command.is_empty() {
@@ -357,6 +368,7 @@ async fn set_connection(app: State<'_, App>, connection: Connection) -> Result<(
                 } else {
                     command.to_string()
                 },
+                wrapper: wrapper.trim().to_string(),
             }
         }
         local => local,

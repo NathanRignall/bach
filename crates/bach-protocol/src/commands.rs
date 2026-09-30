@@ -89,6 +89,7 @@ fn parse_args<T: DeserializeOwned>(cmd: &str, args: Value) -> Result<T, ApiError
 
 commands! {
     list_agents(ListAgentsArgs) -> Vec<AgentInfo>;
+    set_agent_wrapper(SetAgentWrapperArgs) -> ();
     list_models(ListModelsArgs) -> Vec<ModelInfo>;
     get_usage(GetUsageArgs) -> Option<PlanUsage>;
 
@@ -133,6 +134,13 @@ commands! {
 /// The agent CLIs Bach knows, and which are installed on the backend host.
 #[derive(Debug, Default, Deserialize, TS)]
 pub struct ListAgentsArgs {}
+
+/// Starts the agent CLIs through `wrapper` from now on, a command that takes the agent's command
+/// line after it: `sandbox` runs Claude Code as `sandbox claude …`. `""` starts them directly.
+#[derive(Debug, Deserialize, TS)]
+pub struct SetAgentWrapperArgs {
+    pub wrapper: String,
+}
 
 /// The models an agent can run. Codex and opencode are asked for their current lists (kept for
 /// a while); Claude Code's are its aliases. opencode's depend on the project folder (`cwd`),

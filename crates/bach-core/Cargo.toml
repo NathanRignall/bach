@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "Agent adapters, runs, git, storage and Satie behind Bach (no UI or transport)"
 
+[features]
+# Starting the agent CLIs through a wrapper command (see `wrapper`). Off: agents start directly,
+# `BACH_AGENT_WRAPPER` is ignored and `set_agent_wrapper` accepts only `""`.
+agent-wrapper = []
+
 [dependencies]
 bach-protocol = { path = "../bach-protocol" }
 base64 = "0.23"

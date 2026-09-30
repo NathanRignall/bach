@@ -63,14 +63,22 @@ fn toml_string(s: &str) -> String {
 /// `satie` adds Bach's background-task launcher as the `satie` MCP server, with guidance on
 /// when to use it. The token itself goes in the environment ([`env`]), not the command line.
 pub fn args(satie: Option<&satie::Grant>) -> Vec<String> {
+    args_with(satie, crate::wrapper::active())
+}
+
+/// Codex keeps only the last `developer_instructions` it is given, wherever they come from. A
+/// wrapper may put its own there (describing its sandbox), and those must stand: under one,
+/// Satie's tool descriptions are what steer Codex to it.
+fn args_with(satie: Option<&satie::Grant>, wrapped: bool) -> Vec<String> {
     let mut a: Vec<String> = vec!["app-server".into(), "--enable".into(), QUESTIONS_FEATURE.into()];
     if let Some(grant) = satie {
-        for setting in [
-            format!("mcp_servers.satie.url={}", toml_string(&grant.url)),
+        a.extend(["-c".into(), format!("mcp_servers.satie.url={}", toml_string(&grant.url))]);
+        a.extend([
+            "-c".into(),
             format!("mcp_servers.satie.bearer_token_env_var={}", toml_string(SATIE_TOKEN_ENV)),
-            format!("developer_instructions={}", toml_string(SATIE_GUIDANCE)),
-        ] {
-            a.extend(["-c".into(), setting]);
+        ]);
+        if !wrapped {
+            a.extend(["-c".into(), format!("developer_instructions={}", toml_string(SATIE_GUIDANCE))]);
         }
     }
     a
@@ -97,6 +105,9 @@ pub struct Conversation {
     choice: Option<String>,
     /// See [`PERMISSION_MODES`].
     mode: Option<String>,
+    /// Whether to ask for Codex's own sandbox. Not under a wrapper: it sandboxes Codex itself,
+    /// and Codex can't start its bubblewrap inside another one, so every command would fail.
+    own_sandbox: bool,
     /// Reasoning effort for the turn, if chosen.
     effort: Option<String>,
     /// The model the thread runs (chosen, or Codex's default).
@@ -171,6 +182,7 @@ impl Conversation {
             allowed: turn.allowed_tools.to_vec(),
             choice: turn.model.map(String::from),
             mode: turn.permission_mode.map(String::from),
+            own_sandbox: !crate::wrapper::active(),
             effort: turn.effort.map(String::from),
             model: None,
             window_sent: false,
@@ -238,7 +250,10 @@ impl Conversation {
                 // Also given when resuming: the session's mode or model may have changed, and a
                 // thread first run by `codex exec` would otherwise keep its read-only sandbox.
                 let (sandbox, approval) = preset(self.mode.as_deref());
-                let mut params = json!({ "approvalPolicy": approval, "sandbox": sandbox });
+                let mut params = json!({ "approvalPolicy": approval });
+                if self.own_sandbox {
+                    params["sandbox"] = json!(sandbox);
+                }
                 if let Some(cwd) = &self.cwd {
                     params["cwd"] = json!(cwd);
                 }
@@ -679,7 +694,9 @@ impl Conversation {
 /// Asks a short-lived app server for the models the user's Codex can run (its `model/list`).
 pub async fn list_models() -> Result<Vec<ModelInfo>, String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    let mut child = tokio::process::Command::new("codex")
+    let program = crate::wrapper::command("codex");
+    let mut child = tokio::process::Command::new(&program[0])
+        .args(&program[1..])
         .arg("app-server")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -1197,6 +1214,19 @@ mod tests {
         (thread["params"].clone(), serde_json::from_str::<Value>(&sent[0]).unwrap()["params"].clone())
     }
 
+    #[tokio::test]
+    async fn leaves_a_wrappers_instructions_alone() {
+        let dir = std::env::temp_dir().join(format!("bach-codex-args-{}", std::process::id()));
+        let satie = satie::Satie::start("127.0.0.1:0".parse().unwrap(), dir.clone()).await.unwrap();
+        let grant = satie.grant(satie::Scope::default());
+        let has = |a: &[String], key: &str| a.iter().any(|x| x.starts_with(key));
+        let direct = args_with(Some(&grant), false);
+        assert!(has(&direct, "mcp_servers.satie.url=") && has(&direct, "developer_instructions="));
+        let wrapped = args_with(Some(&grant), true);
+        assert!(has(&wrapped, "mcp_servers.satie.url=") && !has(&wrapped, "developer_instructions="));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn permission_modes_and_models() {
         let modes = |mode| {
@@ -1221,6 +1251,14 @@ mod tests {
         assert_eq!(turn["collaborationMode"]["settings"]["model"], "gpt-x");
         let (thread, _) = opening(None, None);
         assert!(thread.get("model").is_none());
+
+        // Under a wrapper, the wrapper's sandbox stands.
+        let mut c = Conversation::new(&Turn { prompt: "hi", ..Default::default() });
+        c.own_sandbox = false;
+        let (_, sent) = c.on_line(&json!({ "id": 1, "result": {} }));
+        let thread: Value = serde_json::from_str(&sent[1]).unwrap();
+        assert!(thread["params"].get("sandbox").is_none());
+        assert_eq!(thread["params"]["approvalPolicy"], "on-request");
     }
 
     #[test]

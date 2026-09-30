@@ -397,6 +397,8 @@
             ),
             (Some("satie"), Some("2025-06-18"))
         );
+        let instructions = v["result"]["instructions"].as_str().unwrap();
+        assert!(instructions.contains("task_start") && instructions.contains("run_in_background"));
         let note = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
         assert_eq!(post(satie.url(), Some(&ta), &note).await.0, 202);
         let (_, body) = post(satie.url(), Some(&ta), &rpc(2, "tools/list", json!({}))).await;

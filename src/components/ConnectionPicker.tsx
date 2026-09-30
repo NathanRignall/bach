@@ -126,18 +126,22 @@ function Relaunch({ ssh }: { ssh: boolean }) {
   );
 }
 
+// Starting agents through a wrapper needs a bach-server built with the `agent-wrapper` feature.
+const WRAPPER = !!import.meta.env.VITE_BACH_AGENT_WRAPPER;
+
 function ConnectionDialog({ status, onClose }: { status: ConnectionStatus; onClose: () => void }) {
   const c = status.connection;
   const [mode, setMode] = useState<string>(c.mode);
   const [host, setHost] = useState(c.mode === "ssh" ? c.host : "");
   const [command, setCommand] = useState(c.mode === "ssh" ? c.command : "bach-server");
+  const [wrapper, setWrapper] = useState(c.mode === "ssh" ? c.wrapper : "");
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
 
   async function apply() {
     setSaving(true);
     try {
-      await setConnection(mode === "local" ? { mode: "local" } : { mode: "ssh", host: host.trim(), command: command.trim() });
+      await setConnection(mode === "local" ? { mode: "local" } : { mode: "ssh", host: host.trim(), command: command.trim(), wrapper: WRAPPER ? wrapper.trim() : "" });
       // Everything on screen belongs to the old backend.
       location.reload();
     } catch (e) {
@@ -183,6 +187,23 @@ function ConnectionDialog({ status, onClose }: { status: ConnectionStatus; onClo
                   A command on its PATH, or a full path such as <code>~/dev/bach/target/release/bach-server</code>.
                 </p>
               </div>
+              {WRAPPER && (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="ssh-wrapper">Start agents through</Label>
+                  <Input
+                    id="ssh-wrapper"
+                    value={wrapper}
+                    placeholder="nothing"
+                    spellCheck={false}
+                    className="font-mono"
+                    onChange={(e) => setWrapper(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    A command put before the agent's: <code>sandbox</code> runs <code>sandbox claude</code>. Leave it empty
+                    to run agents directly.
+                  </p>
+                </div>
+              )}
             </>
           )}
           {error && <p className="text-sm text-destructive">{error}</p>}
