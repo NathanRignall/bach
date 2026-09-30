@@ -86,6 +86,8 @@ export const updateSession = (args: Args<"update_session">) => call("update_sess
 export const deleteSession = (sessionId: string) => call("delete_session", { sessionId });
 
 export const listDir = (path?: string, showHidden = false) => call("list_dir", { path, showHidden });
+/** An image file on the backend host as a `data:` URL. */
+export const readImage = (path: string) => call("read_image", { path });
 export const gitInfo = (path: string) => call("git_info", { path });
 export const gitDiff = (path: string, baseBranch?: string) => call("git_diff", { path, baseBranch });
 export const listWorktrees = () => call("list_worktrees");

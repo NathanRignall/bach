@@ -565,6 +565,13 @@ impl Handler for Api {
         )?)
     }
 
+    async fn read_image(&self, a: ReadImageArgs) -> Result<String, ApiError> {
+        let path = a.path;
+        tokio::task::spawn_blocking(move || crate::fs::read_image(&path))
+            .await
+            .map_err(|e| ApiError::failed(e.to_string()))?
+    }
+
     async fn git_info(&self, a: GitInfoArgs) -> Result<GitInfo, ApiError> {
         Ok(self.git.info(a.path).await?)
     }

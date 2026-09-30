@@ -1,8 +1,8 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import Markdown from "react-markdown";
+import Markdown, { type Components, defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
-import { AgentKind, Decision } from "@/api";
+import { AlertCircle, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, ImageOff, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
+import { AgentKind, Decision, readImage } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +27,15 @@ const summaryClass =
   "group/trigger flex w-full items-center gap-2 rounded-lg border bg-card px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent";
 const preClass = "max-h-72 overflow-auto rounded-lg border bg-muted p-3 font-mono text-xs whitespace-pre-wrap break-all";
 const chevron = "size-3.5 shrink-0 transition-transform group-data-[panel-open]/trigger:rotate-90";
+
+/** react-markdown's URL sanitising, except that `file://` images survive for {@link MarkdownImage}. */
+const keepFileUrls = (url: string, key: string) => (key === "src" && url.startsWith("file://") ? url : defaultUrlTransform(url));
+
+// Defined once: a new component per render would remount every image in the transcript.
+const markdownComponents: Components = {
+  a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+  img: ({ src, alt }) => <MarkdownImage key={String(src)} src={typeof src === "string" ? src : undefined} alt={alt} />,
+};
 
 /** `mcp__satie__task_start` -> `satie · task_start`; other names are unchanged. */
 function toolLabel(name: string): string {
@@ -67,7 +76,8 @@ export function BlockView({ block, live }: { block: Block; live: boolean }) {
         <div className="prose prose-sm max-w-none dark:prose-invert prose-a:text-primary prose-code:rounded prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-pre:border prose-pre:bg-muted prose-pre:text-foreground prose-pre:[&_code]:bg-transparent prose-pre:[&_code]:p-0">
           <Markdown
             remarkPlugins={[remarkGfm]}
-            components={{ a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}
+            urlTransform={keepFileUrls}
+            components={markdownComponents}
           >
             {block.text}
           </Markdown>
@@ -111,24 +121,79 @@ export function BlockView({ block, live }: { block: Block; live: boolean }) {
  * see it full size.
  */
 function Images({ images, alt, className, thumbClass = "max-h-72" }: { images: string[]; alt: string; className?: string; thumbClass?: string }) {
-  const [open, setOpen] = useState<string>();
+  return (
+    <div className={cn("flex flex-wrap gap-2", className)}>
+      {images.map((src, i) => (
+        <Thumbnail key={i} src={src} alt={alt} thumbClass={thumbClass} />
+      ))}
+    </div>
+  );
+}
+
+/** One image, click to see it full size. Only inline elements, so it can sit in a paragraph. */
+function Thumbnail({ src, alt, thumbClass, onError }: { src: string; alt: string; thumbClass: string; onError?: () => void }) {
+  const [open, setOpen] = useState(false);
   return (
     <>
-      <div className={cn("flex flex-wrap gap-2", className)}>
-        {images.map((src, i) => (
-          <button key={i} onClick={() => setOpen(src)} title="View full size" className="overflow-hidden rounded-lg border bg-muted">
-            <img src={src} alt={alt} className={cn("block max-w-full object-contain", thumbClass)} />
-          </button>
-        ))}
-      </div>
-      <Dialog open={!!open} onOpenChange={(o) => !o && setOpen(undefined)}>
+      <button onClick={() => setOpen(true)} title="View full size" className="not-prose inline-block overflow-hidden rounded-lg border bg-muted align-top">
+        <img src={src} alt={alt} onError={onError} className={cn("block max-w-full object-contain", thumbClass)} />
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-h-[90vh] w-auto max-w-[90vw] overflow-auto p-2 sm:max-w-[90vw]">
           <DialogTitle className="sr-only">{alt}</DialogTitle>
-          {open && <img src={open} alt={alt} className="block max-h-[85vh] max-w-full object-contain select-text" />}
+          <img src={src} alt={alt} className="block max-h-[85vh] max-w-full object-contain select-text" />
         </DialogContent>
       </Dialog>
     </>
   );
+}
+
+/** Files already read, by path, so re-renders and repeated links don't fetch them again. */
+const fileImages = new Map<string, Promise<string>>();
+
+/** `/abs/path.png`, `~/path.png` or `file:///abs/path.png` -> the path; anything else -> null. */
+function localPath(src: string): string | null {
+  if (src.startsWith("file://")) return decodeURIComponent(src.slice("file://".length));
+  return src.startsWith("/") || src.startsWith("~/") ? decodeURIComponent(src) : null;
+}
+
+/**
+ * An image in the agent's markdown. Agents often link to files on the machine they run on, which
+ * the app (maybe on another computer) can't load by path, so those are read through the backend.
+ * An image that still can't be shown is replaced by its alt text and where it points.
+ */
+function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
+  const path = src ? localPath(src) : null;
+  const [url, setUrl] = useState(path ? undefined : src);
+  const [failed, setFailed] = useState(!src);
+  useEffect(() => {
+    if (!path) return;
+    let cancelled = false;
+    let load = fileImages.get(path);
+    if (!load) {
+      load = readImage(path);
+      load.catch(() => fileImages.delete(path)); // let a later render try again
+      fileImages.set(path, load);
+    }
+    load.then(
+      (u) => !cancelled && setUrl(u),
+      () => !cancelled && setFailed(true),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [path]);
+
+  if (failed)
+    return (
+      <span className="inline-flex max-w-full items-center gap-1.5 rounded-md border bg-muted px-2 py-0.5 align-middle text-xs text-muted-foreground not-prose">
+        <ImageOff className="size-3.5 shrink-0" />
+        {alt && <span className="text-foreground">{alt}</span>}
+        <code className="truncate">{path ?? src}</code>
+      </span>
+    );
+  if (!url) return <Spinner className="inline-block size-4 align-middle" />;
+  return <Thumbnail src={url} alt={alt ?? ""} thumbClass="max-h-72" onError={() => setFailed(true)} />;
 }
 
 function ToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
@@ -378,7 +443,8 @@ interface Question {
   question: string;
   header?: string;
   multiSelect?: boolean;
-  options: { label: string; description?: string }[];
+  /** `preview`: a mockup or snippet to show while the option is highlighted. */
+  options: { label: string; description?: string; preview?: string }[];
 }
 
 const OTHER = "\u0000other"; // can't collide with an option label
@@ -390,6 +456,8 @@ function QuestionCard({ block, live }: { block: ApprovalBlock; live: boolean }) 
   // Chosen labels per question (OTHER = the free-text choice) and the free text itself.
   const [picked, setPicked] = useState<Record<string, string[]>>({});
   const [other, setOther] = useState<Record<string, string>>({});
+  // The option last hovered or focused per question, whose preview is shown.
+  const [highlighted, setHighlighted] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
 
   const answerFor = (q: Question): string => {
@@ -399,11 +467,14 @@ function QuestionCard({ block, live }: { block: ApprovalBlock; live: boolean }) 
 
   if (block.decision || !live) {
     const decision = block.decision ?? "expired";
-    const answered = decision === "allow" && block.answers;
+    // In the order they were asked (the answers come back as an unordered map).
+    const asked = questions.map((q) => q.question);
+    const order = (q: string) => (asked.includes(q) ? asked.indexOf(q) : asked.length);
+    const answered = decision === "allow" && block.answers && Object.entries(block.answers).sort(([a], [b]) => order(a) - order(b));
     return (
       <div className="flex flex-col gap-1 px-1 text-xs text-muted-foreground">
         {answered ? (
-          Object.entries(block.answers!).map(([q, a]) => (
+          answered.map(([q, a]) => (
             <p key={q} className="flex items-start gap-2">
               <MessageCircleQuestion className="mt-0.5 size-3.5 shrink-0" />
               <span>
@@ -444,24 +515,44 @@ function QuestionCard({ block, live }: { block: ApprovalBlock; live: boolean }) 
       {questions.map((q) => {
         const on = picked[q.question] ?? [];
         const type = q.multiSelect ? "checkbox" : "radio";
+        // Previews follow the highlighted option, else the last one picked, else the first.
+        const withPreview = q.options.filter((o) => o.preview);
+        const shown = [highlighted[q.question], ...[...on].reverse()]
+          .map((l) => withPreview.find((o) => o.label === l))
+          .find(Boolean) ?? withPreview[0];
+        const highlight = (label: string) => setHighlighted((h) => ({ ...h, [q.question]: label }));
         return (
-          <fieldset key={q.question} className="flex flex-col gap-2">
+          <fieldset key={q.question} className="@container flex flex-col gap-2">
             <legend className="mb-1 flex items-center gap-2 text-sm font-medium">
               {q.header && <Badge variant="outline">{q.header}</Badge>}
               {q.question}
             </legend>
-            {q.options.map((o) => (
-              <label
-                key={o.label}
-                className="flex cursor-pointer items-start gap-3 rounded-lg border bg-background px-3 py-2 text-sm hover:bg-accent has-[:checked]:border-primary"
-              >
-                <input type={type} name={q.question} className="mt-1 accent-primary" checked={on.includes(o.label)} onChange={() => toggle(q, o.label)} />
-                <span className="flex flex-col">
-                  <span className="font-medium">{o.label}</span>
-                  {o.description && <span className="text-xs text-muted-foreground">{o.description}</span>}
-                </span>
-              </label>
-            ))}
+            <div className={cn("grid gap-2", shown && "@xl:grid-cols-2")}>
+              <div className="flex flex-col gap-2">
+                {q.options.map((o) => (
+                  <label
+                    key={o.label}
+                    onMouseEnter={() => highlight(o.label)}
+                    onFocus={() => highlight(o.label)}
+                    className={cn(
+                      "flex cursor-pointer items-start gap-3 rounded-lg border bg-background px-3 py-2 text-sm hover:bg-accent has-[:checked]:border-primary",
+                      shown && o === shown && "bg-accent",
+                    )}
+                  >
+                    <input type={type} name={q.question} className="mt-1 accent-primary" checked={on.includes(o.label)} onChange={() => toggle(q, o.label)} />
+                    <span className="flex flex-col">
+                      <span className="font-medium">{o.label}</span>
+                      {o.description && <span className="text-xs text-muted-foreground">{o.description}</span>}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              {shown && (
+                <pre aria-label={`Preview of ${shown.label}`} className="m-0 max-h-96 overflow-auto rounded-lg border bg-background p-3 font-mono text-xs leading-snug whitespace-pre">
+                  {shown.preview}
+                </pre>
+              )}
+            </div>
             <label className="flex cursor-pointer items-center gap-3 rounded-lg border bg-background px-3 py-2 text-sm hover:bg-accent has-[:checked]:border-primary">
               <input type={type} name={q.question} className="accent-primary" checked={on.includes(OTHER)} onChange={() => toggle(q, OTHER)} />
               <span className="font-medium">Other</span>

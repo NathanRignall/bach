@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "394b100bc1d71237";
+export const PROTOCOL = "dff56938c2003526";
 
 /**
  * Agent-independent events the UI renders.
@@ -404,6 +404,16 @@ export type QueuedMessage = { id: string, text: string,
  * Images sent with it, as `data:` URLs.
  */
 images?: Array<string>, };
+
+/**
+ * An image file on the backend host as a `data:` URL, so the UI can show images an agent
+ * links to by path. Only image files, up to 25 MB.
+ */
+export type ReadImageArgs = { 
+/**
+ * Absolute, or starting with `~`.
+ */
+path: string, };
 
 /**
  * Takes a message out of the queue without sending it.
@@ -814,6 +824,11 @@ export type Commands = {
    * Lists sub-directories on the backend host, for the folder picker.
    */
   list_dir: { args: ListDirArgs; output: DirListing };
+  /**
+   * An image file on the backend host as a `data:` URL, so the UI can show images an agent
+   * links to by path. Only image files, up to 25 MB.
+   */
+  read_image: { args: ReadImageArgs; output: string };
   /**
    * Branches and state of the repository containing `path`.
    */
