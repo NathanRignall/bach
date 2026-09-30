@@ -4,6 +4,7 @@
 //! `crate::opencode_server`. Shapes recorded from opencode 1.15.10
 //! (tests/fixtures/opencode_*.jsonl).
 use super::AgentEvent;
+use crate::attachments::SavedFile;
 use bach_protocol::{Decision, DeltaKind, ModelInfo};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -62,20 +63,15 @@ pub fn model(choice: &str) -> Option<Value> {
     Some(json!({ "providerID": provider, "modelID": model }))
 }
 
-/// The prompt's parts: the text, then the images (by path).
-pub fn prompt_parts(prompt: &str, image_files: &[String]) -> Value {
+/// The prompt's parts: the text, then the attachments (by path).
+pub fn prompt_parts(prompt: &str, files: &[SavedFile]) -> Value {
     let mut parts = vec![];
     if !prompt.is_empty() {
         parts.push(json!({ "type": "text", "text": prompt }));
     }
-    for path in image_files {
-        let mime = match path.rsplit('.').next() {
-            Some("png") => "image/png",
-            Some("jpg") => "image/jpeg",
-            Some("gif") => "image/gif",
-            _ => "image/webp",
-        };
-        parts.push(json!({ "type": "file", "mime": mime, "url": format!("file://{path}") }));
+    for f in files {
+        let name = f.path.rsplit('/').next().unwrap_or_default();
+        parts.push(json!({ "type": "file", "mime": f.mime, "filename": name, "url": format!("file://{}", f.path) }));
     }
     json!(parts)
 }
@@ -504,6 +500,7 @@ pub fn answer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::attachments::Kind;
 
     #[test]
     fn modes_become_rules_with_session_rules_last() {
@@ -548,9 +545,14 @@ mod tests {
     }
 
     #[test]
-    fn images_go_as_file_urls() {
-        let parts = prompt_parts("look", &["/tmp/a.png".into()]);
-        assert_eq!(parts[1], json!({ "type": "file", "mime": "image/png", "url": "file:///tmp/a.png" }));
+    fn attachments_go_as_file_urls() {
+        let file = |path: &str, mime: &str, kind| SavedFile { path: path.into(), mime: mime.into(), kind };
+        let parts = prompt_parts(
+            "look",
+            &[file("/tmp/1/a.png", "image/png", Kind::Image), file("/tmp/2/b c.pdf", "application/pdf", Kind::Pdf)],
+        );
+        assert_eq!(parts[1], json!({ "type": "file", "mime": "image/png", "filename": "a.png", "url": "file:///tmp/1/a.png" }));
+        assert_eq!(parts[2], json!({ "type": "file", "mime": "application/pdf", "filename": "b c.pdf", "url": "file:///tmp/2/b c.pdf" }));
         assert_eq!(prompt_parts("", &[]), json!([]));
     }
 

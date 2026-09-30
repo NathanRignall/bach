@@ -86,7 +86,8 @@ pub struct Session {
 pub struct QueuedMessage {
     pub id: String,
     pub text: String,
-    /// Images sent with it, as `data:` URLs.
+    /// Images, PDFs and text files sent with it, as `data:` URLs (the name is from when only
+    /// images could be). A file's name is a parameter: `data:application/pdf;name=a.pdf;base64,…`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<String>>")]
     pub images: Vec<String>,
@@ -99,7 +100,8 @@ pub enum Entry {
     /// What the user sent.
     User {
         text: String,
-        /// Images sent with it, as `data:` URLs.
+        /// Images, PDFs and text files sent with it, as `data:` URLs (the name is from when only
+        /// images could be). A file's name is a parameter: `data:application/pdf;name=a.pdf;base64,…`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         #[ts(optional, as = "Option<Vec<String>>")]
         images: Vec<String>,

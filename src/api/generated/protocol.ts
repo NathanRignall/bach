@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "b1d1ea1d4b88c7c5";
+export const PROTOCOL = "cc9c074f9860585d";
 
 /**
  * Agent-independent events the UI renders.
@@ -179,7 +179,8 @@ export type DirListing = { path: string, parent: string | null, home: string, en
  */
 export type Entry = { "type": "user", text: string, 
 /**
- * Images sent with it, as `data:` URLs.
+ * Images, PDFs and text files sent with it, as `data:` URLs (the name is from when only
+ * images could be). A file's name is a parameter: `data:application/pdf;name=a.pdf;base64,…`.
  */
 images?: Array<string>, } | { "type": "agent", runId: string, event: AgentEvent, } | { "type": "decision", requestId: string, decision: Decision, answers?: { [key in string]: string }, } | { "type": "failed", message: string, retryText?: string, } | { "type": "imported", blocks: JsonValue, };
 
@@ -434,7 +435,8 @@ export type ProcessAction = "start" | "stop" | "restart";
  */
 export type QueuedMessage = { id: string, text: string, 
 /**
- * Images sent with it, as `data:` URLs.
+ * Images, PDFs and text files sent with it, as `data:` URLs (the name is from when only
+ * images could be). A file's name is a parameter: `data:application/pdf;name=a.pdf;base64,…`.
  */
 images?: Array<string>, };
 
@@ -478,7 +480,7 @@ export type ResizeTerminalArgs = { terminalId: string, cols: number, rows: numbe
  */
 export type SendMessageArgs = { sessionId: string, prompt: string, 
 /**
- * Images sent with the prompt, as `data:` URLs.
+ * Images, PDFs and text files sent with the prompt, as `data:` URLs (see `Entry::User`).
  */
 images?: Array<string>, };
 
@@ -608,7 +610,7 @@ newBranch?: string, modelChoice?: string, permissionMode?: string,
  */
 effort?: string, prompt: string, 
 /**
- * Images sent with the prompt, as `data:` URLs.
+ * Images, PDFs and text files sent with the prompt, as `data:` URLs (see `Entry::User`).
  */
 images?: Array<string>, };
 

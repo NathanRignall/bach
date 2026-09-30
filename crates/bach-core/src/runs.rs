@@ -1,10 +1,10 @@
 use crate::{
+    attachments::{Attachment, SavedFile},
     opencode_server,
     adapters::{codex_answer, opencode, permission_modes, AgentCli, AgentEvent, AgentKind, Conversation, Turn},
 };
 pub use bach_protocol::Decision;
 use bach_protocol::ApiError;
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Serialize;
 use satie::{Satie, Scope};
 use serde_json::{json, Value};
@@ -37,7 +37,7 @@ pub struct RunEvent {
 pub struct RunRequest {
     pub agent: AgentKind,
     pub prompt: String,
-    /// Images sent with the prompt, as `data:` URLs.
+    /// Attachments sent with the prompt, as `data:` URLs (see [`crate::attachments`]).
     pub images: Vec<String>,
     pub cwd: Option<String>,
     /// The agent's own session id, to continue an earlier conversation.
@@ -118,64 +118,63 @@ pub struct Runs {
     satie: Option<Satie>,
 }
 
-/// A run's images written out for an agent that takes them as files, in a folder only this user
-/// can read. The folder is removed when this is dropped (the run is over).
-struct ImageFiles {
+/// A run's attachments written out for an agent that takes them as files, in a folder only this
+/// user can read. The folder is removed when this is dropped (the run is over).
+struct AttachmentFiles {
     dir: Option<PathBuf>,
-    paths: Vec<String>,
+    files: Vec<SavedFile>,
 }
 
-impl ImageFiles {
+impl AttachmentFiles {
     const NONE: Self = Self {
         dir: None,
-        paths: vec![],
+        files: vec![],
     };
 
-    /// Writes `images` (`data:image/…;base64,` URLs) to `<temp>/bach-images/<run_id>/`.
-    fn write(run_id: &str, images: &[String]) -> Result<Self, String> {
-        if images.is_empty() {
+    /// Writes `attachments` (`data:` URLs) to `<temp>/bach-attachments/<run_id>/<n>/<name>`,
+    /// each in a folder of its own so it keeps its name.
+    fn write(run_id: &str, attachments: &[String]) -> Result<Self, String> {
+        if attachments.is_empty() {
             return Ok(Self::NONE);
         }
-        let dir = std::env::temp_dir().join("bach-images").join(run_id);
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&dir)
-            .map_err(|e| format!("couldn't save the images: {e}"))?;
-        // From here on, dropping `files` cleans up whatever was written.
-        let mut files = Self {
-            dir: Some(dir.clone()),
-            paths: vec![],
+        let dir = std::env::temp_dir().join("bach-attachments").join(run_id);
+        let mkdir = |d: &PathBuf| {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(d)
+                .map_err(|e| format!("couldn't save the attachments: {e}"))
         };
-        for (i, url) in images.iter().enumerate() {
-            let (ext, bytes) = decode_image(url).ok_or("One of the images couldn't be read.")?;
-            let path = dir.join(format!("image-{}.{ext}", i + 1));
-            std::fs::write(&path, bytes).map_err(|e| format!("couldn't save the images: {e}"))?;
-            files.paths.push(path.to_string_lossy().into_owned());
+        mkdir(&dir)?;
+        // From here on, dropping `saved` cleans up whatever was written.
+        let mut saved = Self {
+            dir: Some(dir.clone()),
+            files: vec![],
+        };
+        for (i, url) in attachments.iter().enumerate() {
+            let unreadable = "One of the attachments couldn't be read.";
+            let a = Attachment::parse(url).ok_or(unreadable)?;
+            let bytes = a.bytes().ok_or(unreadable)?;
+            let folder = dir.join((i + 1).to_string());
+            mkdir(&folder)?;
+            let path = folder.join(a.file_name());
+            std::fs::write(&path, bytes).map_err(|e| format!("couldn't save the attachments: {e}"))?;
+            saved.files.push(SavedFile {
+                path: path.to_string_lossy().into_owned(),
+                mime: a.mime.to_string(),
+                kind: a.kind,
+            });
         }
-        Ok(files)
+        Ok(saved)
     }
 }
 
-impl Drop for ImageFiles {
+impl Drop for AttachmentFiles {
     fn drop(&mut self) {
         if let Some(dir) = &self.dir {
             let _ = std::fs::remove_dir_all(dir);
         }
     }
-}
-
-/// A `data:image/png;base64,…` URL as a file extension and the image's bytes.
-fn decode_image(url: &str) -> Option<(&'static str, Vec<u8>)> {
-    let (media_type, data) = url.strip_prefix("data:")?.split_once(";base64,")?;
-    let ext = match media_type {
-        "image/png" => "png",
-        "image/jpeg" => "jpg",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        _ => return None,
-    };
-    Some((ext, B64.decode(data).ok()?))
 }
 
 /// The permission modes Claude Code accepts (besides its default).
@@ -289,7 +288,7 @@ impl Runs {
         run_id: String,
         session_key: Option<String>,
         turn: OpencodeTurn,
-        image_files: ImageFiles,
+        attachment_files: AttachmentFiles,
         project: PathBuf,
     ) -> Result<String, String> {
         let server = opencode_server::server(&turn.dir).await?;
@@ -332,7 +331,7 @@ impl Runs {
         );
 
         let mut prompt = json!({
-            "parts": opencode::prompt_parts(&turn.prompt, &image_files.paths),
+            "parts": opencode::prompt_parts(&turn.prompt, &attachment_files.files),
             "agent": opencode::agent(mode),
         });
         if let Some(model) = turn.model.as_deref().and_then(opencode::model) {
@@ -352,7 +351,7 @@ impl Runs {
         let runs = self.live.clone();
         let id = run_id.clone();
         tokio::spawn(async move {
-            let _image_files = image_files; // removed when the run ends
+            let _attachment_files = attachment_files; // removed when the run ends
             let _lease = lease;
             let mut stream = opencode::Stream::new(&session, &turn.allowed);
             let path = format!("/session/{session}/abort");
@@ -478,11 +477,11 @@ impl Runs {
             .map(|d| d.canonicalize().unwrap_or_else(|_| d.clone()));
 
         let run_id = run_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        // Agents that take images by path get files that last as long as the run.
-        let image_files = if agent.images_as_files() {
-            ImageFiles::write(&run_id, &images)?
+        // Agents that take attachments by path get files that last as long as the run.
+        let attachment_files = if agent.attachments_as_files() {
+            AttachmentFiles::write(&run_id, &images)?
         } else {
-            ImageFiles::NONE
+            AttachmentFiles::NONE
         };
 
         // opencode runs in its shared server rather than a process of its own.
@@ -500,15 +499,15 @@ impl Runs {
                 allowed: allowed_tools,
             };
             return self
-                .start_opencode(emit, run_id, session_key, turn, image_files, dir)
+                .start_opencode(emit, run_id, session_key, turn, attachment_files, dir)
                 .await;
         }
         let (mut conversation, opening) = Conversation::new(
             agent,
             &Turn {
                 prompt: &prompt,
-                images: &images,
-                image_files: &image_files.paths,
+                attachments: &images,
+                files: &attachment_files.files,
                 session_id: session_id.as_deref(),
                 cwd: cwd.as_deref().and_then(|d| d.to_str()),
                 allowed_tools: &allowed_tools,
@@ -599,7 +598,7 @@ impl Runs {
 
         tokio::spawn(async move {
             let _grant = grant; // revoked when the run ends
-            let _image_files = image_files; // removed when the run ends
+            let _attachment_files = attachment_files; // removed when the run ends
             let mut lines = BufReader::new(stdout).lines();
             let mut done = false;
             // Sub-agents still working after the main agent's turn ended. Claude reports the
@@ -799,6 +798,7 @@ impl Runs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::attachments::Kind;
 
     fn noop() -> Emit {
         Arc::new(|_| {})
@@ -852,26 +852,34 @@ mod tests {
     }
 
     #[test]
-    fn image_files_last_as_long_as_the_run() {
+    fn attachment_files_last_as_long_as_the_run() {
         let run_id = uuid::Uuid::new_v4().to_string();
-        let files = ImageFiles::write(&run_id, &["data:image/png;base64,iVBORw0K".into()]).unwrap();
-        let path = PathBuf::from(&files.paths[0]);
-        assert!(path.ends_with(format!("bach-images/{run_id}/image-1.png")));
-        assert_eq!(std::fs::read(&path).unwrap(), b"\x89PNG\r\n");
+        let files = AttachmentFiles::write(
+            &run_id,
+            &["data:image/png;base64,iVBORw0K".into(), "data:application/pdf;name=a%20b.pdf;base64,JVBERg==".into()],
+        )
+        .unwrap();
+        let png = PathBuf::from(&files.files[0].path);
+        assert!(png.ends_with(format!("bach-attachments/{run_id}/1/image.png")));
+        assert_eq!(std::fs::read(&png).unwrap(), b"\x89PNG\r\n");
+        let pdf = &files.files[1];
+        assert!(pdf.path.ends_with(&format!("bach-attachments/{run_id}/2/a b.pdf")));
+        assert_eq!((pdf.mime.as_str(), pdf.kind), ("application/pdf", Kind::Pdf));
+        assert_eq!(std::fs::read(&pdf.path).unwrap(), b"%PDF");
         drop(files);
-        assert!(!path.parent().unwrap().exists());
+        assert!(!png.parent().unwrap().parent().unwrap().exists());
 
         // Nothing is left behind when one can't be read.
-        let bad = ImageFiles::write(
+        let bad = AttachmentFiles::write(
             &run_id,
             &[
                 "data:image/png;base64,AAAA".into(),
-                "data:text/plain;base64,AAAA".into(),
+                "data:application/zip;base64,AAAA".into(),
             ],
         );
         assert!(bad.is_err());
         assert!(!std::env::temp_dir()
-            .join("bach-images")
+            .join("bach-attachments")
             .join(&run_id)
             .exists());
     }

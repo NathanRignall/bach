@@ -1,4 +1,5 @@
 use super::AgentEvent;
+use crate::attachments::{Attachment, Kind};
 use bach_protocol::{DeltaKind, LimitWindow, PlanUsage};
 use satie::Grant;
 use serde_json::{json, Value};
@@ -144,13 +145,14 @@ pub fn models() -> Vec<bach_protocol::ModelInfo> {
     .into()
 }
 
-/// One line of stream-json input: a user turn. Images (`data:` URLs) go first as base64 image
-/// blocks, then the text; without images the content is just the text.
-pub fn user_message(prompt: &str, images: &[String]) -> String {
-    let content = if images.is_empty() {
+/// One line of stream-json input: a user turn. Attachments (`data:` URLs) go first, images as
+/// image blocks and PDFs and text files as document blocks, then the text; without attachments
+/// the content is just the text.
+pub fn user_message(prompt: &str, attachments: &[String]) -> String {
+    let content = if attachments.is_empty() {
         json!(prompt)
     } else {
-        let mut blocks: Vec<Value> = images.iter().filter_map(|url| image_block(url)).collect();
+        let mut blocks: Vec<Value> = attachments.iter().filter_map(|url| attachment_block(url)).collect();
         if !prompt.is_empty() {
             blocks.push(json!({ "type": "text", "text": prompt }));
         }
@@ -159,13 +161,27 @@ pub fn user_message(prompt: &str, images: &[String]) -> String {
     json!({ "type": "user", "message": { "role": "user", "content": content } }).to_string()
 }
 
-/// `data:image/png;base64,AAAA` as an image content block.
-fn image_block(url: &str) -> Option<Value> {
-    let (media_type, data) = url.strip_prefix("data:")?.split_once(";base64,")?;
-    Some(json!({
-        "type": "image",
-        "source": { "type": "base64", "media_type": media_type, "data": data },
-    }))
+/// `data:image/png;base64,AAAA` as an image content block, a PDF or text file as a document.
+fn attachment_block(url: &str) -> Option<Value> {
+    let a = Attachment::parse(url)?;
+    let mut block = match a.kind {
+        Kind::Image => json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": a.mime, "data": a.data },
+        }),
+        Kind::Pdf => json!({
+            "type": "document",
+            "source": { "type": "base64", "media_type": a.mime, "data": a.data },
+        }),
+        Kind::Text => json!({
+            "type": "document",
+            "source": { "type": "text", "media_type": "text/plain", "data": String::from_utf8_lossy(&a.bytes()?) },
+        }),
+    };
+    if let Some(name) = a.name {
+        block["title"] = json!(name);
+    }
+    Some(block)
 }
 
 /// Folders the agent offers to add access to (a command reaching outside the project).

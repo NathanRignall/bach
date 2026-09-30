@@ -3,6 +3,7 @@
 //! the thread, start the turn, answer its approval requests, and close stdin once the turn
 //! completes. Shapes recorded from codex-cli 0.146.0 (tests/fixtures/codex_*.jsonl).
 use super::{AgentEvent, Turn};
+use crate::attachments::{Kind, SavedFile};
 use bach_protocol::{DeltaKind, ModelInfo};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -86,7 +87,8 @@ pub fn env(satie: Option<&satie::Grant>) -> Vec<(&'static str, String)> {
 /// One turn's conversation with the app server.
 pub struct Conversation {
     prompt: String,
-    images: Vec<String>,
+    /// Attachments saved as files: images go as images, the rest by path in the text.
+    files: Vec<SavedFile>,
     thread_id: Option<String>,
     cwd: Option<String>,
     /// Session rules approved earlier: requests they cover are accepted without asking.
@@ -132,6 +134,21 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
+/// The prompt, and where to find the attachments Codex can't take as images (PDFs, text files):
+/// it reads them itself.
+fn prompt_text(prompt: &str, files: &[SavedFile]) -> String {
+    let paths: Vec<String> = files
+        .iter()
+        .filter(|f| f.kind != Kind::Image)
+        .map(|f| format!("- {}", f.path))
+        .collect();
+    match (prompt.is_empty(), paths.is_empty()) {
+        (_, true) => prompt.to_string(),
+        (true, false) => format!("Attached files:\n{}", paths.join("\n")),
+        (false, false) => format!("{prompt}\n\nAttached files:\n{}", paths.join("\n")),
+    }
+}
+
 /// `zsh -lc 'git push'` -> `git push`: the shell wrapper Codex runs every command through.
 pub fn unwrap_shell(command: &str) -> String {
     match shlex::split(command).as_deref() {
@@ -148,7 +165,7 @@ impl Conversation {
     pub fn new(turn: &Turn) -> Self {
         Self {
             prompt: turn.prompt.into(),
-            images: turn.image_files.to_vec(),
+            files: turn.files.to_vec(),
             thread_id: turn.session_id.map(String::from),
             cwd: turn.cwd.map(String::from),
             allowed: turn.allowed_tools.to_vec(),
@@ -248,13 +265,15 @@ impl Conversation {
                 self.model = result["model"].as_str().map(String::from);
                 self.thread_id = Some(id.clone());
                 let mut input: Vec<Value> = vec![];
-                if !self.prompt.is_empty() {
-                    input.push(json!({ "type": "text", "text": self.prompt, "text_elements": [] }));
+                let text = prompt_text(&self.prompt, &self.files);
+                if !text.is_empty() {
+                    input.push(json!({ "type": "text", "text": text, "text_elements": [] }));
                 }
                 input.extend(
-                    self.images
+                    self.files
                         .iter()
-                        .map(|p| json!({ "type": "localImage", "path": p })),
+                        .filter(|f| f.kind == Kind::Image)
+                        .map(|f| json!({ "type": "localImage", "path": f.path })),
                 );
                 let mut params = json!({ "threadId": id, "input": input });
                 if let Some(effort) = &self.effort {
@@ -950,6 +969,15 @@ mod tests {
     use super::*;
 
     use bach_protocol::Decision;
+
+    #[test]
+    fn attachments_other_than_images_are_named_in_the_text() {
+        let file = |path: &str, kind| SavedFile { path: path.into(), mime: String::new(), kind };
+        let files = [file("/t/1/a.png", Kind::Image), file("/t/2/b.pdf", Kind::Pdf), file("/t/3/c.txt", Kind::Text)];
+        assert_eq!(prompt_text("read", &files), "read\n\nAttached files:\n- /t/2/b.pdf\n- /t/3/c.txt");
+        assert_eq!(prompt_text("", &files[1..2]), "Attached files:\n- /t/2/b.pdf");
+        assert_eq!(prompt_text("look", &files[..1]), "look");
+    }
 
     fn conversation(allowed: &[&str]) -> Conversation {
         let allowed: Vec<String> = allowed.iter().map(|r| r.to_string()).collect();

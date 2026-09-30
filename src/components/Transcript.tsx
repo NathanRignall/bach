@@ -9,7 +9,9 @@ import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
+import { describe } from "@/lib/attachments";
 import { cn } from "@/lib/utils";
+import { FileChip } from "@/components/FileChip";
 import { PortLink } from "@/components/Ports";
 import { STATUS, StatusIcon } from "@/components/TasksPanel";
 import { ApprovalBlock, Block, ToolBlock, isSubagent } from "@/session";
@@ -435,10 +437,29 @@ function UserMessage({ text, images }: { text: string; images?: string[] }) {
         </Button>
       )}
       <div className="flex flex-col items-end gap-1.5">
-        {!!images?.length && <Images images={images} alt="Image you sent" className="justify-end" thumbClass="max-h-40" />}
+        {!!images?.length && <Attachments attachments={images} />}
         {text && <div className="w-fit rounded-2xl bg-secondary px-4 py-2 text-sm whitespace-pre-wrap">{text}</div>}
       </div>
     </div>
+  );
+}
+
+/** What the user sent with a message: images as thumbnails, PDFs and text files by name. */
+function Attachments({ attachments }: { attachments: string[] }) {
+  const shown = attachments.map((src) => ({ src, ...describe(src) }));
+  const images = shown.flatMap((a) => (a.image ? [a.src] : []));
+  const files = shown.flatMap((a) => (a.image ? [] : [a]));
+  return (
+    <>
+      {!!images.length && <Images images={images} alt="Image you sent" className="justify-end" thumbClass="max-h-40" />}
+      {!!files.length && (
+        <div className="flex flex-wrap justify-end gap-2">
+          {files.map((f, i) => (
+            <FileChip key={i} name={f.name} pdf={f.pdf} className="h-9" />
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
