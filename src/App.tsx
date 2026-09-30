@@ -33,6 +33,7 @@ import { UsageIndicator, usePlanUsage } from "@/components/UsageIndicator";
 import { Composer } from "@/components/Composer";
 import { NewSessionPage } from "@/components/NewSessionPage";
 import { SessionHeader, SessionView } from "@/components/SessionHeader";
+import { useReview } from "@/lib/review";
 import { DiffMode, DiffView, diffBase, useDiff } from "@/components/DiffView";
 import { ConnectionBanner, pausedReason, useConnection } from "@/components/ConnectionPicker";
 import { FileBrowser } from "@/components/FileBrowser";
@@ -199,7 +200,9 @@ export function App() {
   const live = (activeId && drafts.current.get(activeId)) || emptyLive;
   const showChanges = !!active && view === "changes";
   const showFiles = !!active && view === "files";
-  const diff = useDiff(active, diffMode, showChanges);
+  const review = useReview(active?.id);
+  // A selection being commented on would shift under the diff's live refresh.
+  const diff = useDiff(active, diffMode, showChanges && !review.selection);
 
   // Each session opens on its chat; a worktree's changes are compared with where it branched from.
   useEffect(() => {
@@ -356,6 +359,15 @@ export function App() {
     }
   }
 
+  /** Sends `prompt` to the active session as a message, queued while its turn runs, then shows the chat. */
+  async function ask(prompt: string) {
+    if (!active) return;
+    const s = await sendMessage(active.id, prompt);
+    setSessions((all) => upsert(all, s));
+    setView("chat");
+    followLatest();
+  }
+
   async function decide(requestId: string, decision: Decision, answers?: Record<string, string>) {
     if (!active) return;
     try {
@@ -474,7 +486,7 @@ export function App() {
         {active && (
           <>
             <SessionHeader session={active} inset={!sidebarOpen} view={view} onView={setView} changedFiles={diff.diff?.files.length} />
-            {showChanges && <DiffView session={active} state={diff} mode={diffMode} onMode={setDiffMode} />}
+            {showChanges && <DiffView session={active} state={diff} mode={diffMode} onMode={setDiffMode} review={review} onAsk={canRun(active) ? ask : undefined} />}
             {showFiles && <FileBrowser key={active.id} session={active} />}
             {view === "chat" && (
             <>

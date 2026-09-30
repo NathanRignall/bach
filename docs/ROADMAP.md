@@ -4,7 +4,7 @@ Planned features and known issues, roughly grouped by area.
 
 ## Diff view
 
-- [ ] **Review comments for the agent**: comment on lines or hunks in the diff and send
+- [x] **Review comments for the agent**: comment on lines or hunks in the diff and send
   them back to the agent as feedback.
 - [x] **Syntax highlighting**: highlight code in the diff by language.
 - [x] **File tree**: show changed files as a directory tree, not a flat list.
@@ -15,7 +15,7 @@ Planned features and known issues, roughly grouped by area.
   without leaving the diff view.
 - [ ] **Commit history**: browse the branch's commits and open each one's diff.
 - [ ] **Push**: push the session's branch from Bach.
-- [ ] **Explain this change**: select a hunk and ask the agent why it made it.
+- [x] **Explain this change**: select a hunk and ask the agent why it made it.
 
 ## Sessions
 

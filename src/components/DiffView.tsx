@@ -1,10 +1,12 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, FileDiff as FileDiffIcon, RefreshCw } from "lucide-react";
+import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, FileDiff as FileDiffIcon, MessageSquarePlus, RefreshCw, Send } from "lucide-react";
 import { DiffHunk, FileDiff, FileStatus, GitDiff, Session, gitDiff, onReconnect } from "@/api";
 import { FileTree } from "@/components/FileTree";
+import { CommentBox, DraftComment, SelectionActions } from "@/components/ReviewComments";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { type Token, renderLine, useHighlight } from "@/lib/highlight";
+import { type Anchor, type LineSelection, type Review, anchorEnd, anchorOf, explainMessage, hunkSelection, isSelected, rangeLabel, reviewMessage } from "@/lib/review";
 import { cn } from "@/lib/utils";
 
 /** Uncommitted changes, or everything on the session's branch since it left its base branch. */
@@ -118,55 +120,152 @@ function diffSides(file: FileDiff) {
   return { docs: [old.join("\n"), now.join("\n")], at };
 }
 
-function Hunk({ hunk, at, tokens }: { hunk: DiffHunk; at?: [0 | 1, number][]; tokens?: Token[][][] }) {
+/** What the diff needs from the review: the selection, the drafts, and how to act on them. */
+interface ReviewContext {
+  review: Review;
+  /** The comment box is open on the selection. */
+  composing: boolean;
+  onCompose: (on: boolean) => void;
+  /** Sends the message to the agent, rejecting if it couldn't be sent. */
+  onAsk: (prompt: string) => Promise<void>;
+  busy: boolean;
+}
+
+function Hunk({ file, index, at, tokens, ctx }: { file: FileDiff; index: number; at?: [0 | 1, number][]; tokens?: Token[][][]; ctx: ReviewContext }) {
+  const hunk = file.hunks[index];
+  const { review } = ctx;
+  const sel = review.selection;
+  const drag = useRef<number | undefined>(undefined);
+  // While dragging, the actions stay out of the way: they would push the lines under the pointer.
+  const [dragging, setDragging] = useState(false);
+  // A drag from one gutter to another selects the lines between; the button is let go anywhere.
+  useEffect(() => {
+    const up = () => ((drag.current = undefined), setDragging(false));
+    window.addEventListener("mouseup", up);
+    return () => window.removeEventListener("mouseup", up);
+  }, []);
+  const pick = (i: number, extend: boolean) => {
+    ctx.onCompose(false);
+    review.select({ path: file.path, hunk: index, from: i, to: i }, extend);
+  };
+  const gutter = (i: number, n: number | null) => (
+    <td className="w-px min-w-10 border-r border-border/60 p-0 text-right align-top text-muted-foreground/70 select-none">
+      <button
+        type="button"
+        tabIndex={-1}
+        aria-label={`Select ${n === null ? "line" : `line ${n}`} to comment on (shift-click for a range)`}
+        className="block w-full cursor-pointer px-2 text-right hover:bg-primary/25 hover:text-foreground"
+        onMouseDown={(e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          drag.current = e.shiftKey ? undefined : i;
+          setDragging(!e.shiftKey);
+          pick(i, e.shiftKey);
+        }}
+        onMouseEnter={() => {
+          const from = drag.current;
+          if (from !== undefined) review.select({ path: file.path, hunk: index, from: Math.min(from, i), to: Math.max(from, i) });
+        }}
+        onClick={(e) => e.detail === 0 && pick(i, e.shiftKey)}
+      >
+        {n ?? "\u00a0"}
+      </button>
+    </td>
+  );
+  const anchor = sel && sel.path === file.path && sel.hunk === index ? anchorOf(file, sel) : undefined;
+  const end = (i: number) => !dragging && sel && sel.path === file.path && sel.hunk === index && sel.to === i;
+  const draftsAfter = (i: number) =>
+    review.drafts.filter((d) => {
+      const at = anchorEnd(file, d.anchor);
+      return d.anchor.path === file.path && at?.[0] === index && at[1] === i;
+    });
   return (
     <>
-      <tr className="bg-sky-500/8 text-muted-foreground">
+      <tr className="group/hunk bg-sky-500/8 text-muted-foreground">
         <td colSpan={3} className="px-3 py-1 font-mono text-[11px] whitespace-pre">
-          {hunk.header}
+          <div className="sticky left-3 flex w-[calc(100cqw-1.5rem)] items-center gap-3">
+            <span className="min-w-0 truncate">{hunk.header}</span>
+            <Button
+              size="xs"
+              variant="ghost"
+              className="ml-auto h-5 opacity-0 group-hover/hunk:opacity-100 focus-visible:opacity-100"
+              title="Comment on or ask about this whole hunk"
+              onClick={() => (ctx.onCompose(false), review.select(hunkSelection(file.path, index, hunk)))}
+            >
+              <MessageSquarePlus /> Hunk
+            </Button>
+          </div>
         </td>
       </tr>
       {hunk.lines.map((l, i) => {
         const where = at?.[i];
         return (
-          <tr
-            key={i}
-            className={cn(
-              l.kind === "add" && "bg-emerald-500/12 dark:bg-emerald-400/12",
-              l.kind === "delete" && "bg-red-500/12 dark:bg-red-400/12",
+          <Fragment key={i}>
+            <tr
+              className={cn(
+                l.kind === "add" && "bg-emerald-500/12 dark:bg-emerald-400/12",
+                l.kind === "delete" && "bg-red-500/12 dark:bg-red-400/12",
+                isSelected(sel, file.path, index, i) && "bg-primary/20 dark:bg-primary/25",
+              )}
+            >
+              {gutter(i, l.old)}
+              {gutter(i, l.new)}
+              <td className="pr-4 whitespace-pre">
+                <span
+                  className={cn(
+                    "inline-block w-5 text-center select-none",
+                    l.kind === "add" && "text-emerald-600 dark:text-emerald-400",
+                    l.kind === "delete" && "text-destructive",
+                  )}
+                >
+                  {l.kind === "add" ? "+" : l.kind === "delete" ? "-" : " "}
+                </span>
+                {renderLine(l.text, where && tokens?.[where[0]][where[1]])}
+                {l.noNewline && <span className="ml-2 text-[10px] text-muted-foreground select-none" title="No newline at end of file">⏎̸</span>}
+              </td>
+            </tr>
+            {(draftsAfter(i).length > 0 || (anchor && end(i))) && (
+              <tr>
+                <td colSpan={3} className="p-0">
+                  {draftsAfter(i).map((d) => (
+                    <DraftComment key={d.id} draft={d} onEdit={(t) => review.edit(d.id, t)} onRemove={() => review.remove(d.id)} />
+                  ))}
+                  {anchor && end(i) && <SelectionPanel anchor={anchor} ctx={ctx} />}
+                </td>
+              </tr>
             )}
-          >
-            <td className="w-px min-w-10 border-r border-border/60 px-2 text-right align-top text-muted-foreground/70 select-none">{l.old ?? ""}</td>
-            <td className="w-px min-w-10 border-r border-border/60 px-2 text-right align-top text-muted-foreground/70 select-none">{l.new ?? ""}</td>
-            <td className="pr-4 whitespace-pre">
-              <span
-                className={cn(
-                  "inline-block w-5 text-center select-none",
-                  l.kind === "add" && "text-emerald-600 dark:text-emerald-400",
-                  l.kind === "delete" && "text-destructive",
-                )}
-              >
-                {l.kind === "add" ? "+" : l.kind === "delete" ? "-" : " "}
-              </span>
-              {renderLine(l.text, where && tokens?.[where[0]][where[1]])}
-              {l.noNewline && <span className="ml-2 text-[10px] text-muted-foreground select-none" title="No newline at end of file">⏎̸</span>}
-            </td>
-          </tr>
+          </Fragment>
         );
       })}
     </>
   );
 }
 
-function DiffLines({ file }: { file: FileDiff }) {
+/** The actions on the selected lines, or the comment box once Comment is pressed. */
+function SelectionPanel({ anchor, ctx }: { anchor: Anchor; ctx: ReviewContext }) {
+  const { review } = ctx;
+  const label = rangeLabel(anchor);
+  if (ctx.composing) return <CommentBox label={label} onSave={(t) => (ctx.onCompose(false), review.add(anchor, t))} onCancel={() => ctx.onCompose(false)} />;
+  return (
+    <SelectionActions
+      label={`${anchor.quote.length} ${anchor.quote.length === 1 ? "line" : "lines"} selected · ${label}`}
+      busy={ctx.busy}
+      onComment={() => ctx.onCompose(true)}
+      onExplain={() => void ctx.onAsk(explainMessage(anchor))}
+      onCancel={() => review.select(undefined)}
+    />
+  );
+}
+
+function DiffLines({ file, ctx }: { file: FileDiff; ctx: ReviewContext }) {
   const sides = useMemo(() => diffSides(file), [file]);
   const tokens = useHighlight(file.path, sides.docs)?.docs;
   return (
-    <div className="overflow-x-auto">
+    <div className="@container overflow-x-auto">
       <table className="w-full border-collapse font-mono text-xs leading-5 [tab-size:4]">
         <tbody>
-          {file.hunks.map((h, i) => (
-            <Hunk key={i} hunk={h} at={sides.at[i]} tokens={tokens} />
+          {file.hunks.map((_, i) => (
+            <Hunk key={i} file={file} index={i} at={sides.at[i]} tokens={tokens} ctx={ctx} />
           ))}
         </tbody>
       </table>
@@ -174,7 +273,7 @@ function DiffLines({ file }: { file: FileDiff }) {
   );
 }
 
-function FileCard({ file, open, onToggle }: { file: FileDiff; open: boolean; onToggle: () => void }) {
+function FileCard({ file, open, onToggle, ctx }: { file: FileDiff; open: boolean; onToggle: () => void; ctx: ReviewContext }) {
   const { dir, name } = splitPath(file.path);
   const empty = file.binary ? "Binary file" : file.omitted ? "Too large to show" : !file.hunks.length ? (file.status === "renamed" ? "Renamed without changes" : "No content changes") : undefined;
   return (
@@ -198,7 +297,7 @@ function FileCard({ file, open, onToggle }: { file: FileDiff; open: boolean; onT
         (empty ? (
           <p className="px-3 py-3 text-xs text-muted-foreground">{empty}</p>
         ) : (
-          <DiffLines file={file} />
+          <DiffLines file={file} ctx={ctx} />
         ))}
     </section>
   );
@@ -209,12 +308,50 @@ const COLLAPSE_LINES = 600;
 const startsOpen = (f: FileDiff) => f.status !== "deleted" && f.additions + f.deletions <= COLLAPSE_LINES;
 
 /** The session's changes: a file list, and each file's diff. */
-export function DiffView({ session, state, mode, onMode }: { session: Session; state: DiffState; mode: DiffMode; onMode: (m: DiffMode) => void }) {
+export function DiffView({
+  session,
+  state,
+  mode,
+  onMode,
+  review,
+  onAsk,
+}: {
+  session: Session;
+  state: DiffState;
+  mode: DiffMode;
+  onMode: (m: DiffMode) => void;
+  review: Review;
+  /** Sends a message to the session's agent (queued while it works), rejecting if it couldn't be. */
+  onAsk?: (prompt: string) => Promise<void>;
+}) {
   const { diff, loading, error, refresh } = state;
+  const [composing, setComposing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [sendError, setSendError] = useState<string>();
+  const ask = async (prompt: string) => {
+    if (!onAsk) return;
+    setBusy(true);
+    setSendError(undefined);
+    try {
+      await onAsk(prompt);
+    } catch (e) {
+      setSendError(String((e as Error).message ?? e));
+      throw e;
+    } finally {
+      setBusy(false);
+    }
+  };
+  const ctx: ReviewContext = { review, composing, onCompose: setComposing, onAsk: (p) => ask(p).then(() => review.select(undefined), () => {}), busy };
+  // Esc clears the selection (a comment box handles its own Esc).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !composing && review.select(undefined);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
   const base = diffBase(session);
   // Files toggled away from how they start (see `startsOpen`), by path.
   const [toggled, setToggled] = useState(new Set<string>());
-  useEffect(() => (setToggled(new Set()), setSelected(undefined)), [session.id, mode]);
+  useEffect(() => (setToggled(new Set()), setSelected(undefined), setComposing(false), setSendError(undefined)), [session.id, mode]);
 
   const files = diff?.files ?? [];
   const isOpen = (f: FileDiff) => startsOpen(f) !== toggled.has(f.path);
@@ -231,6 +368,11 @@ export function DiffView({ session, state, mode, onMode }: { session: Session; s
     if (!isOpen(f)) toggle(f.path);
     requestAnimationFrame(() => document.getElementById(`diff-${f.path}`)?.scrollIntoView({ block: "start" }));
   };
+  // Drafts whose lines the diff has moved past (or whose file it no longer has).
+  const lost = review.drafts.filter((d) => {
+    const f = files.find((f) => f.path === d.anchor.path);
+    return !f || !anchorEnd(f, d.anchor);
+  });
   const additions = files.reduce((n, f) => n + f.additions, 0);
   const deletions = files.reduce((n, f) => n + f.deletions, 0);
 
@@ -311,11 +453,41 @@ export function DiffView({ session, state, mode, onMode }: { session: Session; s
               {diff.truncated && (
                 <p className="text-xs text-muted-foreground">Some large files are listed without their lines.</p>
               )}
+              {lost.length > 0 && (
+                <section className="rounded-lg border bg-card p-2 text-xs">
+                  <p className="mb-1 px-1 text-muted-foreground">Comments on lines that are no longer in the diff</p>
+                  <div className="@container">
+                    {lost.map((d) => (
+                      <DraftComment key={d.id} draft={d} showPath onEdit={(t) => review.edit(d.id, t)} onRemove={() => review.remove(d.id)} />
+                    ))}
+                  </div>
+                </section>
+              )}
               {files.map((f) => (
-                <FileCard key={f.path} file={f} open={isOpen(f)} onToggle={() => toggle(f.path)} />
+                <FileCard key={f.path} file={f} open={isOpen(f)} onToggle={() => toggle(f.path)} ctx={ctx} />
               ))}
             </div>
           </div>
+        </div>
+      )}
+
+      {review.drafts.length > 0 && (
+        <div className="flex shrink-0 items-center gap-3 border-t bg-card px-4 py-2 text-xs" role="region" aria-label="Review comments">
+          <span className="font-medium">
+            {review.drafts.length} draft {review.drafts.length === 1 ? "comment" : "comments"}
+          </span>
+          {sendError && <span className="min-w-0 truncate text-destructive" title={sendError}>{sendError}</span>}
+          <Button size="xs" variant="ghost" className="ml-auto" onClick={review.clearDrafts} disabled={busy}>
+            Discard
+          </Button>
+          <Button
+            size="xs"
+            disabled={busy || !onAsk}
+            title={session.runId ? "The agent is working: this is queued until its turn ends" : "Send all comments to the agent as one message"}
+            onClick={() => ask(reviewMessage(review.drafts)).then(review.clearDrafts, () => {})}
+          >
+            {busy ? <Spinner /> : <Send />} {session.runId ? "Queue for agent" : "Send to agent"}
+          </Button>
         </div>
       )}
     </div>
