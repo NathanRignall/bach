@@ -60,6 +60,8 @@ export interface FileTreeProps<T extends TreeFile> {
   collapsed?: boolean;
   /** Extras for a file's row: shown before its name (instead of the file icon) and after it. */
   decorate?: (file: T) => { before?: ReactNode; after?: ReactNode; className?: string; title?: string };
+  /** Buttons shown over the right end of a file's row while it is hovered or focused. */
+  actions?: (file: T) => ReactNode;
   /** For screen readers, e.g. "Changed files". */
   label: string;
   className?: string;
@@ -69,7 +71,7 @@ export interface FileTreeProps<T extends TreeFile> {
  * Files as a collapsible folder tree. Folders that only hold one folder share a row. Arrow keys
  * move through the rows; left and right close and open folders.
  */
-export function FileTree<T extends TreeFile>({ files, selected, onSelect, collapsed = false, decorate, label, className }: FileTreeProps<T>) {
+export function FileTree<T extends TreeFile>({ files, selected, onSelect, collapsed = false, decorate, actions, label, className }: FileTreeProps<T>) {
   const tree = useMemo(() => buildTree(files), [files]);
   // Folders opened or closed away from how they start, by path.
   const [toggled, setToggled] = useState(new Set<string>());
@@ -185,9 +187,10 @@ export function FileTree<T extends TreeFile>({ files, selected, onSelect, collap
         }
         const extra = decorate?.(r.file);
         const isSelected = r.file.path === selected;
-        return (
+        const extraActions = actions?.(r.file);
+        const row = (
           <button
-            key={key}
+            key={extraActions ? undefined : key}
             type="button"
             role="treeitem"
             aria-selected={isSelected}
@@ -206,6 +209,13 @@ export function FileTree<T extends TreeFile>({ files, selected, onSelect, collap
             <span className={cn("min-w-0 flex-1 truncate", extra?.className)}>{r.name}</span>
             {extra?.after}
           </button>
+        );
+        if (!extraActions) return row;
+        return (
+          <div key={key} className="group/row relative">
+            {row}
+            <div className="absolute inset-y-0 right-1 hidden items-center bg-muted group-focus-within/row:flex group-hover/row:flex">{extraActions}</div>
+          </div>
         );
       })}
     </div>

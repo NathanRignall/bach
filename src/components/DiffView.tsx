@@ -556,6 +556,16 @@ export function DiffView({
         <div className="flex min-h-0 flex-1">
           {showNav && (
             <nav className="hidden w-64 shrink-0 flex-col overflow-hidden border-r md:flex" aria-label="Changed files">
+              {staging && (
+                <CommitBox
+                  staged={stagedCount}
+                  onCommit={async (message) => {
+                    await gitCommit(path, message);
+                    review.select(undefined);
+                    refresh();
+                  }}
+                />
+              )}
               {mode === "commits" && (
                 <div className={cn("overflow-y-auto", files.length ? "max-h-[45%] shrink-0 border-b" : "flex-1")}>
                   <CommitList state={commits} base={base} selected={commit} onSelect={(c) => onCommit(c.sha)} />
@@ -581,6 +591,22 @@ export function DiffView({
                       files={sec.files}
                       selected={selected && (!staging || selected.staged === (sec.key === "staged")) ? selected.path : undefined}
                       onSelect={reveal}
+                      actions={
+                        staging
+                          ? (f) => (
+                              <Button
+                                size="icon-xs"
+                                variant="ghost"
+                                disabled={acting}
+                                title={f.staged ? "Unstage this file" : "Stage this file"}
+                                aria-label={f.staged ? `Unstage ${f.path}` : `Stage ${f.path}`}
+                                onClick={() => void act(() => gitStage(path, paths([f]), !f.staged))}
+                              >
+                                {f.staged ? <Minus /> : <Plus />}
+                              </Button>
+                            )
+                          : undefined
+                      }
                       label={sec.title || "Changed files"}
                       decorate={(f) => ({
                         before: <StatusLetter file={f} />,
@@ -644,17 +670,6 @@ export function DiffView({
             </div>
           )}
         </div>
-      )}
-
-      {staging && (
-        <CommitBox
-          staged={stagedCount}
-          onCommit={async (message) => {
-            await gitCommit(path, message);
-            review.select(undefined);
-            refresh();
-          }}
-        />
       )}
 
       {review.drafts.length > 0 && (

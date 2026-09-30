@@ -92,23 +92,21 @@ export function CommitBox({ staged, onCommit }: { staged: number; onCommit: (mes
     }
   };
   return (
-    <div className="flex shrink-0 flex-col gap-2 border-t bg-card px-4 py-2 text-xs" role="region" aria-label="Commit">
+    <div className="flex shrink-0 flex-col gap-2 border-b p-2 text-xs" role="region" aria-label="Commit">
       {error && <GitError message={error} onDismiss={() => setError(undefined)} />}
-      <div className="flex items-end gap-2">
-        <Textarea
-          aria-label="Commit message"
-          rows={1}
-          className="min-h-8 max-h-32 flex-1 py-1.5 font-mono text-xs md:text-xs"
-          placeholder={staged ? "Commit message (first line is the summary)" : "Stage changes to commit them"}
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          onKeyDown={(e) => (e.metaKey || e.ctrlKey) && e.key === "Enter" && (e.preventDefault(), void commit())}
-          spellCheck
-        />
-        <Button size="sm" disabled={!can} onClick={() => void commit()} title="Commit the staged changes (Ctrl/⌘ + Enter)">
-          {busy ? <Spinner /> : <GitCommitHorizontal />} Commit {staged > 0 && `${staged} ${staged === 1 ? "file" : "files"}`}
-        </Button>
-      </div>
+      <Textarea
+        aria-label="Commit message"
+        rows={2}
+        className="min-h-14 max-h-40 py-1.5 font-mono text-xs md:text-xs"
+        placeholder={staged ? "Commit message" : "Stage changes to commit them"}
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        onKeyDown={(e) => (e.metaKey || e.ctrlKey) && e.key === "Enter" && (e.preventDefault(), void commit())}
+        spellCheck
+      />
+      <Button size="sm" disabled={!can} onClick={() => void commit()} title="Commit the staged changes (Ctrl/⌘ + Enter)">
+        {busy ? <Spinner /> : <GitCommitHorizontal />} Commit {staged > 0 && `${staged} ${staged === 1 ? "file" : "files"}`}
+      </Button>
     </div>
   );
 }
