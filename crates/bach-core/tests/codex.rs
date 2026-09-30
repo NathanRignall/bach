@@ -11,6 +11,7 @@ const FAKE_CODEX: &str = r#"#!/bin/sh
 out="$BACH_TEST_OUT"
 echo $$ > "$out/pid"
 echo "$@" > "$out/args"
+echo "$BACH_SATIE_TOKEN" > "$out/token"
 read init
 echo '{"id":1,"result":{"userAgent":"test","platformFamily":"unix","platformOs":"linux"}}'
 read initialized
@@ -37,6 +38,7 @@ cat > /dev/null
 "#;
 
 struct Run {
+    satie: satie::Satie,
     runs: Runs,
     run_id: String,
     rx: mpsc::Receiver<Value>,
@@ -54,7 +56,8 @@ async fn begin(dir: &Path, session_id: Option<&str>) -> Run {
     std::env::set_var("BACH_TEST_OUT", &out);
 
     let (tx, rx) = mpsc::channel();
-    let runs = Runs::default();
+    let satie = satie::Satie::start("127.0.0.1:0".parse().unwrap(), out.join("tasks")).await.unwrap();
+    let runs = Runs::with_satie(Some(satie.clone()));
     let run_id = runs
         .start(
             std::sync::Arc::new(move |ev| {
@@ -76,6 +79,7 @@ async fn begin(dir: &Path, session_id: Option<&str>) -> Run {
         .await
         .unwrap();
     let mut run = Run {
+        satie,
         runs,
         run_id,
         rx,
@@ -140,10 +144,16 @@ async fn codex_app_server_round_trip() {
 
     // A new thread that may write to the project, and asks before going further.
     let mut run = begin(&dir, None).await;
-    assert_eq!(
-        std::fs::read_to_string(run.out.join("args")).unwrap().trim(),
-        "app-server --enable default_mode_request_user_input"
-    );
+    // Satie is offered as an MCP server; its token comes through the environment, never the
+    // command line.
+    let args = std::fs::read_to_string(run.out.join("args")).unwrap();
+    assert!(args.starts_with("app-server --enable default_mode_request_user_input "), "{args}");
+    assert!(args.contains(&format!("mcp_servers.satie.url=\"{}\"", run.satie.url())), "{args}");
+    assert!(args.contains("mcp_servers.satie.bearer_token_env_var=\"BACH_SATIE_TOKEN\""), "{args}");
+    assert!(args.contains("developer_instructions=") && args.contains("task_start"), "{args}");
+    let token = std::fs::read_to_string(run.out.join("token")).unwrap();
+    assert!(token.trim().len() >= 16 && !args.contains(token.trim()), "token: {token}");
+    assert_eq!(run.satie.active_grants(), 1);
     let thread = run.file("thread");
     assert_eq!(thread["method"], "thread/start");
     assert_eq!(thread["params"]["sandbox"], "workspace-write");
@@ -175,6 +185,9 @@ async fn codex_app_server_round_trip() {
     assert!(run.events.iter().any(|e| e["type"] == "text" && e["text"] == "Pushed."));
     assert_eq!(run.events.last().unwrap()["isError"], false);
     run.exited().await;
+    // The token goes with the run.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(run.satie.active_grants(), 0);
 
     // Stopping a resumed turn: Codex is asked to interrupt it, then the process goes.
     let mut run = begin(&dir, Some("t1")).await;
@@ -376,4 +389,72 @@ async fn real_codex_settings_and_streams() {
     assert_eq!(ev.last().unwrap()["isError"], false);
     assert!(dir.join("plan.txt").exists(), "didn't write after leaving plan mode");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The real Codex with Satie: it starts a server through `task_start`, which outlives the turn.
+/// `cargo test -p bach-core --test codex real_codex_satie -- --ignored --nocapture`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn real_codex_satie() {
+    let dir = std::env::temp_dir().join(format!("bach-real-codex-satie-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("proj")).unwrap();
+    let project = dir.join("proj");
+    let satie = satie::Satie::start("127.0.0.1:0".parse().unwrap(), dir.join("tasks")).await.unwrap();
+    let (tx, rx) = mpsc::channel();
+    let runs = Runs::with_satie(Some(satie.clone()));
+    let run_id = runs
+        .start(
+            std::sync::Arc::new(move |ev| {
+                let _ = tx.send(serde_json::to_value(&ev).unwrap());
+            }),
+            RunRequest {
+                agent: AgentKind::Codex,
+                prompt: "Start two web servers serving this folder, one on port 3977 and one on 3978 (python3 -m http.server <port>), as two separate tasks, so they keep running after you finish. Then list the running tasks and reply done.".into(),
+                images: vec![],
+                cwd: Some(project.to_string_lossy().into()),
+                session_id: None,
+                model: None,
+                permission_mode: None,
+                allowed_tools: vec![],
+                session_key: None,
+                run_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    // "For this session" on the first card; Codex shouldn't ask again for the second server.
+    let mut cards = vec![];
+    loop {
+        let ev = rx.recv_timeout(Duration::from_secs(180)).unwrap();
+        if ev["type"] == "delta" {
+            continue;
+        }
+        println!("{ev}");
+        if ev["type"] == "approval" {
+            cards.push(ev["toolName"].as_str().unwrap().to_string());
+            let rules = runs
+                .respond_approval(&run_id, ev["requestId"].as_str().unwrap(), Decision::AllowSession, None, None)
+                .await
+                .unwrap();
+            assert_eq!(rules, [ev["toolName"].as_str().unwrap()]);
+        }
+        if ev["type"] == "done" {
+            break;
+        }
+    }
+    // The token dies with the run; the task doesn't.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(satie.active_grants(), 0);
+    let tasks = satie.list(None);
+    println!("tasks: {:?}", tasks.iter().map(|t| (&t.task.id, &t.task.name, format!("{:?}", t.task.status))).collect::<Vec<_>>());
+    let up = tokio::net::TcpStream::connect("127.0.0.1:3977").await.is_ok();
+    for t in &tasks {
+        let _ = satie.stop_task(&t.task.id).await;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(tasks.len(), 2, "two Satie tasks");
+    assert!(up, "the server isn't up after the turn");
+    // One card for starting (listing is harmless), and none for the second start.
+    assert_eq!(cards, ["mcp__satie__task_start"]);
 }

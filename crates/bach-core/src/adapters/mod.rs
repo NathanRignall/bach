@@ -18,8 +18,8 @@ pub trait AgentCli: Copy {
     /// `model` is only honoured by Claude Code so far (`--model`, e.g. `opus` or a full id),
     /// as is `permission_mode` (`--permission-mode`, e.g. `acceptEdits` or `auto`).
     ///
-    /// `satie` adds Bach's background-task launcher as an MCP server, with guidance and a hook
-    /// steering the agent to it (Claude Code only).
+    /// `satie` adds Bach's background-task launcher as an MCP server, with guidance steering the
+    /// agent to it (Claude Code, which also gets a hook, and Codex).
     ///
     /// `allowed_tools` are permission rules (e.g. `Bash(tmux ls *)`) approved earlier in the
     /// session; only Claude Code takes them.
@@ -47,6 +47,9 @@ pub trait AgentCli: Copy {
     fn images_as_files(self) -> bool;
 
     fn parse_line(self, line: &str) -> Vec<AgentEvent>;
+
+    /// Environment variables the agent needs set (secrets kept off its command line).
+    fn env(self, satie: Option<&Grant>) -> Vec<(&'static str, String)>;
 }
 
 impl AgentCli for AgentKind {
@@ -72,7 +75,7 @@ impl AgentCli for AgentKind {
             AgentKind::Claude => {
                 claude::args(session_id, model, permission_mode, allowed_tools, satie)
             }
-            AgentKind::Codex => codex::args(),
+            AgentKind::Codex => codex::args(satie),
             AgentKind::Opencode => opencode::args(prompt, image_files, session_id, model),
         }
     }
@@ -87,6 +90,13 @@ impl AgentCli for AgentKind {
 
     fn images_as_files(self) -> bool {
         self != AgentKind::Claude
+    }
+
+    fn env(self, satie: Option<&Grant>) -> Vec<(&'static str, String)> {
+        match self {
+            AgentKind::Codex => codex::env(satie),
+            _ => vec![],
+        }
     }
 
     fn parse_line(self, line: &str) -> Vec<AgentEvent> {

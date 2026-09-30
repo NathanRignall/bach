@@ -39,8 +39,48 @@ const INTERRUPT: u64 = 4;
 /// feature is on; Bach shows them on the question card, like Claude Code's.
 const QUESTIONS_FEATURE: &str = "default_mode_request_user_input";
 
-pub fn args() -> Vec<String> {
-    vec!["app-server".into(), "--enable".into(), QUESTIONS_FEATURE.into()]
+/// Satie's tools that only look (as Claude Code is allowed them without asking).
+const SATIE_READ_ONLY: &[&str] = &["task_list", "task_logs", "port_info", "http_check"];
+
+/// Where Codex reads its Satie token from (see [`env`]).
+const SATIE_TOKEN_ENV: &str = "BACH_SATIE_TOKEN";
+
+/// What Codex is told about Satie. Its shell commands end with the turn, like Claude Code's.
+const SATIE_GUIDANCE: &str = "Anything that must keep running after your turn ends (dev servers, simulations, watchers, \
+long jobs) has to be started with the `satie` MCP tool `task_start`, not from a shell command (a trailing `&`, `nohup`, \
+`setsid`, tmux or screen): every process a shell command starts is stopped when the turn ends. `task_start` keeps the \
+process running on its own, shows it to the user in the Tasks panel, and `task_logs`, `task_list` and `task_stop` manage it. \
+Pass `port` when the process serves on one, so the call waits until it is up. For a process-compose project use \
+`compose_start` with the compose file instead of running process-compose yourself: each of its processes then gets its own \
+state and log, and `task_process` restarts one without the rest.";
+
+/// `-c` values are TOML; a JSON string is also a TOML basic string.
+fn toml_string(s: &str) -> String {
+    serde_json::to_string(s).expect("a string serializes")
+}
+
+/// `satie` adds Bach's background-task launcher as the `satie` MCP server, with guidance on
+/// when to use it. The token itself goes in the environment ([`env`]), not the command line.
+pub fn args(satie: Option<&satie::Grant>) -> Vec<String> {
+    let mut a: Vec<String> = vec!["app-server".into(), "--enable".into(), QUESTIONS_FEATURE.into()];
+    if let Some(grant) = satie {
+        for setting in [
+            format!("mcp_servers.satie.url={}", toml_string(&grant.url)),
+            format!("mcp_servers.satie.bearer_token_env_var={}", toml_string(SATIE_TOKEN_ENV)),
+            format!("developer_instructions={}", toml_string(SATIE_GUIDANCE)),
+        ] {
+            a.extend(["-c".into(), setting]);
+        }
+    }
+    a
+}
+
+/// The environment Codex needs on top of Bach's: the Satie token, when it has Satie.
+pub fn env(satie: Option<&satie::Grant>) -> Vec<(&'static str, String)> {
+    satie
+        .map(|g| (SATIE_TOKEN_ENV, g.token.clone()))
+        .into_iter()
+        .collect()
 }
 
 /// One turn's conversation with the app server.
@@ -68,12 +108,14 @@ pub struct Conversation {
 
 /// What an approval card for one of Codex's requests shows, and what its reply needs.
 struct Ask {
-    tool_name: &'static str,
+    tool_name: String,
     input: Value,
     description: Option<String>,
     rules: Vec<String>,
     directories: Vec<String>,
     reply: Value,
+    /// Allowed without asking (Satie calls that only read).
+    harmless: bool,
 }
 
 fn request(id: u64, method: &str, params: Value) -> String {
@@ -253,17 +295,20 @@ impl Conversation {
             let error = json!({ "id": id, "error": { "code": -32601, "message": message } });
             return (vec![], vec![error.to_string()]);
         };
-        if !ask.rules.is_empty() && ask.rules.iter().all(|r| self.allowed.contains(r)) {
-            return (vec![], vec![reply(id, json!({ "decision": "accept" }))]);
-        }
-        self.requests.insert(id.to_string(), request_id.clone());
         let mut suggestions = ask.reply;
         suggestions["rpcId"] = id.clone();
+        // Harmless, or covered by a rule approved earlier this session: allowed without asking.
+        if ask.harmless || (!ask.rules.is_empty() && ask.rules.iter().all(|r| self.allowed.contains(r))) {
+            let accept = answer(&suggestions, bach_protocol::Decision::Allow, None)
+                .expect("allowing needs no answers");
+            return (vec![], vec![accept]);
+        }
+        self.requests.insert(id.to_string(), request_id.clone());
         (
             vec![AgentEvent::Approval {
                 request_id,
                 tool_use_id: item_id,
-                tool_name: ask.tool_name.into(),
+                tool_name: ask.tool_name,
                 input: ask.input,
                 description: ask.description,
                 reason: p["reason"].as_str().map(String::from),
@@ -285,7 +330,7 @@ impl Conversation {
                     input["cwd"] = json!(cwd);
                 }
                 Ask {
-                    tool_name: "Shell",
+                    tool_name: "Shell".into(),
                     input,
                     description: None,
                     rules: vec![shell_rule(&command)],
@@ -296,6 +341,7 @@ impl Conversation {
                         "amendment": p["proposedExecpolicyAmendment"],
                         "available": p["availableDecisions"],
                     }),
+                    harmless: false,
                 }
             }
             "item/fileChange/requestApproval" => {
@@ -305,12 +351,13 @@ impl Conversation {
                     .cloned()
                     .unwrap_or(json!([]));
                 Ask {
-                    tool_name: "Edit",
+                    tool_name: "Edit".into(),
                     input: file_change_input(&changes),
                     description: None,
                     rules: vec![EDIT_RULE.to_string()],
                     directories: vec![],
                     reply: json!({ "kind": "fileChange" }),
+                    harmless: false,
                 }
             }
             // More access than the sandbox gives: the network, or folders outside the project.
@@ -341,7 +388,7 @@ impl Conversation {
                     input["read"] = json!(read);
                 }
                 Ask {
-                    tool_name: "Permissions",
+                    tool_name: "Permissions".into(),
                     input,
                     description: (!asks.is_empty()).then(|| format!("Let Codex {}", asks.join(" and "))),
                     // Granted for this turn only: Bach has no rule for it. The folders are in
@@ -349,6 +396,7 @@ impl Conversation {
                     rules: vec![],
                     directories: vec![],
                     reply: json!({ "kind": "permissions", "permissions": granted(wanted) }),
+                    harmless: false,
                 }
             }
             // Codex's own questions for the user (its request_user_input tool).
@@ -370,36 +418,58 @@ impl Conversation {
                     })
                     .collect();
                 Ask {
-                    tool_name: QUESTION_TOOL,
+                    tool_name: QUESTION_TOOL.into(),
                     input: json!({ "questions": questions }),
                     description: None,
                     rules: vec![],
                     directories: vec![],
                     reply: json!({ "kind": "questions", "ids": ids }),
+                    harmless: false,
                 }
             }
-            // A form an MCP server wants filled in, asked as questions, or a page to visit.
+            // A form an MCP server wants filled in, asked as questions, or a page to visit. Codex
+            // also asks this way before it calls an MCP tool.
             "mcpServer/elicitation/request" => {
                 let server = s(&p["serverName"]);
                 let message = s(&p["message"]);
-                if p["mode"] == "url" {
+                let meta = &p["_meta"];
+                if meta["codex_approval_kind"] == "mcp_tool_call" {
+                    // Only the message names the tool: `…run tool "task_start"?`
+                    let tool = message
+                        .split('"')
+                        .nth(1)
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or("tool");
+                    let name = format!("mcp__{server}__{tool}");
                     Ask {
-                        tool_name: "Open link",
+                        harmless: server == "satie" && SATIE_READ_ONLY.contains(&tool),
+                        rules: vec![name.clone()],
+                        tool_name: name,
+                        input: meta["tool_params"].clone(),
+                        description: None,
+                        directories: vec![],
+                        reply: json!({ "kind": "mcpTool", "persist": meta["persist"] }),
+                    }
+                } else if p["mode"] == "url" {
+                    Ask {
+                        tool_name: "Open link".into(),
                         input: json!({ "path": p["url"], "server": server }),
                         description: Some(message),
                         rules: vec![],
                         directories: vec![],
                         reply: json!({ "kind": "elicitation", "fields": {} }),
+                        harmless: false,
                     }
                 } else {
                     let (questions, fields) = form_questions(&message, &p["requestedSchema"]);
                     Ask {
-                        tool_name: QUESTION_TOOL,
+                        tool_name: QUESTION_TOOL.into(),
                         input: json!({ "questions": questions }),
                         description: None,
                         rules: vec![],
                         directories: vec![],
                         reply: json!({ "kind": "elicitation", "fields": fields }),
+                        harmless: false,
                     }
                 }
             }
@@ -697,6 +767,18 @@ pub fn answer(
             }
             json!({ "answers": out })
         }
+        ("mcpTool", Deny) => json!({ "action": "decline", "content": null, "_meta": null }),
+        // "For this session" and "always" are remembered by Codex when it offers them.
+        ("mcpTool", _) => {
+            let persist = match decision {
+                AllowSession => Some("session"),
+                AllowAlways => Some("always"),
+                _ => None,
+            }
+            .filter(|p| suggestions["persist"].as_array().is_some_and(|a| a.iter().any(|x| x == p)));
+            let meta = persist.map(|p| json!({ "persist": p })).unwrap_or(Value::Null);
+            json!({ "action": "accept", "content": {}, "_meta": meta })
+        }
         ("elicitation", Deny) => json!({ "action": "decline", "content": null, "_meta": null }),
         ("elicitation", _) => {
             let fields = &suggestions["fields"];
@@ -979,6 +1061,49 @@ mod tests {
         assert_eq!(r["result"]["content"], json!({ "dry": true, "env": "stage", "regions": ["eu", "us"], "replicas": 3 }));
         assert!(answered(s, Decision::Allow, &[("Replicas", "three")]).is_err());
         assert_eq!(answered(s, Decision::Deny, &[]).unwrap()["result"]["action"], "decline");
+    }
+
+    /// Codex asking before it calls an MCP tool (recorded from 0.146.0, trimmed).
+    fn tool_call(id: u64, tool: &str) -> Value {
+        json!({ "id": id, "method": "mcpServer/elicitation/request", "params": {
+            "threadId": "t1", "turnId": "u1", "serverName": "satie", "mode": "form",
+            "message": format!("Allow the satie MCP server to run tool \"{tool}\"?"),
+            "requestedSchema": { "type": "object", "properties": {} },
+            "_meta": { "codex_approval_kind": "mcp_tool_call", "persist": ["session", "always"],
+                       "tool_params": { "command": "python3 -m http.server 3977", "port": 3977 } },
+        }})
+    }
+
+    #[test]
+    fn mcp_tool_calls_are_approvals() {
+        let mut c = conversation(&[]);
+        let (ev, replies) = ask(&mut c, tool_call(4, "task_start"));
+        assert!(replies.is_empty());
+        let Some(AgentEvent::Approval { tool_name, input, rules, .. }) = &ev else { panic!() };
+        assert_eq!(tool_name, "mcp__satie__task_start");
+        assert_eq!(input["port"], 3977);
+        assert_eq!(rules, &["mcp__satie__task_start"]);
+
+        let s = suggestions(&ev);
+        let reply = |d| answered(s, d, &[]).unwrap()["result"].clone();
+        assert_eq!(reply(Decision::Allow), json!({ "action": "accept", "content": {}, "_meta": null }));
+        assert_eq!(reply(Decision::AllowSession)["_meta"], json!({ "persist": "session" }));
+        assert_eq!(reply(Decision::AllowAlways)["_meta"], json!({ "persist": "always" }));
+        assert_eq!(reply(Decision::Deny)["action"], "decline");
+        assert!(answered(s, Decision::Allow, &[("x", "y")]).is_err());
+
+        // Looking at tasks needs no card; nor does a tool approved earlier this session.
+        for (mut c, tool) in [(conversation(&[]), "task_logs"), (conversation(&["mcp__satie__task_start"]), "task_start")] {
+            let (ev, replies) = ask(&mut c, tool_call(5, tool));
+            assert!(ev.is_none(), "{tool}");
+            let r: Value = serde_json::from_str(&replies[0]).unwrap();
+            assert_eq!(r, json!({ "id": 5, "result": { "action": "accept", "content": {}, "_meta": null } }));
+        }
+    }
+
+    #[test]
+    fn no_satie_no_mcp_server() {
+        assert_eq!(args(None), ["app-server", "--enable", QUESTIONS_FEATURE]);
     }
 
     #[test]

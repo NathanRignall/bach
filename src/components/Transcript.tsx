@@ -473,7 +473,10 @@ function describeInput(input: unknown): { main?: string; rest?: string } {
 
 /** Where "Always allow" keeps the rule, or nothing when the agent has no lasting rule for it. */
 function alwaysSavesTo(agent: AgentKind, toolName: string): string | undefined {
-  if (agent === "codex") return toolName === "Edit" ? undefined : "Adds the command to Codex's own rules (~/.codex/rules)";
+  if (agent === "codex") {
+    if (toolName === "Edit") return undefined;
+    return toolName.startsWith("mcp__") ? "Codex stops asking for this tool (its own config)" : "Adds the command to Codex's own rules (~/.codex/rules)";
+  }
   return "Saves to this project's settings";
 }
 

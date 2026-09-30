@@ -318,10 +318,10 @@ impl Runs {
             },
         );
 
-        // Claude Code gets Satie as an MCP server, with a token scoped to this project. The grant
-        // is revoked when the run ends (or if launching fails below).
+        // Claude Code and Codex get Satie as an MCP server, with a token scoped to this project.
+        // The grant is revoked when the run ends (or if launching fails below).
         let grant = match (&self.satie, agent) {
-            (Some(satie), AgentKind::Claude) => Some(satie.grant(Scope {
+            (Some(satie), AgentKind::Claude | AgentKind::Codex) => Some(satie.grant(Scope {
                 project: project.as_ref().map(|p| p.to_string_lossy().into_owned()),
                 owner: Some(run_id.clone()),
             })),
@@ -338,6 +338,7 @@ impl Runs {
             &allowed_tools,
             grant.as_ref(),
         ))
+        .envs(agent.env(grant.as_ref()))
         .stdin(if conversation.uses_stdin() {
             Stdio::piped()
         } else {
