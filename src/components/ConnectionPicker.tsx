@@ -213,6 +213,8 @@ function ConnectionDialog({ status, onClose }: { status: ConnectionStatus; onClo
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [knownHosts, setKnownHosts] = useState<string[]>([]);
+  const [hostsOpen, setHostsOpen] = useState(false);
+  const suggestions = knownHosts.filter((h) => h !== host && h.toLowerCase().includes(host.trim().toLowerCase()));
 
   // Suggestions only: any host ssh can reach works, configured or not.
   useEffect(() => void sshHosts().then(setKnownHosts).catch(() => {}), []);
@@ -258,20 +260,41 @@ function ConnectionDialog({ status, onClose }: { status: ConnectionStatus; onClo
             <>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="ssh-host">Host</Label>
-                <Input
-                  id="ssh-host"
-                  value={host}
-                  list="ssh-hosts"
-                  placeholder={knownHosts.length ? "Pick from ~/.ssh/config, or user@host" : "user@host"}
-                  spellCheck={false}
-                  autoFocus
-                  onChange={(e) => setHost(e.target.value)}
-                />
-                <datalist id="ssh-hosts">
-                  {knownHosts.map((h) => (
-                    <option key={h} value={h} />
-                  ))}
-                </datalist>
+                <div className="relative">
+                  <Input
+                    id="ssh-host"
+                    value={host}
+                    placeholder={knownHosts.length ? "Pick from ~/.ssh/config, or user@host" : "user@host"}
+                    spellCheck={false}
+                    autoComplete="off"
+                    autoFocus
+                    onFocus={() => setHostsOpen(true)}
+                    onBlur={() => setHostsOpen(false)}
+                    onKeyDown={(e) => e.key === "Escape" && hostsOpen && (e.stopPropagation(), setHostsOpen(false))}
+                    onChange={(e) => {
+                      setHost(e.target.value);
+                      setHostsOpen(true);
+                    }}
+                  />
+                  {hostsOpen && suggestions.length > 0 && (
+                    <div className="absolute inset-x-0 top-full z-50 mt-1 max-h-48 overflow-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md">
+                      {suggestions.map((h) => (
+                        <button
+                          key={h}
+                          type="button"
+                          className="block w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            setHost(h);
+                            setHostsOpen(false);
+                          }}
+                        >
+                          {h}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="ssh-command">bach-server on that machine</Label>
