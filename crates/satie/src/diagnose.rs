@@ -15,7 +15,7 @@ pub(crate) fn holder_text(
     tasks_by_session: &HashMap<u32, (String, String)>,
 ) -> String {
     if let Some((id, name)) = holder.sid.and_then(|s| tasks_by_session.get(&s)) {
-        return format!("Satie task {id} \"{name}\"");
+        return format!("background task {id} \"{name}\"");
     }
     let Some(pid) = holder.pid else {
         return holder.command.clone();
@@ -27,7 +27,7 @@ pub(crate) fn holder_text(
     if let Some(up) = holder.up_secs {
         w += &format!(", up {}", probe::age(up));
     }
-    w + "), not a Satie task"
+    w + "), not a background task"
 }
 
 /// Says what looks wrong with a task: ports it needs that something else already holds, and

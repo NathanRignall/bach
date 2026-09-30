@@ -350,6 +350,57 @@
         )
     }
 
+    /// An embedder's tools: `echo_owner` says who called it; `task_list` tries to shadow Satie's.
+    struct Echo;
+
+    impl Tools for Echo {
+        fn list(&self) -> Vec<Value> {
+            vec![json!({ "name": "echo_owner", "inputSchema": { "type": "object" } })]
+        }
+
+        fn call<'a>(
+            &'a self,
+            scope: &'a Scope,
+            name: &'a str,
+            args: &'a Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Result<String, String>>> + Send + 'a>> {
+            Box::pin(async move {
+                match name {
+                    "echo_owner" if args["fail"] == true => Some(Err("asked to fail".into())),
+                    "echo_owner" => Some(Ok(format!("owner {}", scope.owner.as_deref().unwrap_or("-")))),
+                    "task_list" => Some(Ok("shadowed".into())),
+                    _ => None,
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn serves_the_embedders_tools_under_its_name() {
+        let dir = tmp("mcp-extra");
+        let satie = satie_in(&dir).await;
+        satie.set_server_name("host");
+        satie.add_tools(Arc::new(Echo));
+        let grant = satie.grant(Scope { owner: Some("run-1".into()), project: None });
+
+        let (_, body) = post(satie.url(), Some(&grant.token), &rpc(1, "initialize", json!({}))).await;
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["result"]["serverInfo"]["name"], "host");
+
+        let (_, body) = post(satie.url(), Some(&grant.token), &rpc(2, "tools/list", json!({}))).await;
+        let v: Value = serde_json::from_str(&body).unwrap();
+        let names: Vec<_> = v["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!((names.first(), names.last()), (Some(&"task_start"), Some(&"echo_owner")));
+
+        // The call gets the grant's scope; errors come back as tool errors.
+        assert_eq!(call(&satie, &grant.token, 3, "echo_owner", json!({})).await, (false, "owner run-1".into()));
+        assert_eq!(call(&satie, &grant.token, 4, "echo_owner", json!({ "fail": true })).await, (true, "asked to fail".into()));
+        // Satie's own tools come first; unknown names are still errors.
+        assert_eq!(call(&satie, &grant.token, 5, "task_list", json!({})).await, (false, "No background tasks.".into()));
+        assert_eq!(call(&satie, &grant.token, 6, "nope", json!({})).await, (true, "Unknown tool `nope`".into()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn speaks_mcp_and_manages_tasks_for_its_own_project() {
         let dir = tmp("mcp");
@@ -568,7 +619,7 @@
             "{text}"
         );
         assert!(
-            text.contains("not a Satie task") && text.contains(dir.to_str().unwrap()),
+            text.contains("not a background task") && text.contains(dir.to_str().unwrap()),
             "{text}"
         );
         assert!(
@@ -594,7 +645,7 @@
             "{report}"
         );
         assert!(
-            report.contains("not a Satie task") && report.contains("up "),
+            report.contains("not a background task") && report.contains("up "),
             "{report}"
         );
         assert!(report.contains("nothing is listening"), "{report}");
@@ -653,7 +704,7 @@
             "{view:?}"
         );
         let report = satie.port_report(&[port]);
-        assert!(report.contains(&format!("Satie task {}", t.id)), "{report}");
+        assert!(report.contains(&format!("background task {}", t.id)), "{report}");
 
         satie.stop_task(&t.id).await.unwrap();
         until("server gone", || server().is_empty()).await;
@@ -708,8 +759,8 @@
             .wait_ready(&t.id, &[port], None, Duration::from_secs(10))
             .await;
         let report = satie.port_report(&[port]);
-        assert!(report.contains(&format!("Satie task {}", t.id)), "{report}");
-        assert!(!report.contains("not a Satie task"), "{report}");
+        assert!(report.contains(&format!("background task {}", t.id)), "{report}");
+        assert!(!report.contains("not a background task"), "{report}");
 
         // A second task that wants the same port is told exactly which task has it.
         let clash = satie
@@ -732,7 +783,7 @@
             .unwrap();
         assert!(
             view.problems.iter().any(|p| p.contains(&format!(
-                "Port {port} is already in use by Satie task {}",
+                "Port {port} is already in use by background task {}",
                 t.id
             ))),
             "{:?}",

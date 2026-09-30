@@ -6,7 +6,7 @@
 //! It must not outlive Bach, however Bach ends (a restart is a SIGTERM; nothing gets to clean
 //! up). So it runs under a small shell that holds Bach's end of a pipe and stops the server
 //! when the pipe closes, which happens whenever Bach's process does.
-use crate::adapters::opencode;
+use crate::adapters::{opencode, MCP_SERVER};
 use bach_protocol::ModelInfo;
 use serde_json::Value;
 use std::{
@@ -99,7 +99,7 @@ fn supervise() -> String {
 pub const LOST: &str = "bach.server.lost";
 
 /// The server for folder `dir`, starting it there if it isn't running. `satie`, if given, is
-/// offered to it as the `satie` MCP server (see [`Server::offer_satie`]).
+/// offered to it as Bach's MCP server (see [`Server::offer_mcp`]).
 pub async fn server(dir: &str, satie: Option<&satie::Satie>) -> Result<Server, String> {
     let mut all = servers().lock().await;
     if let Some((s, _)) = all.get(dir) {
@@ -187,21 +187,21 @@ impl Server {
         Lease(self.clone())
     }
 
-    /// Adds Satie as the `satie` MCP server for folder `dir`, unless opencode already has it,
+    /// Adds Bach's MCP server ([`MCP_SERVER`]) for folder `dir`, unless opencode already has it,
     /// and returns the names of the folder's MCP servers. Added over HTTP rather than in its
     /// config: opencode may be a wrapper that sets `OPENCODE_CONFIG_CONTENT` itself, and a
     /// folder's MCP servers go if opencode reloads it, so this is checked every turn. The server
     /// lasts across runs, so its token is the folder's, not a run's.
-    pub async fn offer_satie(&self, dir: &str) -> Result<Vec<String>, String> {
+    pub async fn offer_mcp(&self, dir: &str) -> Result<Vec<String>, String> {
         let names = |status: &Value| -> Vec<String> {
             status.as_object().into_iter().flatten().map(|(k, _)| k.clone()).collect()
         };
         let status = self.get("/mcp", Some(dir)).await?;
         let Some(grant) = &self.satie else { return Ok(names(&status)) };
-        if status["satie"]["status"] == "connected" {
+        if status[MCP_SERVER]["status"] == "connected" {
             return Ok(names(&status));
         }
-        let body = serde_json::json!({ "name": "satie", "config": {
+        let body = serde_json::json!({ "name": MCP_SERVER, "config": {
             "type": "remote",
             "url": grant.url,
             "headers": { "Authorization": format!("Bearer {}", grant.token) },

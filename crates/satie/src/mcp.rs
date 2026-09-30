@@ -1,5 +1,6 @@
 //! Satie's MCP server: streamable HTTP on loopback, one bearer token per [`Grant`](crate::Grant).
-//! Tools see and manage only the tasks of their grant's project.
+//! Tools see and manage only the tasks of their grant's project. Embedders can add tools of their
+//! own ([`Tools`]).
 use crate::{
     compose, probe, ProcessAction, Ready, Satie, Scope, StartCompose, StartTask, Task, TaskStatus,
     TaskView,
@@ -12,7 +13,25 @@ use axum::{
     Json, Router,
 };
 use serde_json::{json, Value};
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, future::Future, pin::Pin, time::Duration};
+
+/// More tools for Satie's MCP server, from whoever embeds it (see [`Satie::add_tools`]).
+pub trait Tools: Send + Sync + 'static {
+    /// Their MCP descriptions (`name`, `description`, `inputSchema`).
+    fn list(&self) -> Vec<Value>;
+    /// What agents are told about them, after Satie's own instructions.
+    fn instructions(&self) -> Option<String> {
+        None
+    }
+    /// Runs tool `name` for a caller with `scope`: the text to show it, or an error to show it.
+    /// `None` if `name` isn't one of these tools.
+    fn call<'a>(
+        &'a self,
+        scope: &'a Scope,
+        name: &'a str,
+        args: &'a Value,
+    ) -> Pin<Box<dyn Future<Output = Option<Result<String, String>>> + Send + 'a>>;
+}
 
 /// Given to the agent with the tools (MCP `instructions`), so it reaches the agent without taking
 /// its system prompt from anyone else: Claude Code keeps only the last `--append-system-prompt`,
@@ -62,7 +81,7 @@ impl Satie {
             },
             {
                 "name": "compose_start",
-                "description": "Run a process-compose project (a compose file such as process-compose.yaml) as a background task that keeps running after this turn ends. Prefer this to task_start for process-compose: Satie starts it in the project's environment (direnv, else the flake's devShell) with the right flags, so don't add any, and then shows, logs and controls each process separately. Waits until every process is running (and ready, where it has a readiness probe) or one fails, and reports each process's state, ports and, for failures, its last output.",
+                "description": "Run a process-compose project (a compose file such as process-compose.yaml) as a background task that keeps running after this turn ends. Prefer this to task_start for process-compose: it starts it in the project's environment (direnv, else the flake's devShell) with the right flags, so don't add any, and then shows, logs and controls each process separately. Waits until every process is running (and ready, where it has a readiness probe) or one fails, and reports each process's state, ports and, for failures, its last output.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -107,7 +126,7 @@ impl Satie {
             { "name": "task_stop", "description": "Stop a background task and everything it started.", "inputSchema": id },
             {
                 "name": "port_info",
-                "description": "Say what is listening on TCP ports on this machine: the process, its command line, folder and age, and whether it is a Satie task. Use it to find out who holds a port before deciding what to do about a conflict. Without `ports`, lists the recognisable listeners.",
+                "description": "Say what is listening on TCP ports on this machine: the process, its command line, folder and age, and whether it is one of these background tasks. Use it to find out who holds a port before deciding what to do about a conflict. Without `ports`, lists the recognisable listeners.",
                 "inputSchema": { "type": "object", "properties": { "ports": { "type": "array", "items": { "type": "integer" } } } }
             },
             {
@@ -207,8 +226,8 @@ impl Satie {
             .collect();
         let line = |l: &probe::Listener| {
             let owner = match l.sid.and_then(|s| tasks.get(&s)) {
-                Some((id, name)) => format!("Satie task {id} \"{name}\""),
-                None => "not a Satie task".to_string(),
+                Some((id, name)) => format!("background task {id} \"{name}\""),
+                None => "not a background task".to_string(),
             };
             match l.pid {
                 Some(pid) => format!(
@@ -469,6 +488,30 @@ impl Satie {
         }
     }
 
+    /// The server's MCP `instructions`: Satie's, then the embedder's.
+    fn instructions(&self) -> String {
+        let extra = self.inner.extra_tools.read().unwrap().clone();
+        std::iter::once(INSTRUCTIONS.to_string())
+            .chain(extra.iter().filter_map(|t| t.instructions()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Runs one of Satie's tools or, failing that, one of the embedder's.
+    async fn call_any(&self, scope: &Scope, name: &str, args: &Value) -> Result<String, String> {
+        let own = Self::tools();
+        if own.as_array().expect("a list").iter().any(|t| t["name"] == name) {
+            return self.call(scope, name, args).await;
+        }
+        let extra = self.inner.extra_tools.read().unwrap().clone();
+        for tools in &extra {
+            if let Some(answer) = tools.call(scope, name, args).await {
+                return answer;
+            }
+        }
+        Err(format!("Unknown tool `{name}`"))
+    }
+
     /// One JSON-RPC message. `None` for notifications, which get no reply.
     pub(crate) async fn handle(&self, scope: &Scope, msg: &Value) -> Option<Value> {
         let id = msg.get("id")?.clone();
@@ -478,15 +521,23 @@ impl Satie {
                 // Echo the client's protocol version: nothing here is version-specific.
                 "protocolVersion": msg["params"]["protocolVersion"].as_str().unwrap_or("2025-03-26"),
                 "capabilities": { "tools": { "listChanged": false } },
-                "serverInfo": { "name": "satie", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": INSTRUCTIONS,
+                "serverInfo": { "name": *self.inner.server_name.read().unwrap(), "version": env!("CARGO_PKG_VERSION") },
+                "instructions": self.instructions(),
             })),
             "ping" => reply(json!({})),
-            "tools/list" => reply(json!({ "tools": Self::tools() })),
+            "tools/list" => {
+                let mut tools = Self::tools();
+                let extra = self.inner.extra_tools.read().unwrap().clone();
+                tools
+                    .as_array_mut()
+                    .expect("a list")
+                    .extend(extra.iter().flat_map(|t| t.list()));
+                reply(json!({ "tools": tools }))
+            }
             "tools/call" => {
                 let name = msg["params"]["name"].as_str().unwrap_or_default();
-                let (text, is_error) = match self.call(scope, name, &msg["params"]["arguments"]).await
-                {
+                let args = &msg["params"]["arguments"];
+                let (text, is_error) = match self.call_any(scope, name, args).await {
                     Ok(t) => (t, false),
                     Err(e) => (e, true),
                 };

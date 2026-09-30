@@ -11,7 +11,7 @@ const FAKE_CODEX: &str = r#"#!/bin/sh
 out="$BACH_TEST_OUT"
 echo $$ > "$out/pid"
 echo "$@" > "$out/args"
-echo "$BACH_SATIE_TOKEN" > "$out/token"
+echo "$BACH_MCP_TOKEN" > "$out/token"
 read init
 echo '{"id":1,"result":{"userAgent":"test","platformFamily":"unix","platformOs":"linux"}}'
 read initialized
@@ -145,12 +145,12 @@ async fn codex_app_server_round_trip() {
 
     // A new thread that may write to the project, and asks before going further.
     let mut run = begin(&dir, None).await;
-    // Satie is offered as an MCP server; its token comes through the environment, never the
+    // Bach's MCP server is offered; its token comes through the environment, never the
     // command line.
     let args = std::fs::read_to_string(run.out.join("args")).unwrap();
     assert!(args.starts_with("app-server --enable default_mode_request_user_input "), "{args}");
-    assert!(args.contains(&format!("mcp_servers.satie.url=\"{}\"", run.satie.url())), "{args}");
-    assert!(args.contains("mcp_servers.satie.bearer_token_env_var=\"BACH_SATIE_TOKEN\""), "{args}");
+    assert!(args.contains(&format!("mcp_servers.bach.url=\"{}\"", run.satie.url())), "{args}");
+    assert!(args.contains("mcp_servers.bach.bearer_token_env_var=\"BACH_MCP_TOKEN\""), "{args}");
     assert!(args.contains("developer_instructions=") && args.contains("task_start"), "{args}");
     let token = std::fs::read_to_string(run.out.join("token")).unwrap();
     assert!(token.trim().len() >= 16 && !args.contains(token.trim()), "token: {token}");
@@ -461,5 +461,5 @@ async fn real_codex_satie() {
     assert_eq!(tasks.len(), 2, "two Satie tasks");
     assert!(up, "the server isn't up after the turn");
     // One card for starting (listing is harmless), and none for the second start.
-    assert_eq!(cards, ["mcp__satie__task_start"]);
+    assert_eq!(cards, ["mcp__bach__task_start"]);
 }

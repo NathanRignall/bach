@@ -2,7 +2,7 @@
 //! `jsonrpc` field). One process per turn, as with Claude Code: initialize, start or resume
 //! the thread, start the turn, answer its approval requests, and close stdin once the turn
 //! completes. Shapes recorded from codex-cli 0.146.0 (tests/fixtures/codex_*.jsonl).
-use super::{mode, AgentEvent, Turn, SATIE_LOOK_ONLY};
+use super::{mode, AgentEvent, Turn, MCP_READ_ONLY, MCP_SERVER};
 use crate::attachments::{Kind, SavedFile};
 use bach_protocol::{DeltaKind, ModelInfo};
 use serde_json::{json, Value};
@@ -59,52 +59,53 @@ const INTERRUPT: u64 = 4;
 /// feature is on; Bach shows them on the question card, like Claude Code's.
 const QUESTIONS_FEATURE: &str = "default_mode_request_user_input";
 
+/// Where Codex reads its MCP token from (see [`env`]).
+const MCP_TOKEN_ENV: &str = "BACH_MCP_TOKEN";
 
-/// Where Codex reads its Satie token from (see [`env`]).
-const SATIE_TOKEN_ENV: &str = "BACH_SATIE_TOKEN";
-
-/// What Codex is told about Satie. Its shell commands end with the turn, like Claude Code's.
-const SATIE_GUIDANCE: &str = "Anything that must keep running after your turn ends (dev servers, simulations, watchers, \
-long jobs) has to be started with the `satie` MCP tool `task_start`, not from a shell command (a trailing `&`, `nohup`, \
+/// What Codex is told about Bach's MCP server. Its shell commands end with the turn, like
+/// Claude Code's.
+const MCP_GUIDANCE: &str = "Anything that must keep running after your turn ends (dev servers, simulations, watchers, \
+long jobs) has to be started with the `bach` MCP tool `task_start`, not from a shell command (a trailing `&`, `nohup`, \
 `setsid`, tmux or screen): every process a shell command starts is stopped when the turn ends. `task_start` keeps the \
 process running on its own, shows it to the user in the Tasks panel, and `task_logs`, `task_list` and `task_stop` manage it. \
 Pass `port` when the process serves on one, so the call waits until it is up. For a process-compose project use \
 `compose_start` with the compose file instead of running process-compose yourself: each of its processes then gets its own \
-state and log, and `task_process` restarts one without the rest.";
+state and log, and `task_process` restarts one without the rest. When you notice a separate task that shouldn't derail this one (an unrelated bug, a \
+follow-up), `start_session` hands it to a new agent session in this project, which the user sees in their sidebar.";
 
 /// `-c` values are TOML; a JSON string is also a TOML basic string.
 fn toml_string(s: &str) -> String {
     serde_json::to_string(s).expect("a string serializes")
 }
 
-/// `satie` adds Bach's background-task launcher as the `satie` MCP server, with guidance on
-/// when to use it. The token itself goes in the environment ([`env`]), not the command line.
-pub fn args(satie: Option<&satie::Grant>) -> Vec<String> {
-    args_with(satie, crate::wrapper::active())
+/// `mcp` adds Bach's MCP server (as [`MCP_SERVER`]), with guidance on when to use it. The token
+/// itself goes in the environment ([`env`]), not the command line.
+pub fn args(mcp: Option<&satie::Grant>) -> Vec<String> {
+    args_with(mcp, crate::wrapper::active())
 }
 
 /// Codex keeps only the last `developer_instructions` it is given, wherever they come from. A
 /// wrapper may put its own there (describing its sandbox), and those must stand: under one,
-/// Satie's tool descriptions are what steer Codex to it.
-fn args_with(satie: Option<&satie::Grant>, wrapped: bool) -> Vec<String> {
+/// the MCP tools' descriptions are what steer Codex to them.
+fn args_with(mcp: Option<&satie::Grant>, wrapped: bool) -> Vec<String> {
     let mut a: Vec<String> = vec!["app-server".into(), "--enable".into(), QUESTIONS_FEATURE.into()];
-    if let Some(grant) = satie {
-        a.extend(["-c".into(), format!("mcp_servers.satie.url={}", toml_string(&grant.url))]);
+    if let Some(grant) = mcp {
+        a.extend(["-c".into(), format!("mcp_servers.{MCP_SERVER}.url={}", toml_string(&grant.url))]);
         a.extend([
             "-c".into(),
-            format!("mcp_servers.satie.bearer_token_env_var={}", toml_string(SATIE_TOKEN_ENV)),
+            format!("mcp_servers.{MCP_SERVER}.bearer_token_env_var={}", toml_string(MCP_TOKEN_ENV)),
         ]);
         if !wrapped {
-            a.extend(["-c".into(), format!("developer_instructions={}", toml_string(SATIE_GUIDANCE))]);
+            a.extend(["-c".into(), format!("developer_instructions={}", toml_string(MCP_GUIDANCE))]);
         }
     }
     a
 }
 
-/// The environment Codex needs on top of Bach's: the Satie token, when it has Satie.
-pub fn env(satie: Option<&satie::Grant>) -> Vec<(&'static str, String)> {
-    satie
-        .map(|g| (SATIE_TOKEN_ENV, g.token.clone()))
+/// The environment Codex needs on top of Bach's: the MCP token, when it has the server.
+pub fn env(mcp: Option<&satie::Grant>) -> Vec<(&'static str, String)> {
+    mcp
+        .map(|g| (MCP_TOKEN_ENV, g.token.clone()))
         .into_iter()
         .collect()
 }
@@ -509,7 +510,7 @@ impl Conversation {
                         .unwrap_or("tool");
                     let name = format!("mcp__{server}__{tool}");
                     Ask {
-                        harmless: server == "satie" && SATIE_LOOK_ONLY.contains(&tool),
+                        harmless: server == MCP_SERVER && MCP_READ_ONLY.contains(&tool),
                         rules: vec![name.clone()],
                         tool_name: name,
                         input: meta["tool_params"].clone(),
@@ -1151,8 +1152,8 @@ mod tests {
     /// Codex asking before it calls an MCP tool (recorded from 0.146.0, trimmed).
     fn tool_call(id: u64, tool: &str) -> Value {
         json!({ "id": id, "method": "mcpServer/elicitation/request", "params": {
-            "threadId": "t1", "turnId": "u1", "serverName": "satie", "mode": "form",
-            "message": format!("Allow the satie MCP server to run tool \"{tool}\"?"),
+            "threadId": "t1", "turnId": "u1", "serverName": "bach", "mode": "form",
+            "message": format!("Allow the bach MCP server to run tool \"{tool}\"?"),
             "requestedSchema": { "type": "object", "properties": {} },
             "_meta": { "codex_approval_kind": "mcp_tool_call", "persist": ["session", "always"],
                        "tool_params": { "command": "python3 -m http.server 3977", "port": 3977 } },
@@ -1165,9 +1166,9 @@ mod tests {
         let (ev, replies) = ask(&mut c, tool_call(4, "task_start"));
         assert!(replies.is_empty());
         let Some(AgentEvent::Approval { tool_name, input, rules, .. }) = &ev else { panic!() };
-        assert_eq!(tool_name, "mcp__satie__task_start");
+        assert_eq!(tool_name, "mcp__bach__task_start");
         assert_eq!(input["port"], 3977);
-        assert_eq!(rules, &["mcp__satie__task_start"]);
+        assert_eq!(rules, &["mcp__bach__task_start"]);
 
         let s = suggestions(&ev);
         let reply = |d| answered(s, d, &[]).unwrap()["result"].clone();
@@ -1178,7 +1179,7 @@ mod tests {
         assert!(answered(s, Decision::Allow, &[("x", "y")]).is_err());
 
         // Looking at tasks needs no card; nor does a tool approved earlier this session.
-        for (mut c, tool) in [(conversation(&[]), "task_logs"), (conversation(&["mcp__satie__task_start"]), "task_start")] {
+        for (mut c, tool) in [(conversation(&[]), "task_logs"), (conversation(&["mcp__bach__task_start"]), "task_start")] {
             let (ev, replies) = ask(&mut c, tool_call(5, tool));
             assert!(ev.is_none(), "{tool}");
             let r: Value = serde_json::from_str(&replies[0]).unwrap();
@@ -1187,7 +1188,7 @@ mod tests {
     }
 
     #[test]
-    fn no_satie_no_mcp_server() {
+    fn no_grant_no_mcp_server() {
         assert_eq!(args(None), ["app-server", "--enable", QUESTIONS_FEATURE]);
     }
 
@@ -1248,9 +1249,9 @@ mod tests {
         let grant = satie.grant(satie::Scope::default());
         let has = |a: &[String], key: &str| a.iter().any(|x| x.starts_with(key));
         let direct = args_with(Some(&grant), false);
-        assert!(has(&direct, "mcp_servers.satie.url=") && has(&direct, "developer_instructions="));
+        assert!(has(&direct, "mcp_servers.bach.url=") && has(&direct, "developer_instructions="));
         let wrapped = args_with(Some(&grant), true);
-        assert!(has(&wrapped, "mcp_servers.satie.url=") && !has(&wrapped, "developer_instructions="));
+        assert!(has(&wrapped, "mcp_servers.bach.url=") && !has(&wrapped, "developer_instructions="));
         let _ = std::fs::remove_dir_all(dir);
     }
 

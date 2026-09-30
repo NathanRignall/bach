@@ -308,7 +308,7 @@ impl Runs {
         let mut events = server.subscribe();
         let dir = turn.dir;
         // Without Satie the turn still runs; its tools are just missing.
-        let mcp_servers = server.offer_satie(&dir).await.unwrap_or_else(|e| {
+        let mcp_servers = server.offer_mcp(&dir).await.unwrap_or_else(|e| {
             eprintln!("run {run_id}: couldn't give opencode Satie: {e}");
             vec![]
         });

@@ -230,19 +230,19 @@ async fn approvals_round_trip() {
     for flag in [
         "--input-format stream-json",
         "--permission-prompt-tool stdio",
-        "--allowedTools Bash(git status *) Read mcp__satie__task_list mcp__satie__task_logs",
+        "--allowedTools Bash(git status *) Read mcp__bach__task_list mcp__bach__task_logs",
     ] {
         assert!(o.args.contains(flag), "missing `{flag}` in: {}", o.args);
     }
-    // Claude Code is handed Bach's MCP server (Satie), with a per-run token, and it is revoked after.
-    // Its guidance comes with Satie's tools (MCP `instructions`), not the system prompt.
+    // Claude Code is handed Bach's MCP server, with a per-run token, and it is revoked after.
+    // Its guidance comes with the tools (MCP `instructions`), not the system prompt.
     assert!(!o.args.contains("--append-system-prompt"), "system prompt left alone");
     assert!(
         o.args.contains("--settings ") && o.args.contains("PreToolUse"),
         "hook settings missing"
     );
     let cfg = &o.args[o.args.find("--mcp-config ").expect("--mcp-config missing") + 13..];
-    assert!(cfg.starts_with(r#"{"mcpServers":{"satie":{"#), "{cfg}");
+    assert!(cfg.starts_with(r#"{"mcpServers":{"bach":{"#), "{cfg}");
     assert!(
         cfg.contains(r#""type":"http""#) && cfg.contains("Bearer "),
         "{cfg}"
@@ -302,16 +302,16 @@ async fn approvals_round_trip() {
         1,
         "extra suggestions leaked: {up}"
     );
-    // Only Satie's read-only tools are pre-approved; starting and stopping tasks still ask.
+    // Only the read-only task tools are pre-approved; starting and stopping tasks still ask.
     assert!(
         o.args
-            .contains("--allowedTools mcp__satie__task_list mcp__satie__task_logs"),
+            .contains("--allowedTools mcp__bach__task_list mcp__bach__task_logs"),
         "{}",
         o.args
     );
     assert!(
-        !o.args.contains("--allowedTools mcp__satie__task_start")
-            && !o.args.contains("mcp__satie__task_stop"),
+        !o.args.contains("--allowedTools mcp__bach__task_start")
+            && !o.args.contains("mcp__bach__task_stop"),
         "{}",
         o.args
     );

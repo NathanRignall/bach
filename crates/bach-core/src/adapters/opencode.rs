@@ -3,7 +3,7 @@
 //! events into [`AgentEvent`]s, approval answers into HTTP replies. Talking to the server is
 //! `crate::opencode_server`. Shapes recorded from opencode 1.15.10
 //! (tests/fixtures/opencode_*.jsonl).
-use super::{mode, AgentEvent, SATIE_LOOK_ONLY};
+use super::{mode, AgentEvent, MCP_READ_ONLY, MCP_SERVER};
 use crate::attachments::SavedFile;
 use bach_protocol::{Decision, DeltaKind, ModelInfo};
 use serde_json::{json, Value};
@@ -29,7 +29,7 @@ const QUESTION_TOOL: &str = "AskUserQuestion";
 /// (which allow everything but a few things, like folders outside the project).
 ///
 /// opencode has no sandbox, so "auto" asks before shell commands; edits in the project are
-/// fine. "plan" runs opencode's plan agent with the same rules. Satie's tools that only look
+/// fine. "plan" runs opencode's plan agent with the same rules. Bach's MCP tools that only look
 /// never ask, as with the other agents.
 pub fn permission_rules(mode: Option<&str>, allowed: &[String]) -> Value {
     let rule = |permission: &str, pattern: &str, action: &str| {
@@ -40,7 +40,7 @@ pub fn permission_rules(mode: Option<&str>, allowed: &[String]) -> Value {
         Some("manual") => vec![rule("edit", "*", "ask"), rule("bash", "*", "ask")],
         _ => vec![rule("bash", "*", "ask")],
     };
-    rules.extend(SATIE_LOOK_ONLY.map(|t| rule(&format!("satie_{t}"), "*", "allow")));
+    rules.extend(MCP_READ_ONLY.map(|t| rule(&format!("{}{t}", mcp_prefix(MCP_SERVER)), "*", "allow")));
     rules.extend(allowed.iter().filter_map(|r| {
         let (permission, pattern) = parse_rule(r)?;
         Some(rule(permission, pattern, "allow"))
@@ -583,15 +583,15 @@ mod tests {
             json!([
                 { "permission": "edit", "pattern": "*", "action": "ask" },
                 { "permission": "bash", "pattern": "*", "action": "ask" },
-                { "permission": "satie_task_list", "pattern": "*", "action": "allow" },
-                { "permission": "satie_task_logs", "pattern": "*", "action": "allow" },
-                { "permission": "satie_port_info", "pattern": "*", "action": "allow" },
-                { "permission": "satie_http_check", "pattern": "*", "action": "allow" },
+                { "permission": "bach_task_list", "pattern": "*", "action": "allow" },
+                { "permission": "bach_task_logs", "pattern": "*", "action": "allow" },
+                { "permission": "bach_port_info", "pattern": "*", "action": "allow" },
+                { "permission": "bach_http_check", "pattern": "*", "action": "allow" },
                 { "permission": "bash", "pattern": "git status *", "action": "allow" },
             ])
         );
         assert_eq!(permission_rules(None, &[])[0], json!({ "permission": "bash", "pattern": "*", "action": "ask" }));
-        assert!(!permission_rules(None, &[]).to_string().contains("satie_task_start"), "starting still asks");
+        assert!(!permission_rules(None, &[]).to_string().contains("bach_task_start"), "starting still asks");
         assert_eq!(permission_rules(Some("acceptEdits"), &[]), permission_rules(None, &[]));
         assert_eq!(permission_rules(Some("fullAccess"), &[])[0]["action"], "allow");
         assert_eq!((agent(Some("plan")), agent(None)), ("plan", "build"));
@@ -638,7 +638,7 @@ mod tests {
     fn mcp_approvals_wait_for_their_arguments_and_use_mcp_names() {
         // The order opencode 1.18 sends them in: the call (no arguments yet), the permission
         // request (no arguments), then the call running with its arguments.
-        let servers = ["playwright".to_string(), "chrome-devtools".to_string(), "satie".to_string()];
+        let servers = ["playwright".to_string(), "chrome-devtools".to_string(), "bach".to_string()];
         let mut stream = Stream::new("ses_1", &[], &servers);
         let tool = |status: &str, input: Value| {
             json!({ "type": "message.part.updated", "properties": { "part": {
@@ -679,7 +679,7 @@ mod tests {
             if request_id == "per_1" && input["url"] == "http://127.0.0.1:5173"), "{ev:?}");
 
         assert_eq!(stream.tool_name("chrome-devtools_new_page"), "mcp__chrome-devtools__new_page");
-        assert_eq!(stream.tool_name("satie_task_start"), "mcp__satie__task_start");
+        assert_eq!(stream.tool_name("bach_task_start"), "mcp__bach__task_start");
         assert_eq!(stream.tool_name("webfetch"), "webfetch");
         assert_eq!(stream.tool_name("bash"), "Shell");
     }

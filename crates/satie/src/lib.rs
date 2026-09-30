@@ -9,7 +9,8 @@
 //!
 //! Satie knows nothing about who embeds it. Callers get an MCP token by [`Satie::grant`]ing a
 //! [`Scope`]: the project whose tasks it may see and manage, and an opaque owner recorded on the
-//! tasks it starts.
+//! tasks it starts. Embedders can serve tools of their own from the same MCP server
+//! ([`Satie::add_tools`]) and name it ([`Satie::set_server_name`]).
 //!
 //! Unix only (`setsid`, `/proc` for ports).
 mod compose;
@@ -24,6 +25,7 @@ mod tests;
 mod compose_tests;
 
 pub use compose::{project_shell, StartCompose};
+pub use mcp::Tools;
 pub use diagnose::presentable_ports;
 pub use store::parse_task;
 pub use satie_protocol::{
@@ -41,7 +43,7 @@ use std::{
     os::unix::process::CommandExt,
     path::PathBuf,
     process::{Command, Stdio},
-    sync::{atomic::AtomicI64, atomic::Ordering, Arc, Mutex},
+    sync::{atomic::AtomicI64, atomic::Ordering, Arc, Mutex, RwLock},
     time::Duration,
 };
 use store::TaskStore;
@@ -157,6 +159,10 @@ struct Inner {
     compose: Mutex<HashMap<String, Vec<ComposeProcess>>>,
     /// `(task, process)` whose output is being copied to a log file right now.
     log_streams: Mutex<HashSet<(String, String)>>,
+    /// Tools the embedder serves next to Satie's own (see [`Satie::add_tools`]).
+    extra_tools: RwLock<Vec<Arc<dyn Tools>>>,
+    /// What the MCP server calls itself to its clients.
+    server_name: RwLock<String>,
 }
 
 /// Handle to Satie. Cheap to clone.
@@ -197,6 +203,8 @@ impl Satie {
                 published: Mutex::default(),
                 compose: Mutex::default(),
                 log_streams: Mutex::default(),
+                extra_tools: RwLock::default(),
+                server_name: RwLock::new("satie".into()),
             }),
         };
         satie.tick(); // reconcile: what ran while we were down?
@@ -244,6 +252,17 @@ impl Satie {
     /// The MCP endpoint.
     pub fn url(&self) -> &str {
         &self.url
+    }
+
+    /// Serves `tools` from Satie's MCP server too, after Satie's own. Their calls get the
+    /// caller's [`Scope`], so they can tell which grant (and so which caller) is asking.
+    pub fn add_tools(&self, tools: Arc<dyn Tools>) {
+        self.inner.extra_tools.write().unwrap().push(tools);
+    }
+
+    /// The name the MCP server gives its clients (`satie` by default).
+    pub fn set_server_name(&self, name: &str) {
+        *self.inner.server_name.write().unwrap() = name.to_string();
     }
 
     /// Grants that are still held.

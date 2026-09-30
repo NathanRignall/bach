@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import Markdown, { type Components, defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, ImageOff, RotateCcw, ScrollText, ServerCog, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
+import { AlertCircle, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, ImageOff, MessageSquarePlus, RotateCcw, ScrollText, ServerCog, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
 import { AgentKind, Decision, Forwarding, TaskView, readImage } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,11 +25,13 @@ export interface TranscriptActions {
   agent?: AgentKind;
   /** Output so far of tool calls still running, by call id. */
   outputs?: Record<string, string>;
-  /** Satie's tasks, so a Satie tool call can show the live state of the task it touched. */
+  /** Background tasks, so a task tool call can show the live state of the task it touched. */
   tasks?: TaskView[];
   forwarding?: Forwarding | null;
   /** Opens the tasks panel on this task's log. */
   showTask?: (id: string) => void;
+  /** Opens another session (one this transcript's agent started). */
+  showSession?: (id: string) => void;
 }
 export const TranscriptContext = createContext<TranscriptActions>({ decide: async () => {} });
 
@@ -48,7 +50,7 @@ const markdownComponents: Components = {
   img: ({ src, alt }) => <MarkdownImage key={String(src)} src={typeof src === "string" ? src : undefined} alt={alt} />,
 };
 
-/** `mcp__satie__task_start` -> `satie · task_start`; other names are unchanged. */
+/** `mcp__github__get_issue` -> `github · get_issue`; other names are unchanged. */
 function toolLabel(name: string): string {
   const m = /^mcp__(.+?)__(.+)$/.exec(name);
   return m ? `${m[1]} · ${m[2]}` : name;
@@ -126,8 +128,8 @@ export function BlockView({ block, live }: { block: Block; live: boolean }) {
     case "tool":
       return isSubagent(block) ? (
         <SubagentCard block={block} live={live} />
-      ) : block.name.startsWith(SATIE) ? (
-        <SatieCard block={block} live={live} />
+      ) : block.name.startsWith(BACH) ? (
+        <BachToolCard block={block} live={live} />
       ) : (
         <ToolCard block={block} live={live} />
       );
@@ -253,15 +255,16 @@ function ToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
   );
 }
 
-const SATIE = "mcp__satie__";
+/** Tools of Bach's own MCP server: background tasks, and starting sessions. */
+const BACH = "mcp__bach__";
 
-/** What a Satie call did, in words, and the task it was about (if any). */
-function describeSatie(block: ToolBlock, taskName?: string): { verb: string; target?: string; detail?: string } {
+/** What a call to Bach's MCP server did, in words, and the task it was about (if any). */
+function describeBachTool(block: ToolBlock, taskName?: string): { verb: string; target?: string; detail?: string } {
   const a = (block.input ?? {}) as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
   const ports = [...(Array.isArray(a.ports) ? a.ports : []), ...(a.port ? [a.port] : [])].map((p) => `:${p}`).join(" ");
   const task = taskName ?? str(a.id);
-  switch (block.name.slice(SATIE.length)) {
+  switch (block.name.slice(BACH.length)) {
     case "task_start":
       return { verb: "Start", target: str(a.name) ?? taskName ?? str(a.command), detail: str(a.command) };
     case "compose_start":
@@ -280,17 +283,19 @@ function describeSatie(block: ToolBlock, taskName?: string): { verb: string; tar
       return { verb: "Ports", target: ports || "all listeners" };
     case "http_check":
       return { verb: "Check", target: str(a.url) };
+    case "start_session":
+      return { verb: "New session", target: str(a.prompt)?.split("\n")[0], detail: [str(a.agent), str(a.model)].filter(Boolean).join(" · ") || undefined };
     default:
       return { verb: toolLabel(block.name), detail: JSON.stringify(block.input) };
   }
 }
 
 /**
- * A call to Satie, Bach's own background-task launcher: said in words, and tied to the live task it
- * started or touched, so its state, ports and log are one click away.
+ * A call to Bach's own MCP server, said in words. Task calls are tied to the live task they started
+ * or touched, so its state, ports and log are one click away; a started session opens from here.
  */
-function SatieCard({ block, live }: { block: ToolBlock; live: boolean }) {
-  const { tasks, forwarding, showTask } = useContext(TranscriptContext);
+function BachToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
+  const { tasks, forwarding, showTask, showSession } = useContext(TranscriptContext);
   const pending = block.output === undefined;
   const input = (block.input ?? {}) as { id?: unknown };
   // The start tools only learn the id from their result: `Task <id> "<name>": ...`.
@@ -298,15 +303,21 @@ function SatieCard({ block, live }: { block: ToolBlock; live: boolean }) {
   const id = typeof input.id === "string" ? input.id : said?.[1];
   const task = id ? tasks?.find((t) => t.id === id) : undefined;
   // A removed task is only known by the name the result gave it.
-  const { verb, target, detail } = describeSatie(block, task?.name ?? (said?.[1] === id ? said?.[2] : undefined));
-  const starts = /^(task|compose)_start$/.test(block.name.slice(SATIE.length));
+  const { verb, target, detail } = describeBachTool(block, task?.name ?? (said?.[1] === id ? said?.[2] : undefined));
+  const starts = /^(task|compose)_start$/.test(block.name.slice(BACH.length));
+  // `start_session` says `Started session <id> ...`.
+  const session = !block.isError && block.name === BACH + "start_session" ? /^Started session (\S+)/.exec(block.output ?? "")?.[1] : undefined;
 
   return (
     <div className="rounded-lg border bg-card">
       <Collapsible>
         <CollapsibleTrigger className="group/trigger flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent">
           <ChevronRight className={chevron} />
-          <ServerCog className="size-3.5 shrink-0 text-foreground" aria-label="Satie" />
+          {block.name === BACH + "start_session" ? (
+            <MessageSquarePlus className="size-3.5 shrink-0 text-foreground" aria-label="Session" />
+          ) : (
+            <ServerCog className="size-3.5 shrink-0 text-foreground" aria-label="Background task" />
+          )}
           <span className="font-semibold text-foreground">{verb}</span>
           {target && <span className="min-w-0 truncate font-medium text-foreground">{target}</span>}
           <span className="min-w-0 flex-1 truncate font-mono" title={detail}>
@@ -349,6 +360,15 @@ function SatieCard({ block, live }: { block: ToolBlock; live: boolean }) {
               Logs
             </Button>
           )}
+        </div>
+      )}
+
+      {session && showSession && (
+        <div className="flex items-center border-t px-3 py-1.5">
+          <Button variant="ghost" size="xs" className="ml-auto" onClick={() => showSession(session)}>
+            <MessageSquarePlus data-icon="inline-start" />
+            Open session
+          </Button>
         </div>
       )}
     </div>

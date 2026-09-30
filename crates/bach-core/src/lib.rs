@@ -10,5 +10,6 @@ pub mod sessions;
 pub mod store;
 pub mod terminals;
 pub mod wrapper;
+mod tools;
 
 pub use api::Api;

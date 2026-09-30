@@ -213,7 +213,7 @@ export interface TaskLogView {
   process?: string;
 }
 
-/** Everything Satie is running (or has run) on the backend host. */
+/** Every background task running (or that has run) on the backend host. */
 export function TasksPanel({ width, onWidth, tasks, error, refresh, onClose, viewing, onViewing: setViewing }: Props) {
   const viewed = tasks.find((t) => t.id === viewing?.id);
   const forwarding = useForwarding();
@@ -263,7 +263,7 @@ export function TasksPanel({ width, onWidth, tasks, error, refresh, onClose, vie
         {shown.length === 0 && !error && (
           <p className="p-6 text-center text-sm text-muted-foreground">
             {tasks.length === 0
-              ? "No background tasks. Agents start them with Satie's tools."
+              ? "No background tasks. Agents start them with their task_start tool."
               : `Only tasks agents use for themselves: ${agentOnly} not interactive, hidden.`}
           </p>
         )}
