@@ -1,8 +1,8 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import Markdown, { type Components, defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, ImageOff, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
-import { AgentKind, Decision, readImage } from "@/api";
+import { AlertCircle, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, ImageOff, RotateCcw, ScrollText, ServerCog, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
+import { AgentKind, Decision, Forwarding, TaskView, readImage } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,6 +10,8 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { PortLink } from "@/components/Ports";
+import { STATUS, StatusIcon } from "@/components/TasksPanel";
 import { ApprovalBlock, Block, ToolBlock, isSubagent } from "@/session";
 
 /** What the transcript can ask the app to do on the user's behalf. */
@@ -19,6 +21,11 @@ export interface TranscriptActions {
   retry?: (text?: string, images?: string[]) => void;
   /** The agent the transcript is with. */
   agent?: AgentKind;
+  /** Satie's tasks, so a Satie tool call can show the live state of the task it touched. */
+  tasks?: TaskView[];
+  forwarding?: Forwarding | null;
+  /** Opens the tasks panel on this task's log. */
+  showTask?: (id: string) => void;
 }
 export const TranscriptContext = createContext<TranscriptActions>({ decide: async () => {} });
 
@@ -112,7 +119,13 @@ export function BlockView({ block, live }: { block: Block; live: boolean }) {
       );
 
     case "tool":
-      return isSubagent(block) ? <SubagentCard block={block} live={live} /> : <ToolCard block={block} live={live} />;
+      return isSubagent(block) ? (
+        <SubagentCard block={block} live={live} />
+      ) : block.name.startsWith(SATIE) ? (
+        <SatieCard block={block} live={live} />
+      ) : (
+        <ToolCard block={block} live={live} />
+      );
   }
 }
 
@@ -227,6 +240,108 @@ function ToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
       </CollapsibleContent>
     </Collapsible>
     {!!block.images?.length && <Images images={block.images} alt={`Image from ${toolLabel(block.name)}`} className="mt-2" />}
+    </div>
+  );
+}
+
+const SATIE = "mcp__satie__";
+
+/** What a Satie call did, in words, and the task it was about (if any). */
+function describeSatie(block: ToolBlock, taskName?: string): { verb: string; target?: string; detail?: string } {
+  const a = (block.input ?? {}) as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+  const ports = [...(Array.isArray(a.ports) ? a.ports : []), ...(a.port ? [a.port] : [])].map((p) => `:${p}`).join(" ");
+  const task = taskName ?? str(a.id);
+  switch (block.name.slice(SATIE.length)) {
+    case "task_start":
+      return { verb: "Start", target: str(a.name) ?? taskName ?? str(a.command), detail: str(a.command) };
+    case "compose_start":
+      return { verb: "Compose", target: str(a.name) ?? taskName ?? str(a.file), detail: str(a.file) };
+    case "task_process": {
+      const action = str(a.action) ?? "control";
+      return { verb: action[0].toUpperCase() + action.slice(1), target: str(a.process), detail: task && `in ${task}` };
+    }
+    case "task_stop":
+      return { verb: "Stop", target: task };
+    case "task_logs":
+      return { verb: "Logs", target: task, detail: str(a.process) };
+    case "task_list":
+      return { verb: "List tasks" };
+    case "port_info":
+      return { verb: "Ports", target: ports || "all listeners" };
+    case "http_check":
+      return { verb: "Check", target: str(a.url) };
+    default:
+      return { verb: toolLabel(block.name), detail: JSON.stringify(block.input) };
+  }
+}
+
+/**
+ * A call to Satie, Bach's own background-task launcher: said in words, and tied to the live task it
+ * started or touched, so its state, ports and log are one click away.
+ */
+function SatieCard({ block, live }: { block: ToolBlock; live: boolean }) {
+  const { tasks, forwarding, showTask } = useContext(TranscriptContext);
+  const pending = block.output === undefined;
+  const input = (block.input ?? {}) as { id?: unknown };
+  // The start tools only learn the id from their result: `Task <id> "<name>": ...`.
+  const said = /^Task (\S+) "(.*?)":/.exec(block.output ?? "");
+  const id = typeof input.id === "string" ? input.id : said?.[1];
+  const task = id ? tasks?.find((t) => t.id === id) : undefined;
+  // A removed task is only known by the name the result gave it.
+  const { verb, target, detail } = describeSatie(block, task?.name ?? (said?.[1] === id ? said?.[2] : undefined));
+  const starts = /^(task|compose)_start$/.test(block.name.slice(SATIE.length));
+
+  return (
+    <div className="rounded-lg border bg-card">
+      <Collapsible>
+        <CollapsibleTrigger className="group/trigger flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent">
+          <ChevronRight className={chevron} />
+          <ServerCog className="size-3.5 shrink-0 text-foreground" aria-label="Satie" />
+          <span className="font-semibold text-foreground">{verb}</span>
+          {target && <span className="min-w-0 truncate font-medium text-foreground">{target}</span>}
+          <span className="min-w-0 flex-1 truncate font-mono" title={detail}>
+            {detail !== target ? detail : undefined}
+          </span>
+          {pending && live ? (
+            <>
+              <Elapsed since={block.startedAt} />
+              <Spinner className="size-3.5 shrink-0 text-primary" />
+            </>
+          ) : pending ? (
+            <Ban className="size-3.5 shrink-0" aria-label="Interrupted" />
+          ) : block.isError ? (
+            <XCircle className="size-3.5 shrink-0 text-destructive" aria-label="Failed" />
+          ) : (
+            <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground" aria-label="Done" />
+          )}
+        </CollapsibleTrigger>
+        <CollapsibleContent className="flex flex-col gap-2 px-3 pb-2">
+          <pre className={preClass}>{JSON.stringify(block.input, null, 2)}</pre>
+          {!pending && <pre className={preClass + (block.isError ? " border-destructive/40" : "")}>{block.output}</pre>}
+        </CollapsibleContent>
+      </Collapsible>
+
+      {starts && task && (
+        <div className="flex flex-wrap items-center gap-1.5 border-t px-3 py-1.5 text-xs text-muted-foreground">
+          <span className="[&_svg]:size-3.5">
+            <StatusIcon task={task} />
+          </span>
+          <span>{STATUS[task.status]}</span>
+          {task.ports.map((p) => (
+            <PortLink key={p} port={p} forwarding={forwarding ?? null} />
+          ))}
+          {task.missingPorts.length > 0 && (
+            <span className="text-destructive">not listening: {task.missingPorts.map((p) => `:${p}`).join(" ")}</span>
+          )}
+          {showTask && (
+            <Button variant="ghost" size="xs" className="ml-auto" onClick={() => showTask(task.id)}>
+              <ScrollText data-icon="inline-start" />
+              Logs
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

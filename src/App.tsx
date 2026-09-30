@@ -25,7 +25,8 @@ import {
 } from "@/api";
 import { BlockView, TranscriptContext } from "@/components/Transcript";
 import { WorktreeCleanup } from "@/components/WorktreeCleanup";
-import { TASKS_WIDTH, TasksPanel, useTasks } from "@/components/TasksPanel";
+import { TASKS_WIDTH, TaskLogView, TasksPanel, useTasks } from "@/components/TasksPanel";
+import { useForwarding } from "@/components/Ports";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { TerminalPanel } from "@/components/TerminalPanel";
 import { UsageIndicator, usePlanUsage } from "@/components/UsageIndicator";
@@ -80,11 +81,13 @@ export function App() {
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
+  const [viewingTask, setViewingTask] = useState<TaskLogView>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useStored("bach.sidebarOpen", true, isBoolean);
   const [sidebarWidth, setSidebarWidth] = useStored("bach.sidebarWidth", SIDEBAR_WIDTH.default, isNumber);
   const [tasksWidth, setTasksWidth] = useStored("bach.tasksWidth", TASKS_WIDTH.default, isNumber);
   const tasks = useTasks();
+  const forwarding = useForwarding();
   const planUsage = usePlanUsage();
   // Transcripts of the sessions opened so far. Kept in a ref so event handlers see the latest
   // `seq` (to spot gaps); `rerender` shows changes.
@@ -467,7 +470,16 @@ export function App() {
             {!showChanges && (
             <>
 
-            <TranscriptContext.Provider value={{ decide, retry: running || starting ? undefined : retry, agent: active.agent }}>
+            <TranscriptContext.Provider
+              value={{
+                decide,
+                retry: running || starting ? undefined : retry,
+                agent: active.agent,
+                tasks: tasks.tasks,
+                forwarding,
+                showTask: (id) => (setTasksOpen(true), setViewingTask({ id })),
+              }}
+            >
             <div className="relative min-h-0 flex-1">
               <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
                 <div ref={contentRef} className="mx-auto flex max-w-3xl flex-col gap-4 px-5 py-6 select-text">
@@ -565,6 +577,8 @@ export function App() {
           error={tasks.error}
           refresh={() => void tasks.refresh()}
           onClose={() => setTasksOpen(false)}
+          viewing={viewingTask}
+          onViewing={setViewingTask}
         />
       )}
     </div>

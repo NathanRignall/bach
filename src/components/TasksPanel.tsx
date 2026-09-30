@@ -55,7 +55,7 @@ function duration(ms: number) {
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
-const STATUS: Record<TaskStatus, string> = {
+export const STATUS: Record<TaskStatus, string> = {
   running: "Running",
   exited: "Finished",
   failed: "Failed",
@@ -63,7 +63,7 @@ const STATUS: Record<TaskStatus, string> = {
   lost: "Lost",
 };
 
-function StatusIcon({ task }: { task: TaskView }) {
+export function StatusIcon({ task }: { task: TaskView }) {
   switch (task.status) {
     case "running":
       return <Spinner className="size-4 text-primary" aria-label="Running" />;
@@ -197,11 +197,18 @@ interface Props {
   error?: string;
   refresh: () => void;
   onClose: () => void;
+  /** The task (and compose process) whose log is open, if any. */
+  viewing?: TaskLogView;
+  onViewing: (v?: TaskLogView) => void;
+}
+
+export interface TaskLogView {
+  id: string;
+  process?: string;
 }
 
 /** Everything Satie is running (or has run) on the backend host. */
-export function TasksPanel({ width, onWidth, tasks, error, refresh, onClose }: Props) {
-  const [viewing, setViewing] = useState<{ id: string; process?: string }>();
+export function TasksPanel({ width, onWidth, tasks, error, refresh, onClose, viewing, onViewing: setViewing }: Props) {
   const viewed = tasks.find((t) => t.id === viewing?.id);
   const forwarding = useForwarding();
   const finished = tasks.filter((t) => t.status !== "running");
