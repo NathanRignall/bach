@@ -28,16 +28,16 @@ Planned features and known issues, roughly grouped by area.
   approach, with the worktree as it was at that point.
 - [ ] **Hand off to another agent**: continue a session's task with a different agent
   (e.g. Claude to Codex) on the same worktree, with a summary of the work so far.
-- [ ] **Agents can spawn sessions**: let an agent start a new session in the same
+- [x] **Agents can spawn sessions**: let an agent start a new session in the same
   project for a separate task, so side tasks it spots don't derail the current one.
   Expose it as a tool on the existing MCP endpoint rather than a second server: let
-  bach-core register extra tools alongside Satie's `task_*` ones.
-- [ ] **One `bach` MCP server**: rename the agent-facing server from `satie` to `bach`
+  bach-core register extra tools alongside the `task_*` ones.
+- [x] **One `bach` MCP server**: rename the agent-facing server from `satie` to `bach`
   (MCP config key, pre-approved tool names, Codex's server check, agent guidance), and
   drop "Satie" from the UI (Tasks panel empty state, `satie · …` tool labels,
   Transcript's `mcp__satie__` prefix). No compatibility needed for old transcripts or
-  saved approvals. The `satie` crate keeps its name: it's deliberately independent of
-  Bach.
+  saved approvals. The task launcher crate (now `bach-tasks`) stays independent of
+  the rest of Bach.
 
 ## Worktree cleanup
 

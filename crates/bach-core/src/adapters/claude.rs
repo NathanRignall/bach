@@ -1,16 +1,16 @@
-use super::{mode, AgentEvent, SATIE_LOOK_ONLY};
+use super::{mode, AgentEvent, MCP_READ_ONLY, MCP_SERVER};
 use crate::attachments::{Attachment, Kind};
 use bach_protocol::{DeltaKind, LimitWindow, PlanUsage};
-use satie::Grant;
+use bach_tasks::Grant;
 use serde_json::{json, Value};
 
 // ---------------------------------------------------------------------------------------------
-// Steering Claude Code to Satie
+// Steering Claude Code to Bach's MCP server
 // ---------------------------------------------------------------------------------------------
 
-// The guidance itself is Satie's MCP `instructions`, which Claude Code adds to its prompt.
+// The guidance itself is the MCP server's `instructions`, which Claude Code adds to its prompt.
 
-const HOOK_DENY: &str = "Background commands are stopped when this turn ends. Start it with the satie MCP tool `task_start` \
+const HOOK_DENY: &str = "Background commands are stopped when this turn ends. Start it with the bach MCP tool `task_start` \
 instead: it keeps running independently and the user can see and stop it in the Tasks panel.";
 
 /// A hook that denies Bash calls with `run_in_background: true` (reads the hook input on stdin).
@@ -25,24 +25,26 @@ fn hook_command() -> String {
     )
 }
 
-/// `--mcp-config`: Satie as the `satie` MCP server, with this run's token.
+/// `--mcp-config`: the `bach` MCP server, with this run's token.
 fn mcp_config(grant: &Grant) -> String {
-    json!({
-        "mcpServers": { "satie": {
+    let mut servers = serde_json::Map::new();
+    servers.insert(
+        super::MCP_SERVER.into(),
+        json!({
             "type": "http",
             "url": grant.url,
             "headers": { "Authorization": format!("Bearer {}", grant.token) },
-        }}
-    })
-    .to_string()
+        }),
+    );
+    json!({ "mcpServers": servers }).to_string()
 }
 
-/// `--settings`: verbose output, which `stream-json` needs, and with Satie the hook that stops
-/// `run_in_background` and points at Satie instead. Verbose is a setting rather than `--verbose`
-/// because a wrapper may take that flag for itself (`sandbox claude --verbose`).
-fn settings(satie: bool) -> String {
+/// `--settings`: verbose output, which `stream-json` needs, and with the MCP server the hook that
+/// stops `run_in_background` and points at `task_start` instead. Verbose is a setting rather than
+/// `--verbose` because a wrapper may take that flag for itself (`sandbox claude --verbose`).
+fn settings(mcp: bool) -> String {
     let mut settings = json!({ "verbose": true });
-    if satie {
+    if mcp {
         settings["hooks"] = json!({ "PreToolUse": [{
             "matcher": "Bash",
             "hooks": [{ "type": "command", "command": hook_command() }],
@@ -63,7 +65,7 @@ pub fn args(
     permission_mode: Option<&str>,
     effort: Option<&str>,
     allowed_tools: &[String],
-    satie: Option<&Grant>,
+    mcp: Option<&Grant>,
 ) -> Vec<String> {
     let mut a: Vec<String> = [
         "-p",
@@ -78,7 +80,7 @@ pub fn args(
     ]
     .map(String::from)
     .into();
-    a.extend(["--settings".into(), settings(satie.is_some())]);
+    a.extend(["--settings".into(), settings(mcp.is_some())]);
     if let Some(id) = session_id {
         a.push("--resume".into());
         a.push(id.into());
@@ -95,11 +97,11 @@ pub fn args(
         a.push("--effort".into());
         a.push(e.into());
     }
-    if let Some(grant) = satie {
+    if let Some(grant) = mcp {
         a.extend(["--mcp-config".into(), mcp_config(grant)]);
     }
-    let look_only = satie.iter().flat_map(|_| SATIE_LOOK_ONLY.map(|t| format!("mcp__satie__{t}")));
-    let allowed: Vec<String> = allowed_tools.iter().cloned().chain(look_only).collect();
+    let read_only = mcp.iter().flat_map(|_| MCP_READ_ONLY.map(|t| format!("mcp__{MCP_SERVER}__{t}")));
+    let allowed: Vec<String> = allowed_tools.iter().cloned().chain(read_only).collect();
     if !allowed.is_empty() {
         a.push("--allowedTools".into());
         a.extend(allowed);
@@ -426,23 +428,23 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn hands_the_run_satie_and_a_hook() {
+    async fn hands_the_run_the_bach_server_and_a_hook() {
         let dir = std::env::temp_dir().join(format!("bach-claude-args-{}", std::process::id()));
-        let satie = satie::Satie::start("127.0.0.1:0".parse().unwrap(), dir.clone())
+        let tasks = bach_tasks::Tasks::start("127.0.0.1:0".parse().unwrap(), dir.clone())
             .await
             .unwrap();
-        let grant = satie.grant(satie::Scope::default());
+        let grant = tasks.grant(bach_tasks::Scope::default());
         let a = args(None, None, None, None, &[], Some(&grant));
         let after = |flag: &str| a[a.iter().position(|x| x == flag).unwrap() + 1].clone();
 
         let cfg: Value = serde_json::from_str(&after("--mcp-config")).unwrap();
-        let server = &cfg["mcpServers"]["satie"];
-        assert_eq!((server["type"].as_str(), server["url"].as_str()), (Some("http"), Some(satie.url())));
+        let server = &cfg["mcpServers"]["bach"];
+        assert_eq!((server["type"].as_str(), server["url"].as_str()), (Some("http"), Some(tasks.url())));
         assert_eq!(server["headers"]["Authorization"], format!("Bearer {}", grant.token));
-        // The system prompt is left to a wrapper; Satie's guidance comes with its tools.
+        // The system prompt is left to a wrapper; the guidance comes with the tools.
         assert!(!a.contains(&"--append-system-prompt".to_string()));
-        assert!(a.contains(&"mcp__satie__task_list".to_string()), "read-only tools pre-approved");
-        assert!(!a.contains(&"mcp__satie__task_start".to_string()), "starting still asks");
+        assert!(a.contains(&"mcp__bach__task_list".to_string()), "read-only tools pre-approved");
+        assert!(!a.contains(&"mcp__bach__task_start".to_string()), "starting still asks");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -1,10 +1,10 @@
-//! Satie's own SQLite database: one row per task, stored as JSON.
+//! bach-tasks' own SQLite database: one row per task, stored as JSON.
 use crate::Task;
 use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::{path::Path, sync::Mutex};
 
-/// Reads a task saved by any version of Satie (before tasks had owners, they had run ids).
+/// Reads a task saved by any version of bach-tasks (before tasks had owners, they had run ids).
 pub fn parse_task(mut v: Value) -> Option<Task> {
     if let Some(obj) = v.as_object_mut() {
         if let Some(run) = obj.remove("runId") {

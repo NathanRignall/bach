@@ -114,24 +114,24 @@ async fn real_opencode_turns() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
-async fn real_opencode_has_satie() {
-    let dir = std::env::temp_dir().join(format!("bach-real-opencode-satie-{}", std::process::id()));
+async fn real_opencode_has_the_bach_server() {
+    let dir = std::env::temp_dir().join(format!("bach-real-opencode-tasks-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let satie = satie::Satie::start("127.0.0.1:0".parse().unwrap(), dir.join(".satie")).await.unwrap();
-    let runs = Runs::with_satie(Some(satie.clone()));
+    let tasks = bach_tasks::Tasks::start("127.0.0.1:0".parse().unwrap(), dir.join(".tasks")).await.unwrap();
+    let runs = Runs::with_tasks(Some(tasks.clone()));
 
-    let ev = turn(&runs, request(&dir, "Call the satie task_list tool, then say done.", None, &[])).await;
+    let ev = turn(&runs, request(&dir, "Call the bach task_list tool, then say done.", None, &[])).await;
     assert!(
-        ev.iter().any(|e| e["type"] == "tool_use" && e["name"] == "mcp__satie__task_list"),
-        "no satie tool call"
+        ev.iter().any(|e| e["type"] == "tool_use" && e["name"] == "mcp__bach__task_list"),
+        "no tasks tool call"
     );
     assert_eq!(ev.last().unwrap()["isError"], false);
 
     // Starting a task asks first, and the card shows the call's arguments.
-    let ev = turn(&runs, request(&dir, "Use the satie task_start tool to run the command `sleep 5`, then say done.", None, &[])).await;
+    let ev = turn(&runs, request(&dir, "Use the bach task_start tool to run the command `sleep 5`, then say done.", None, &[])).await;
     let card = ev.iter().find(|e| e["type"] == "approval").expect("task_start asks");
-    assert_eq!(card["toolName"], "mcp__satie__task_start");
+    assert_eq!(card["toolName"], "mcp__bach__task_start");
     assert!(card["input"]["command"].as_str().unwrap_or_default().contains("sleep 5"), "card without the command: {card}");
     let _ = std::fs::remove_dir_all(&dir);
 }

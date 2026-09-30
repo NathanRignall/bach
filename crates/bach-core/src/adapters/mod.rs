@@ -6,9 +6,17 @@ mod codex;
 pub mod opencode;
 
 use crate::attachments::SavedFile;
-use satie::Grant;
+use bach_tasks::Grant;
 pub use bach_protocol::{AgentEvent, AgentKind};
 use serde_json::Value;
+
+/// What agents call Bach's MCP server: bach-tasks' background-task tools and Bach's own
+/// ([`crate::tools`]), so tool names read `mcp__bach__task_start`.
+pub const MCP_SERVER: &str = "bach";
+
+/// The server's tools that only look, which no agent needs to ask before (each names them its own
+/// way). Starting and stopping tasks, and starting sessions, still ask.
+pub const MCP_READ_ONLY: [&str; 4] = ["task_list", "task_logs", "port_info", "http_check"];
 
 /// How to drive each agent's CLI.
 pub trait AgentCli: Copy {
@@ -20,9 +28,9 @@ pub trait AgentCli: Copy {
     /// as is `permission_mode` (`--permission-mode`, e.g. `acceptEdits` or `auto`) and `effort`
     /// (`--effort`); the other agents get theirs over their protocols ([`Turn`]).
     ///
-    /// `satie` adds Bach's background-task launcher as an MCP server, whose instructions steer the
-    /// agent to it (Claude Code, which also gets a hook, and Codex; opencode gets it from its
-    /// server, see `opencode_server`).
+    /// `mcp` adds Bach's MCP server ([`MCP_SERVER`]: bach-tasks' background tasks and Bach's own
+    /// tools), whose instructions steer the agent to it (Claude Code, which also gets a hook, and
+    /// Codex; opencode gets it from its server, see `opencode_server`).
     ///
     /// `allowed_tools` are permission rules (e.g. `Bash(tmux ls *)`) approved earlier in the
     /// session; only Claude Code takes them.
@@ -34,7 +42,7 @@ pub trait AgentCli: Copy {
         permission_mode: Option<&str>,
         effort: Option<&str>,
         allowed_tools: &[String],
-        satie: Option<&Grant>,
+        mcp: Option<&Grant>,
     ) -> Vec<String>;
 
     /// For agents driven over stdin (Claude Code, so it can ask for approvals): the first
@@ -49,7 +57,7 @@ pub trait AgentCli: Copy {
     fn parse_line(self, line: &str) -> Vec<AgentEvent>;
 
     /// Environment variables the agent needs set (secrets kept off its command line).
-    fn env(self, satie: Option<&Grant>) -> Vec<(&'static str, String)>;
+    fn env(self, mcp: Option<&Grant>) -> Vec<(&'static str, String)>;
 }
 
 impl AgentCli for AgentKind {
@@ -68,13 +76,13 @@ impl AgentCli for AgentKind {
         permission_mode: Option<&str>,
         effort: Option<&str>,
         allowed_tools: &[String],
-        satie: Option<&Grant>,
+        mcp: Option<&Grant>,
     ) -> Vec<String> {
         match self {
             AgentKind::Claude => {
-                claude::args(session_id, model, permission_mode, effort, allowed_tools, satie)
+                claude::args(session_id, model, permission_mode, effort, allowed_tools, mcp)
             }
-            AgentKind::Codex => codex::args(satie),
+            AgentKind::Codex => codex::args(mcp),
             // opencode runs through its shared server (`crate::opencode_server`), not a command.
             AgentKind::Opencode => vec![],
         }
@@ -92,9 +100,9 @@ impl AgentCli for AgentKind {
         self != AgentKind::Claude
     }
 
-    fn env(self, satie: Option<&Grant>) -> Vec<(&'static str, String)> {
+    fn env(self, mcp: Option<&Grant>) -> Vec<(&'static str, String)> {
         match self {
-            AgentKind::Codex => codex::env(satie),
+            AgentKind::Codex => codex::env(mcp),
             _ => vec![],
         }
     }
@@ -215,23 +223,19 @@ fn mode(id: &str, name: &str, description: &str, is_default: bool) -> bach_proto
     bach_protocol::PermissionModeInfo { id: id.into(), name: name.into(), description: description.into(), is_default }
 }
 
-/// Satie's tools that only look, which no agent needs to ask before (each names them its own way).
-/// Starting and stopping tasks still ask.
-const SATIE_LOOK_ONLY: [&str; 4] = ["task_list", "task_logs", "port_info", "http_check"];
-
 /// The models `agent` can run, for the model picker (opencode's in folder `cwd`, whose server
-/// is started with `satie` if it isn't running).
+/// is started with Bach's MCP server if it isn't running).
 pub async fn list_models(
     agent: AgentKind,
     cwd: Option<&str>,
-    satie: Option<&satie::Satie>,
+    tasks: Option<&bach_tasks::Tasks>,
 ) -> Result<Vec<bach_protocol::ModelInfo>, String> {
     match agent {
         AgentKind::Claude => Ok(claude::models()),
         AgentKind::Codex => codex::list_models().await,
         AgentKind::Opencode => {
             let dir = cwd.ok_or("Choose a project folder to see opencode's models.")?;
-            crate::opencode_server::list_models(dir, satie).await
+            crate::opencode_server::list_models(dir, tasks).await
         }
     }
 }

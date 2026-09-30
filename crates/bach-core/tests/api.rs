@@ -1,7 +1,7 @@
 //! The API as a transport sees it: named commands with JSON arguments, and pushed events.
 use bach_core::Api;
 use bach_protocol::{ErrorCode, ServerEvent};
-use satie_protocol::{TaskEvent, TaskStatus};
+use bach_tasks_protocol::{TaskEvent, TaskStatus};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -13,11 +13,11 @@ fn tmp(label: &str) -> std::path::PathBuf {
 }
 
 #[tokio::test]
-async fn background_tasks_move_to_satie_and_push_their_changes() {
+async fn background_tasks_move_to_their_own_database_and_push_their_changes() {
     let dir = tmp("tasks");
     let db = dir.join("bach.db");
 
-    // A database from before Satie kept its own, with one (long finished) task in it.
+    // A database from before bach-tasks kept its own, with one (long finished) task in it.
     {
         let conn = rusqlite::Connection::open(&db).unwrap();
         let old = json!({

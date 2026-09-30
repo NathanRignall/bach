@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "24b4661a8f6e4071";
+export const PROTOCOL = "31ee14841da2b0ac";
 
 /**
  * Agent-independent events the UI renders.
@@ -729,7 +729,7 @@ export type StopSessionArgs = { sessionId: string, };
 export type StopTaskArgs = { taskId: string, };
 
 /**
- * A background process as Satie records it.
+ * A background process as bach-tasks records it.
  */
 export type Task = { id: string, name: string, command: string, 
 /**
@@ -753,7 +753,7 @@ startTicks: number | null, startedAt: number, endedAt: number | null, status: Ta
  */
 expectedPorts: Array<number>, 
 /**
- * For a process-compose project started by Satie: its compose file.
+ * For a process-compose project started by bach-tasks: its compose file.
  */
 composeFile: string | null, 
 /**
@@ -850,7 +850,7 @@ startTicks: number | null, startedAt: number, endedAt: number | null, status: Ta
  */
 expectedPorts: Array<number>, 
 /**
- * For a process-compose project started by Satie: its compose file.
+ * For a process-compose project started by bach-tasks: its compose file.
  */
 composeFile: string | null, 
 /**

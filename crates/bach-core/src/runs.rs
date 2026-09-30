@@ -6,7 +6,7 @@ use crate::{
 pub use bach_protocol::Decision;
 use bach_protocol::ApiError;
 use serde::Serialize;
-use satie::{Satie, Scope};
+use bach_tasks::{Tasks, Scope};
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
@@ -114,13 +114,13 @@ fn track(ev: &mut AgentEvent, pending: &Pending, project: Option<&std::path::Pat
 #[derive(Clone, Default)]
 pub struct Runs {
     live: Arc<Mutex<HashMap<String, Live>>>,
-    /// Satie (background tasks), offered to the agents as an MCP server.
-    satie: Option<Satie>,
+    /// bach-tasks (background tasks), offered to the agents as an MCP server.
+    tasks: Option<Tasks>,
 }
 
-/// `NO_PROXY` (both spellings) with loopback added to whatever it already lists. Satie is on
+/// `NO_PROXY` (both spellings) with loopback added to whatever it already lists. bach-tasks is on
 /// 127.0.0.1, and Claude Code sends even loopback requests through an `HTTPS_PROXY` otherwise,
-/// which may refuse them, so Satie's tools go missing.
+/// which may refuse them, so bach-tasks' tools go missing.
 pub(crate) fn no_proxy_for_loopback() -> [(&'static str, String); 2] {
     let mut hosts: Vec<String> = ["NO_PROXY", "no_proxy"]
         .iter()
@@ -301,15 +301,15 @@ impl Runs {
         attachment_files: AttachmentFiles,
         project: PathBuf,
     ) -> Result<String, String> {
-        let server = opencode_server::server(&turn.dir, self.satie.as_ref()).await?;
+        let server = opencode_server::server(&turn.dir, self.tasks.as_ref()).await?;
         // Keeps this folder's server running while the turn does.
         let lease = server.lease();
         // Listening before prompting, so nothing is missed.
         let mut events = server.subscribe();
         let dir = turn.dir;
-        // Without Satie the turn still runs; its tools are just missing.
-        let mcp_servers = server.offer_satie(&dir).await.unwrap_or_else(|e| {
-            eprintln!("run {run_id}: couldn't give opencode Satie: {e}");
+        // Without bach-tasks the turn still runs; its tools are just missing.
+        let mcp_servers = server.offer_mcp(&dir).await.unwrap_or_else(|e| {
+            eprintln!("run {run_id}: couldn't give opencode Bach's MCP server: {e}");
             vec![]
         });
         let mode = turn.mode.as_deref();
@@ -414,9 +414,9 @@ impl Runs {
         Ok(run_id)
     }
 
-    pub fn with_satie(satie: Option<Satie>) -> Self {
+    pub fn with_tasks(tasks: Option<Tasks>) -> Self {
         Self {
-            satie,
+            tasks,
             ..Default::default()
         }
     }
@@ -532,11 +532,11 @@ impl Runs {
             },
         );
 
-        // Claude Code and Codex get Satie as an MCP server, with a token scoped to this project
+        // Claude Code and Codex get bach-tasks as an MCP server, with a token scoped to this project
         // (opencode's server gets its own when it starts).
         // The grant is revoked when the run ends (or if launching fails below).
-        let grant = match (&self.satie, agent) {
-            (Some(satie), AgentKind::Claude | AgentKind::Codex) => Some(satie.grant(Scope {
+        let grant = match (&self.tasks, agent) {
+            (Some(tasks), AgentKind::Claude | AgentKind::Codex) => Some(tasks.grant(Scope {
                 project: project.as_ref().map(|p| p.to_string_lossy().into_owned()),
                 owner: Some(run_id.clone()),
             })),

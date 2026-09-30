@@ -488,6 +488,8 @@ export function App() {
                 tasks: tasks.tasks,
                 forwarding,
                 showTask: (id) => (setTasksOpen(true), setViewingTask({ id })),
+                showSession: setActiveId,
+                inRepo: !!active.gitBranch,
               }}
             >
             <div className="relative min-h-0 flex-1">

@@ -1,4 +1,4 @@
-//! The backend behind every transport: owns sessions, runs, git and Satie, implements each
+//! The backend behind every transport: owns sessions, runs, git and bach-tasks, implements each
 //! command of the protocol, and broadcasts [`ServerEvent`]s. Transports only parse, call
 //! [`Api::call`], and forward [`Api::subscribe`].
 use crate::{
@@ -8,11 +8,12 @@ use crate::{
     runs::{Emit, RunRequest, Runs},
     sessions::{OnFinish, Sessions},
     terminals::Terminals,
+    tools::SessionTools,
     store::{now_ms, Store},
 };
 use bach_protocol::{commands::*, *};
-use satie::{Satie, StartTask};
-use satie_protocol::*;
+use bach_tasks::{Tasks, StartTask};
+use bach_tasks_protocol::*;
 use serde_json::Value;
 use std::{
     path::Path,
@@ -34,55 +35,63 @@ pub struct Api {
     git: Git,
     sessions: Sessions,
     terminals: Terminals,
-    satie: Satie,
+    tasks: Tasks,
     events: broadcast::Sender<ServerEvent>,
-    /// Passes Satie's task events on while anyone is subscribed.
+    /// Passes bach-tasks' task events on while anyone is subscribed.
     task_events: Mutex<Option<JoinHandle<()>>>,
     /// Each agent's models, as last listed, and when.
     models: Mutex<ModelLists>,
 }
 
 impl Api {
-    /// Opens (creating if needed) the session database at `db`. Worktrees and Satie's files go
-    /// in folders next to it. Starts Satie's MCP server on a free loopback port.
+    /// Opens (creating if needed) the session database at `db`. Worktrees and bach-tasks' files go
+    /// in folders next to it. Starts the agents' MCP server (bach-tasks', with Bach's tools added) on
+    /// a free loopback port.
     pub async fn open(db: &Path) -> Result<Api, String> {
         crate::wrapper::init()?;
         let dir = db.parent().unwrap_or(Path::new("."));
         let store = Store::open(db)?;
         // Nothing survives a restart of the backend: no run is live any more.
         store.end_all_runs()?;
-        let satie = Satie::start("127.0.0.1:0".parse().unwrap(), dir.join("tasks"))
+        let tasks = Tasks::start("127.0.0.1:0".parse().unwrap(), dir.join("tasks"))
             .await
-            .map_err(|e| format!("couldn't start Satie: {e}"))?;
-        // Tasks used to live in the session database; Satie keeps its own now.
+            .map_err(|e| format!("couldn't start the task launcher: {e}"))?;
+        // Tasks used to live in the session database; bach-tasks keeps its own now.
         let legacy = store.legacy_tasks()?;
         if !legacy.is_empty() {
-            let n = satie.import(legacy.into_iter().filter_map(satie::parse_task).collect());
-            eprintln!("moved {n} background task(s) to Satie's database");
+            let n = tasks.import(legacy.into_iter().filter_map(bach_tasks::parse_task).collect());
+            eprintln!("moved {n} background task(s) to bach-tasks' database");
         }
         store.drop_legacy_tasks()?;
-        Ok(Self::new(store, Git::new(dir.join("worktrees")), satie))
+        Ok(Self::new(store, Git::new(dir.join("worktrees")), tasks))
     }
 
-    pub fn new(store: Store, git: Git, satie: Satie) -> Api {
+    pub fn new(store: Store, git: Git, tasks: Tasks) -> Api {
         let (events, _) = broadcast::channel(1024);
-        let runs = Runs::with_satie(Some(satie.clone()));
+        let runs = Runs::with_tasks(Some(tasks.clone()));
         let sessions = Sessions::new(store, events.clone());
+        let launcher = Launcher::new(sessions.clone(), runs.clone(), git.clone());
+        // Agents see one `bach` server: bach-tasks' task tools and Bach's own.
+        tasks.set_server_name(crate::adapters::MCP_SERVER);
+        tasks.add_tools(Arc::new(SessionTools {
+            launcher: launcher.clone(),
+            sessions: sessions.clone(),
+        }));
         Api {
-            launcher: Launcher::new(sessions.clone(), runs.clone()),
+            launcher,
             runs,
             git,
             sessions,
             terminals: Terminals::new(events.clone()),
-            satie,
+            tasks,
             events,
             task_events: Mutex::default(),
             models: Mutex::default(),
         }
     }
 
-    pub fn satie(&self) -> &Satie {
-        &self.satie
+    pub fn tasks(&self) -> &Tasks {
+        &self.tasks
     }
 
     /// Runs one command given by name and JSON arguments.
@@ -98,13 +107,13 @@ impl Api {
     }
 
     /// Watching tasks means looking at the machine every second, so only do it while someone is
-    /// listening: the forwarder stops (and unsubscribes from Satie) once nobody is.
+    /// listening: the forwarder stops (and unsubscribes from bach-tasks) once nobody is.
     fn forward_task_events(&self) {
         let mut running = self.task_events.lock().unwrap();
         if running.as_ref().is_some_and(|h| !h.is_finished()) {
             return;
         }
-        let (mut tasks, events) = (self.satie.subscribe(), self.events.clone());
+        let (mut tasks, events) = (self.tasks.subscribe(), self.events.clone());
         *running = Some(tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -194,47 +203,15 @@ impl Api {
         }
         Ok(folder)
     }
-
-    /// Sends `prompt` (and `images`) to session `id`'s agent: records it, marks the session
-    /// running and starts the run. A run that can't start is recorded as failed. While the agent
-    /// is busy, the message is queued instead.
-    async fn send(&self, id: &str, prompt: String, images: Vec<String>) -> Result<Session, ApiError> {
-        let prompt = prompt.trim().to_string();
-        check_message(&prompt, &images)?;
-        let run_id = uuid::Uuid::new_v4().to_string();
-        let mut queued = false;
-        let s = self.sessions.update(id, |s| {
-            if s.workdir_removed {
-                return Err(ApiError::invalid(
-                    "This session's worktree was removed, so it can't be continued.",
-                ));
-            }
-            if s.run_id.is_some() {
-                s.queued.push(QueuedMessage {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    text: prompt.clone(),
-                    images: images.clone(),
-                });
-                queued = true;
-                return Ok(());
-            }
-            s.run_id = Some(run_id.clone());
-            // Talking to it again brings it back.
-            s.archived = false;
-            Ok(())
-        })?;
-        if queued {
-            return Ok(s);
-        }
-        self.launcher.launch(id, s, run_id, prompt, images).await
-    }
 }
 
-/// Starts agent runs for sessions, and the next queued message whenever a run finishes cleanly.
+/// Starts sessions and their agent runs, and the next queued message whenever a run finishes
+/// cleanly.
 #[derive(Clone)]
-struct Launcher {
+pub(crate) struct Launcher {
     sessions: Sessions,
     runs: Runs,
+    git: Git,
     /// Queued messages claimed when a run finished, to launch once its process has exited.
     next: mpsc::UnboundedSender<Next>,
 }
@@ -250,11 +227,12 @@ struct Next {
 }
 
 impl Launcher {
-    fn new(sessions: Sessions, runs: Runs) -> Launcher {
+    fn new(sessions: Sessions, runs: Runs, git: Git) -> Launcher {
         let (next, mut rx) = mpsc::unbounded_channel::<Next>();
         let this = Launcher {
             sessions,
             runs,
+            git,
             next,
         };
         let worker = this.clone();
@@ -288,6 +266,103 @@ impl Launcher {
             }
         });
         this
+    }
+
+    /// Starts a new session: readies its folder (a worktree, maybe) and sends its first message.
+    pub(crate) async fn start_session(&self, a: StartSessionArgs) -> Result<Session, ApiError> {
+        let prompt = a.prompt.trim().to_string();
+        check_message(&prompt, &a.images)?;
+        let cwd = a.cwd.trim().to_string();
+        if cwd.is_empty() {
+            return Err(ApiError::invalid("Choose a project folder first."));
+        }
+        // Where it runs: the folder on the chosen branch, or a new worktree branched from it.
+        let worktree = a.worktree.unwrap_or(false);
+        let new_branch = a
+            .new_branch
+            .map(|b| b.trim().to_string())
+            .filter(|b| !b.is_empty())
+            .unwrap_or_else(|| branch_name_for(&prompt));
+        let ws = self
+            .git
+            .prepare(
+                cwd.clone(),
+                a.branch.clone(),
+                worktree,
+                worktree.then_some(new_branch),
+            )
+            .await
+            .map_err(ApiError::failed)?;
+        let now = now_ms();
+        let session = Session {
+            id: uuid::Uuid::new_v4().to_string(),
+            title: title_for(&prompt, &a.images),
+            title_edited: false,
+            agent: a.agent,
+            cwd,
+            branch: a.branch,
+            worktree: ws.worktree,
+            model_choice: model_choice(a.model_choice),
+            permission_mode: permission_mode(a.permission_mode),
+            effort: effort(a.effort),
+            workdir: Some(ws.workdir),
+            git_branch: ws.branch,
+            workdir_removed: false,
+            agent_session_id: None,
+            allow_rules: vec![],
+            model: None,
+            context: None,
+            run_id: None,
+            archived: false,
+            open_approvals: vec![],
+            queued: vec![],
+            created_at: now,
+            updated_at: now,
+            last_seq: 0,
+        };
+        self.sessions.put_quietly(&session)?;
+        match self.send(&session.id, prompt, a.images).await {
+            Ok(s) => Ok(s),
+            Err(e) => {
+                // A session is only kept once its first message reached the agent.
+                self.sessions.delete(&session.id)?;
+                Err(e)
+            }
+        }
+    }
+
+    /// Sends `prompt` (and `images`) to session `id`'s agent: records it, marks the session
+    /// running and starts the run. A run that can't start is recorded as failed. While the agent
+    /// is busy, the message is queued instead.
+    async fn send(&self, id: &str, prompt: String, images: Vec<String>) -> Result<Session, ApiError> {
+        let prompt = prompt.trim().to_string();
+        check_message(&prompt, &images)?;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let mut queued = false;
+        let s = self.sessions.update(id, |s| {
+            if s.workdir_removed {
+                return Err(ApiError::invalid(
+                    "This session's worktree was removed, so it can't be continued.",
+                ));
+            }
+            if s.run_id.is_some() {
+                s.queued.push(QueuedMessage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    text: prompt.clone(),
+                    images: images.clone(),
+                });
+                queued = true;
+                return Ok(());
+            }
+            s.run_id = Some(run_id.clone());
+            // Talking to it again brings it back.
+            s.archived = false;
+            Ok(())
+        })?;
+        if queued {
+            return Ok(s);
+        }
+        self.launch(id, s, run_id, prompt, images).await
     }
 
     /// Sends queued message `message_id` now. The session must be idle.
@@ -393,11 +468,11 @@ impl Launcher {
     }
 }
 
-fn satie_error(e: satie::Error) -> ApiError {
+fn task_error(e: bach_tasks::Error) -> ApiError {
     match e {
-        satie::Error::NotFound(m) => ApiError::not_found(m),
-        satie::Error::Invalid(m) => ApiError::invalid(m),
-        satie::Error::Failed(m) => ApiError::failed(m),
+        bach_tasks::Error::NotFound(m) => ApiError::not_found(m),
+        bach_tasks::Error::Invalid(m) => ApiError::invalid(m),
+        bach_tasks::Error::Failed(m) => ApiError::failed(m),
     }
 }
 
@@ -424,7 +499,7 @@ impl Handler for Api {
                 return Ok(models.clone());
             }
         }
-        let models = crate::adapters::list_models(a.agent, cwd.as_deref(), Some(&self.satie))
+        let models = crate::adapters::list_models(a.agent, cwd.as_deref(), Some(&self.tasks))
             .await
             .map_err(ApiError::failed)?;
         self.models
@@ -452,69 +527,11 @@ impl Handler for Api {
     }
 
     async fn start_session(&self, a: StartSessionArgs) -> Result<Session, ApiError> {
-        let prompt = a.prompt.trim().to_string();
-        check_message(&prompt, &a.images)?;
-        let cwd = a.cwd.trim().to_string();
-        if cwd.is_empty() {
-            return Err(ApiError::invalid("Choose a project folder first."));
-        }
-        // Where it runs: the folder on the chosen branch, or a new worktree branched from it.
-        let worktree = a.worktree.unwrap_or(false);
-        let new_branch = a
-            .new_branch
-            .map(|b| b.trim().to_string())
-            .filter(|b| !b.is_empty())
-            .unwrap_or_else(|| branch_name_for(&prompt));
-        let ws = self
-            .git
-            .prepare(
-                cwd.clone(),
-                a.branch.clone(),
-                worktree,
-                worktree.then_some(new_branch),
-            )
-            .await
-            .map_err(ApiError::failed)?;
-        let now = now_ms();
-        let session = Session {
-            id: uuid::Uuid::new_v4().to_string(),
-            title: title_for(&prompt, &a.images),
-            title_edited: false,
-            agent: a.agent,
-            cwd,
-            branch: a.branch,
-            worktree: ws.worktree,
-            model_choice: model_choice(a.model_choice),
-            permission_mode: permission_mode(a.permission_mode),
-            effort: effort(a.effort),
-            workdir: Some(ws.workdir),
-            git_branch: ws.branch,
-            workdir_removed: false,
-            agent_session_id: None,
-            allow_rules: vec![],
-            model: None,
-            context: None,
-            run_id: None,
-            archived: false,
-            open_approvals: vec![],
-            queued: vec![],
-            created_at: now,
-            updated_at: now,
-            last_seq: 0,
-        };
-        self.sessions.put_quietly(&session)?;
-        match self.send(&session.id, prompt, a.images).await {
-            Ok(s) => Ok(s),
-            Err(e) => {
-                // A session is only kept once its first message reached the agent.
-                self.sessions.delete(&session.id)?;
-                Err(e)
-            }
-        }
+        self.launcher.start_session(a).await
     }
 
     async fn send_message(&self, a: SendMessageArgs) -> Result<Session, ApiError> {
-        self.send(&a.session_id, a.prompt, a.images).await
+        self.launcher.send(&a.session_id, a.prompt, a.images).await
     }
 
     async fn send_queued(&self, a: SendQueuedArgs) -> Result<Session, ApiError> {
@@ -678,40 +695,40 @@ impl Handler for Api {
     }
 
     async fn list_tasks(&self, _: ListTasksArgs) -> Result<Vec<TaskView>, ApiError> {
-        Ok(self.satie.list(None))
+        Ok(self.tasks.list(None))
     }
 
     async fn task_logs(&self, a: TaskLogsArgs) -> Result<String, ApiError> {
-        self.satie
+        self.tasks
             .logs(
                 &a.task_id,
                 a.lines.unwrap_or(200).clamp(1, 2000),
                 a.process.as_deref(),
             )
-            .map_err(satie_error)
+            .map_err(task_error)
     }
 
     async fn task_log_chunk(&self, a: TaskLogChunkArgs) -> Result<LogChunk, ApiError> {
-        self.satie
+        self.tasks
             .log_chunk(
                 &a.task_id,
                 a.process.as_deref(),
                 a.from,
                 a.max_bytes.unwrap_or(512 * 1024),
             )
-            .map_err(satie_error)
+            .map_err(task_error)
     }
 
     async fn stop_task(&self, a: StopTaskArgs) -> Result<Task, ApiError> {
-        self.satie.stop_task(&a.task_id).await.map_err(satie_error)
+        self.tasks.stop_task(&a.task_id).await.map_err(task_error)
     }
 
     async fn remove_task(&self, a: RemoveTaskArgs) -> Result<(), ApiError> {
-        self.satie.remove_task(&a.task_id).map_err(satie_error)
+        self.tasks.remove_task(&a.task_id).map_err(task_error)
     }
 
     async fn start_task(&self, a: StartTaskArgs) -> Result<Task, ApiError> {
-        self.satie
+        self.tasks
             .start_task(StartTask {
                 command: a.command,
                 cwd: Some(a.cwd.clone()),
@@ -721,14 +738,14 @@ impl Handler for Api {
                 ports: vec![],
                 interactive: None,
             })
-            .map_err(satie_error)
+            .map_err(task_error)
     }
 
     async fn task_process(&self, a: TaskProcessArgs) -> Result<(), ApiError> {
-        self.satie
+        self.tasks
             .process_action(&a.task_id, &a.process, a.action)
             .await
-            .map_err(satie_error)
+            .map_err(task_error)
     }
 
     async fn list_terminals(&self, _: ListTerminalsArgs) -> Result<Vec<TerminalInfo>, ApiError> {

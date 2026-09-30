@@ -2,7 +2,7 @@
 name = "bach-core"
 version = "0.1.0"
 edition = "2021"
-description = "Agent adapters, runs, git, storage and Satie behind Bach (no UI or transport)"
+description = "Agent adapters, runs, git, storage and background tasks behind Bach (no UI or transport)"
 
 [features]
 # Starting the agent CLIs through a wrapper command (see `wrapper`). Off: agents start directly,
@@ -16,8 +16,8 @@ portable-pty = "0.9"
 # Talks to `opencode serve` on loopback; plain HTTP, so no TLS.
 reqwest = { version = "0.13", default-features = false, features = ["json", "query"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
-satie = { path = "../satie" }
-satie-protocol = { path = "../satie-protocol" }
+bach-tasks = { path = "../bach-tasks" }
+bach-tasks-protocol = { path = "../bach-tasks-protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shlex = "2"

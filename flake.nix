@@ -41,7 +41,7 @@
             pkgs.nodejs
             pkgs.pnpm
             pkgs.pkg-config
-            # Satie's tests run real process-compose projects.
+            # bach-tasks' tests run real process-compose projects.
             pkgs.process-compose
           ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
             pkgs.libiconv

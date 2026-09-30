@@ -1,4 +1,4 @@
-//! Satie's tests: real processes, real ports, a real MCP client over HTTP.
+//! bach-tasks' tests: real processes, real ports, a real MCP client over HTTP.
     use super::*;
     use std::path::Path;
     use crate::process::{proc_stat, session_of, signal_session, task_alive};
@@ -9,14 +9,14 @@
 
     pub(super) fn tmp(label: &str) -> PathBuf {
         let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let d = std::env::temp_dir().join(format!("bach-satie-{label}-{}-{n}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("bach-tasks-{label}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
     }
 
-    pub(super) async fn satie_in(dir: &Path) -> Satie {
-        Satie::start_with(
+    pub(super) async fn tasks_in(dir: &Path) -> Tasks {
+        Tasks::start_with(
             "127.0.0.1:0".parse().unwrap(),
             dir.join("tasks"),
             Duration::from_millis(50),
@@ -43,7 +43,7 @@
         panic!("timed out waiting for: {what}");
     }
 
-    fn status(s: &Satie, id: &str) -> TaskStatus {
+    fn status(s: &Tasks, id: &str) -> TaskStatus {
         s.get(id).unwrap().status
     }
 
@@ -79,45 +79,45 @@
     #[tokio::test]
     async fn runs_detached_and_records_output_and_exit_code() {
         let dir = tmp("exit");
-        let satie = satie_in(&dir).await;
+        let tasks = tasks_in(&dir).await;
 
-        let ok = satie
+        let ok = tasks
             .start_task(req("echo hello; echo oops >&2", &dir))
             .unwrap();
-        until("exit 0", || status(&satie, &ok.id) == TaskStatus::Exited).await;
-        let out = satie.logs(&ok.id, 10, None).unwrap();
+        until("exit 0", || status(&tasks, &ok.id) == TaskStatus::Exited).await;
+        let out = tasks.logs(&ok.id, 10, None).unwrap();
         assert!(
             out.contains("$ echo hello") && out.contains("hello") && out.contains("oops"),
             "{out}"
         );
-        assert_eq!(satie.get(&ok.id).unwrap().exit_code, Some(0));
+        assert_eq!(tasks.get(&ok.id).unwrap().exit_code, Some(0));
 
-        let bad = satie.start_task(req("exit 3", &dir)).unwrap();
-        until("exit 3", || status(&satie, &bad.id) == TaskStatus::Failed).await;
-        assert_eq!(satie.get(&bad.id).unwrap().exit_code, Some(3));
+        let bad = tasks.start_task(req("exit 3", &dir)).unwrap();
+        until("exit 3", || status(&tasks, &bad.id) == TaskStatus::Failed).await;
+        assert_eq!(tasks.get(&bad.id).unwrap().exit_code, Some(3));
 
         // Tools are asked for colour, since the log viewers show it.
-        let env = satie.start_task(req("echo \"$FORCE_COLOR $CLICOLOR_FORCE\"", &dir)).unwrap();
-        until("env", || status(&satie, &env.id) == TaskStatus::Exited).await;
-        assert!(satie.logs(&env.id, 1, None).unwrap().ends_with("1 1"));
+        let env = tasks.start_task(req("echo \"$FORCE_COLOR $CLICOLOR_FORCE\"", &dir)).unwrap();
+        until("env", || status(&tasks, &env.id) == TaskStatus::Exited).await;
+        assert!(tasks.logs(&env.id, 1, None).unwrap().ends_with("1 1"));
 
         // Only the last lines are returned.
-        let many = satie.start_task(req("seq 1 100", &dir)).unwrap();
-        until("seq", || status(&satie, &many.id) == TaskStatus::Exited).await;
-        assert_eq!(satie.logs(&many.id, 3, None).unwrap(), "98\n99\n100");
+        let many = tasks.start_task(req("seq 1 100", &dir)).unwrap();
+        until("seq", || status(&tasks, &many.id) == TaskStatus::Exited).await;
+        assert_eq!(tasks.logs(&many.id, 3, None).unwrap(), "98\n99\n100");
 
         // It ran in its own session, not ours.
-        let pid = satie.start_task(req("sleep 4701", &dir)).unwrap();
+        let pid = tasks.start_task(req("sleep 4701", &dir)).unwrap();
         let (sid_of_task, sid_ours) = (
             session_of(pid.pid).unwrap(),
             session_of(std::process::id()).unwrap(),
         );
         assert_ne!(sid_of_task, sid_ours);
         assert_eq!(sid_of_task, pid.pid, "it leads its own session");
-        satie.stop_task(&pid.id).await.unwrap();
+        tasks.stop_task(&pid.id).await.unwrap();
 
-        assert!(satie.start_task(req("", &dir)).is_err());
-        assert!(satie
+        assert!(tasks.start_task(req("", &dir)).is_err());
+        assert!(tasks
             .start_task(req("true", Path::new("/definitely/not/here")))
             .is_err());
         let _ = std::fs::remove_dir_all(dir);
@@ -126,58 +126,58 @@
     #[tokio::test]
     async fn stop_kills_everything_the_task_started() {
         let dir = tmp("stop");
-        let satie = satie_in(&dir).await;
-        let t = satie
+        let tasks = tasks_in(&dir).await;
+        let t = tasks
             .start_task(req("sleep 4702 & sleep 4702 & wait", &dir))
             .unwrap();
         until("children up", || procs_matching("sleep 4702").len() >= 2).await;
 
-        let stopped = satie.stop_task(&t.id).await.unwrap();
+        let stopped = tasks.stop_task(&t.id).await.unwrap();
         assert_eq!(stopped.status, TaskStatus::Stopped);
         until("all gone", || procs_matching("sleep 4702").is_empty()).await;
         // The monitor doesn't reclassify a stopped task as lost.
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(status(&satie, &t.id), TaskStatus::Stopped);
+        assert_eq!(status(&tasks, &t.id), TaskStatus::Stopped);
         assert!(
-            satie.stop_task(&t.id).await.is_ok(),
+            tasks.stop_task(&t.id).await.is_ok(),
             "stopping twice is harmless"
         );
 
-        satie.remove_task(&t.id).unwrap();
-        assert!(satie.get(&t.id).is_none() && !Path::new(&t.log_path).exists());
-        let running = satie.start_task(req("sleep 4703", &dir)).unwrap();
+        tasks.remove_task(&t.id).unwrap();
+        assert!(tasks.get(&t.id).is_none() && !Path::new(&t.log_path).exists());
+        let running = tasks.start_task(req("sleep 4703", &dir)).unwrap();
         assert!(
-            satie.remove_task(&running.id).is_err(),
+            tasks.remove_task(&running.id).is_err(),
             "can't remove a running task"
         );
-        satie.stop_task(&running.id).await.unwrap();
+        tasks.stop_task(&running.id).await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
     async fn starting_the_same_command_again_replaces_its_finished_runs() {
         let dir = tmp("again");
-        let satie = satie_in(&dir).await;
-        let first = satie.start_task(req("exit 0", &dir)).unwrap();
-        until("first ended", || status(&satie, &first.id) == TaskStatus::Exited).await;
+        let tasks = tasks_in(&dir).await;
+        let first = tasks.start_task(req("exit 0", &dir)).unwrap();
+        until("first ended", || status(&tasks, &first.id) == TaskStatus::Exited).await;
         // A running one, and a finished one of a different command, stay.
-        let running = satie.start_task(req("sleep 4709", &dir)).unwrap();
-        let other = satie.start_task(req("exit 1", &dir)).unwrap();
-        until("other ended", || status(&satie, &other.id) == TaskStatus::Failed).await;
+        let running = tasks.start_task(req("sleep 4709", &dir)).unwrap();
+        let other = tasks.start_task(req("exit 1", &dir)).unwrap();
+        until("other ended", || status(&tasks, &other.id) == TaskStatus::Failed).await;
 
-        let again = satie.start_task(req("exit 0", &dir)).unwrap();
-        assert!(satie.get(&first.id).is_none(), "the finished run is replaced");
+        let again = tasks.start_task(req("exit 0", &dir)).unwrap();
+        assert!(tasks.get(&first.id).is_none(), "the finished run is replaced");
         assert!(!Path::new(&first.log_path).exists(), "and its log is gone");
-        assert!(satie.get(&again.id).is_some());
-        assert!(satie.get(&running.id).is_some() && satie.get(&other.id).is_some());
+        assert!(tasks.get(&again.id).is_some());
+        assert!(tasks.get(&running.id).is_some() && tasks.get(&other.id).is_some());
 
         // The same command in another folder is a different thing.
         let elsewhere = tmp("again-elsewhere");
-        let there = satie.start_task(req("exit 0", &elsewhere)).unwrap();
-        assert!(satie.get(&again.id).is_some());
-        assert!(satie.get(&there.id).is_some());
+        let there = tasks.start_task(req("exit 0", &elsewhere)).unwrap();
+        assert!(tasks.get(&again.id).is_some());
+        assert!(tasks.get(&there.id).is_some());
 
-        satie.stop_task(&running.id).await.unwrap();
+        tasks.stop_task(&running.id).await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(elsewhere);
     }
@@ -185,7 +185,7 @@
     #[tokio::test]
     async fn a_restart_forgets_runs_superseded_before_the_rule_existed() {
         let dir = tmp("prune");
-        let before = satie_in(&dir).await;
+        let before = tasks_in(&dir).await;
         let old = before.start_task(req("exit 0", &dir)).unwrap();
         until("old ended", || status(&before, &old.id) == TaskStatus::Exited).await;
         // Put a second, later run beside it by hand, as an older version would have left it.
@@ -196,7 +196,7 @@
         assert!(before.get(&old.id).is_some() && before.get(&newer.id).is_some());
         drop(before);
 
-        let after = satie_in(&dir).await;
+        let after = tasks_in(&dir).await;
         assert!(after.get(&old.id).is_none(), "the superseded run is forgotten on startup");
         assert!(after.get(&newer.id).is_some(), "the latest run stays");
         let _ = std::fs::remove_dir_all(dir);
@@ -205,7 +205,7 @@
     #[tokio::test]
     async fn tasks_survive_a_restart_and_are_reconciled() {
         let dir = tmp("restart");
-        let before = satie_in(&dir).await;
+        let before = tasks_in(&dir).await;
         let long = before.start_task(req("sleep 4704", &dir)).unwrap();
         let short = before.start_task(req("sleep 0.3; exit 7", &dir)).unwrap();
         // A task whose process vanished without a trace.
@@ -217,7 +217,7 @@
         std::fs::remove_file(dir.join("tasks").join(format!("{}.exit", gone.id))).ok();
         tokio::time::sleep(Duration::from_millis(600)).await;
 
-        let after = satie_in(&dir).await;
+        let after = tasks_in(&dir).await;
         assert_eq!(
             status(&after, &long.id),
             TaskStatus::Running,
@@ -244,32 +244,32 @@
     #[tokio::test]
     async fn reports_listening_ports_and_waits_for_them() {
         let dir = tmp("ports");
-        let satie = satie_in(&dir).await;
+        let tasks = tasks_in(&dir).await;
         let port = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap().port()
         };
-        let t = satie
+        let t = tasks
             .start_task(req(
                 &format!("python3 -m http.server {port} --bind 127.0.0.1"),
                 &dir,
             ))
             .unwrap();
-        satie
+        tasks
             .wait_ready(&t.id, &[port], None, Duration::from_secs(10))
             .await;
-        let view = satie.view(&t.id).unwrap();
+        let view = tasks.view(&t.id).unwrap();
         assert_eq!(view.ports, vec![port], "{view:?}");
-        assert!(Satie::describe(&view).contains(&format!("listening on {port}")));
-        satie.stop_task(&t.id).await.unwrap();
-        assert!(satie.view(&t.id).unwrap().ports.is_empty());
+        assert!(Tasks::describe(&view).contains(&format!("listening on {port}")));
+        tasks.stop_task(&t.id).await.unwrap();
+        assert!(tasks.view(&t.id).unwrap().ports.is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
     async fn the_task_view_hides_random_ports_but_keeps_named_ones() {
         let dir = tmp("presentable");
-        let satie = satie_in(&dir).await;
+        let tasks = tasks_in(&dir).await;
         // A named port (below the ephemeral range) that is free right now.
         let named = (20000u16..30000)
             .find(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok())
@@ -278,29 +278,29 @@
             "import socket,time\na=socket.socket(); a.bind(('127.0.0.1',{named})); a.listen()\nb=socket.socket(); b.bind(('127.0.0.1',0)); b.listen()\nc=socket.socket(); c.bind(('127.0.0.1',0)); c.listen()\ntime.sleep(60)\n"
         );
         std::fs::write(dir.join("two.py"), script).unwrap();
-        let t = satie.start_task(req("python3 two.py", &dir)).unwrap();
+        let t = tasks.start_task(req("python3 two.py", &dir)).unwrap();
 
         // The process really has three listeners...
         until("three listeners", || ports_of_session(t.pid).len() == 3).await;
         // ...but only the recognisable one is presented, in the view and in what the agent is told.
-        let view = satie.view(&t.id).unwrap();
+        let view = tasks.view(&t.id).unwrap();
         assert_eq!(view.ports, vec![named], "{view:?}");
-        assert!(Satie::describe(&view).contains(&format!("listening on {named}")));
+        assert!(Tasks::describe(&view).contains(&format!("listening on {named}")));
         // The first line is state + ports; any details follow on their own lines.
-        let first = Satie::describe(&view);
+        let first = Tasks::describe(&view);
         let first = first.lines().next().unwrap();
         assert!(
             first.ends_with(&format!("listening on {named}")),
             "the description lists just the named port: {first}"
         );
-        satie.stop_task(&t.id).await.unwrap();
+        tasks.stop_task(&t.id).await.unwrap();
 
         // A task that only has random ports keeps them: they are the point of it.
         std::fs::write(dir.join("rand.py"), "import socket,time\nb=socket.socket(); b.bind(('127.0.0.1',0)); b.listen()\ntime.sleep(60)\n").unwrap();
-        let r = satie.start_task(req("python3 rand.py", &dir)).unwrap();
+        let r = tasks.start_task(req("python3 rand.py", &dir)).unwrap();
         until("random listener", || ports_of_session(r.pid).len() == 1).await;
-        assert_eq!(satie.view(&r.id).unwrap().ports.len(), 1);
-        satie.stop_task(&r.id).await.unwrap();
+        assert_eq!(tasks.view(&r.id).unwrap().ports.len(), 1);
+        tasks.stop_task(&r.id).await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -332,9 +332,9 @@
         json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
     }
 
-    async fn call(satie: &Satie, token: &str, id: u32, tool: &str, args: Value) -> (bool, String) {
+    async fn call(tasks: &Tasks, token: &str, id: u32, tool: &str, args: Value) -> (bool, String) {
         let (st, body) = post(
-            satie.url(),
+            tasks.url(),
             Some(token),
             &rpc(id, "tools/call", json!({ "name": tool, "arguments": args })),
         )
@@ -350,6 +350,57 @@
         )
     }
 
+    /// An embedder's tools: `echo_owner` says who called it; `task_list` tries to shadow a built-in one.
+    struct Echo;
+
+    impl Tools for Echo {
+        fn list(&self) -> Vec<Value> {
+            vec![json!({ "name": "echo_owner", "inputSchema": { "type": "object" } })]
+        }
+
+        fn call<'a>(
+            &'a self,
+            scope: &'a Scope,
+            name: &'a str,
+            args: &'a Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Result<String, String>>> + Send + 'a>> {
+            Box::pin(async move {
+                match name {
+                    "echo_owner" if args["fail"] == true => Some(Err("asked to fail".into())),
+                    "echo_owner" => Some(Ok(format!("owner {}", scope.owner.as_deref().unwrap_or("-")))),
+                    "task_list" => Some(Ok("shadowed".into())),
+                    _ => None,
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn serves_the_embedders_tools_under_its_name() {
+        let dir = tmp("mcp-extra");
+        let tasks = tasks_in(&dir).await;
+        tasks.set_server_name("host");
+        tasks.add_tools(Arc::new(Echo));
+        let grant = tasks.grant(Scope { owner: Some("run-1".into()), project: None });
+
+        let (_, body) = post(tasks.url(), Some(&grant.token), &rpc(1, "initialize", json!({}))).await;
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["result"]["serverInfo"]["name"], "host");
+
+        let (_, body) = post(tasks.url(), Some(&grant.token), &rpc(2, "tools/list", json!({}))).await;
+        let v: Value = serde_json::from_str(&body).unwrap();
+        let names: Vec<_> = v["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!((names.first(), names.last()), (Some(&"task_start"), Some(&"echo_owner")));
+
+        // The call gets the grant's scope; errors come back as tool errors.
+        assert_eq!(call(&tasks, &grant.token, 3, "echo_owner", json!({})).await, (false, "owner run-1".into()));
+        assert_eq!(call(&tasks, &grant.token, 4, "echo_owner", json!({ "fail": true })).await, (true, "asked to fail".into()));
+        // bach-tasks' own tools come first; unknown names are still errors.
+        assert_eq!(call(&tasks, &grant.token, 5, "task_list", json!({})).await, (false, "No background tasks.".into()));
+        assert_eq!(call(&tasks, &grant.token, 6, "nope", json!({})).await, (true, "Unknown tool `nope`".into()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn speaks_mcp_and_manages_tasks_for_its_own_project() {
         let dir = tmp("mcp");
@@ -357,33 +408,33 @@
         let proj_b = dir.join("b");
         std::fs::create_dir_all(&proj_a).unwrap();
         std::fs::create_dir_all(&proj_b).unwrap();
-        let satie = satie_in(&dir).await;
-        let grant_a = satie.grant(Scope {
+        let tasks = tasks_in(&dir).await;
+        let grant_a = tasks.grant(Scope {
             owner: Some("run-a".into()),
             project: Some(proj_a.to_string_lossy().into()),
         });
-        let grant_b = satie.grant(Scope {
+        let grant_b = tasks.grant(Scope {
             owner: Some("run-b".into()),
             project: Some(proj_b.to_string_lossy().into()),
         });
         let (ta, tb) = (grant_a.token.clone(), grant_b.token.clone());
 
-        assert_eq!(grant_a.url, satie.url());
+        assert_eq!(grant_a.url, tasks.url());
 
         // No token, or a wrong one: refused.
         assert_eq!(
-            post(satie.url(), None, &rpc(1, "ping", json!({}))).await.0,
+            post(tasks.url(), None, &rpc(1, "ping", json!({}))).await.0,
             401
         );
         assert_eq!(
-            post(satie.url(), Some("nope"), &rpc(1, "ping", json!({})))
+            post(tasks.url(), Some("nope"), &rpc(1, "ping", json!({})))
                 .await
                 .0,
             401
         );
 
         let (st, body) = post(
-            satie.url(),
+            tasks.url(),
             Some(&ta),
             &rpc(1, "initialize", json!({ "protocolVersion": "2025-06-18" })),
         )
@@ -395,13 +446,13 @@
                 v["result"]["serverInfo"]["name"].as_str(),
                 v["result"]["protocolVersion"].as_str()
             ),
-            (Some("satie"), Some("2025-06-18"))
+            (Some("bach-tasks"), Some("2025-06-18"))
         );
         let instructions = v["result"]["instructions"].as_str().unwrap();
         assert!(instructions.contains("task_start") && instructions.contains("run_in_background"));
         let note = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
-        assert_eq!(post(satie.url(), Some(&ta), &note).await.0, 202);
-        let (_, body) = post(satie.url(), Some(&ta), &rpc(2, "tools/list", json!({}))).await;
+        assert_eq!(post(tasks.url(), Some(&ta), &note).await.0, 202);
+        let (_, body) = post(tasks.url(), Some(&ta), &rpc(2, "tools/list", json!({}))).await;
         let v: Value = serde_json::from_str(&body).unwrap();
         let names: Vec<_> = v["result"]["tools"]
             .as_array()
@@ -425,7 +476,7 @@
 
         // Start: defaults to the run's project, waits briefly, reports state and first output.
         let (err, text) = call(
-            &satie,
+            &tasks,
             &ta,
             3,
             "task_start",
@@ -439,40 +490,40 @@
                 && text.contains("up"),
             "{text}"
         );
-        let id = satie.list(None)[0].task.id.clone();
-        let t = satie.get(&id).unwrap();
+        let id = tasks.list(None)[0].task.id.clone();
+        let t = tasks.get(&id).unwrap();
         assert_eq!(
             (t.cwd.as_str(), t.owner.as_deref()),
             (proj_a.to_str().unwrap(), Some("run-a"))
         );
 
         // List/logs/stop see it from project A, but project B's run does not.
-        let (_, list) = call(&satie, &ta, 4, "task_list", json!({})).await;
+        let (_, list) = call(&tasks, &ta, 4, "task_list", json!({})).await;
         assert!(list.contains(&id) && list.contains("running"), "{list}");
         assert_eq!(
-            call(&satie, &tb, 5, "task_list", json!({})).await.1,
+            call(&tasks, &tb, 5, "task_list", json!({})).await.1,
             "No background tasks."
         );
         for tool in ["task_logs", "task_stop"] {
-            let (err, text) = call(&satie, &tb, 6, tool, json!({ "id": id })).await;
+            let (err, text) = call(&tasks, &tb, 6, tool, json!({ "id": id })).await;
             assert!(err && text.contains("No task"), "{tool}: {text}");
         }
         assert_eq!(
-            status(&satie, &id),
+            status(&tasks, &id),
             TaskStatus::Running,
             "project B could not stop it"
         );
 
-        let (_, logs) = call(&satie, &ta, 7, "task_logs", json!({ "id": id, "lines": 5 })).await;
+        let (_, logs) = call(&tasks, &ta, 7, "task_logs", json!({ "id": id, "lines": 5 })).await;
         assert!(logs.contains("up"), "{logs}");
-        let (err, text) = call(&satie, &ta, 8, "task_stop", json!({ "id": id })).await;
+        let (err, text) = call(&tasks, &ta, 8, "task_stop", json!({ "id": id })).await;
         assert!(!err && text.contains("stopped"), "{text}");
         until("stopped", || procs_matching("sleep 4706").is_empty()).await;
 
         // A bad call is a tool error the agent can read, not a transport failure.
-        assert!(call(&satie, &ta, 9, "task_start", json!({})).await.0);
+        assert!(call(&tasks, &ta, 9, "task_start", json!({})).await.0);
         let v: Value = serde_json::from_str(
-            &post(satie.url(), Some(&ta), &rpc(10, "nope", json!({})))
+            &post(tasks.url(), Some(&ta), &rpc(10, "nope", json!({})))
                 .await
                 .1,
         )
@@ -480,11 +531,11 @@
         assert_eq!(v["error"]["code"], -32601);
 
         // Once the run is over its token stops working.
-        assert_eq!(satie.active_grants(), 2);
+        assert_eq!(tasks.active_grants(), 2);
         drop(grant_a);
-        assert_eq!(satie.active_grants(), 1);
+        assert_eq!(tasks.active_grants(), 1);
         assert_eq!(
-            post(satie.url(), Some(&ta), &rpc(11, "ping", json!({})))
+            post(tasks.url(), Some(&ta), &rpc(11, "ping", json!({})))
                 .await
                 .0,
             401
@@ -494,7 +545,7 @@
 
     // ----- diagnosing conflicts, several ports, HTTP readiness ------------------------------
 
-    /// A process that is not a Satie task, listening on `port`.
+    /// A process that is not a background task, listening on `port`.
     struct Foreign(std::process::Child);
     impl Foreign {
         async fn listening_on(port: u16, dir: &Path) -> Foreign {
@@ -546,19 +597,19 @@
     #[tokio::test]
     async fn explains_who_holds_a_port_a_task_could_not_get() {
         let dir = tmp("conflict");
-        let satie = satie_in(&dir).await;
+        let tasks = tasks_in(&dir).await;
         let port = free_port();
         let squatter = Foreign::listening_on(port, &dir).await;
 
         // 1) The log names the port (as vite/node do): the holder is found and described.
-        let t = satie
+        let t = tasks
             .start_task(req(
                 &format!("echo 'Error: Port {port} is already in use'; exit 1"),
                 &dir,
             ))
             .unwrap();
-        until("failed", || status(&satie, &t.id) == TaskStatus::Failed).await;
-        let view = satie.view(&t.id).unwrap();
+        until("failed", || status(&tasks, &t.id) == TaskStatus::Failed).await;
+        let view = tasks.view(&t.id).unwrap();
         let text = view.problems.join("\n");
         assert!(
             text.contains(&format!(
@@ -568,38 +619,38 @@
             "{text}"
         );
         assert!(
-            text.contains("not a Satie task") && text.contains(dir.to_str().unwrap()),
+            text.contains("not a background task") && text.contains(dir.to_str().unwrap()),
             "{text}"
         );
         assert!(
-            Satie::describe(&view).contains("Problem: Port"),
+            Tasks::describe(&view).contains("Problem: Port"),
             "{}",
-            Satie::describe(&view)
+            Tasks::describe(&view)
         );
 
         // 2) The holder can be one of our own tasks, and is named as such.
-        let other = satie
+        let other = tasks
             .start_task(req(
                 &format!("python3 -m http.server {} --bind 127.0.0.1", free_port()),
                 &dir,
             ))
             .unwrap();
-        let ported = satie.start_task(req("sleep 60", &dir)).unwrap();
+        let ported = tasks.start_task(req("sleep 60", &dir)).unwrap();
         let _ = (other, ported);
 
         // 3) port_info answers the question directly, for one port and for a port nobody has.
-        let report = satie.port_report(&[port, free_port()]);
+        let report = tasks.port_report(&[port, free_port()]);
         assert!(
             report.contains(&format!("Port {port}: pid {}", squatter.pid())),
             "{report}"
         );
         assert!(
-            report.contains("not a Satie task") && report.contains("up "),
+            report.contains("not a background task") && report.contains("up "),
             "{report}"
         );
         assert!(report.contains("nothing is listening"), "{report}");
-        for t in satie.list(None) {
-            let _ = satie.stop_task(&t.task.id).await;
+        for t in tasks.list(None) {
+            let _ = tasks.stop_task(&t.task.id).await;
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -609,9 +660,9 @@
     #[tokio::test]
     async fn children_in_their_own_process_group_belong_to_the_task() {
         let dir = tmp("pgroup");
-        let satie = satie_in(&dir).await;
+        let tasks = tasks_in(&dir).await;
         let port = free_port();
-        let t = satie
+        let t = tasks
             .start_task(StartTask {
                 ports: vec![port],
                 // `set -m`: background jobs get their own process group.
@@ -621,7 +672,7 @@
                 )
             })
             .unwrap();
-        satie
+        tasks
             .wait_ready(&t.id, &[port], None, Duration::from_secs(10))
             .await;
         // The python process, not the `sh -c` wrappers whose command lines mention it.
@@ -642,7 +693,7 @@
             "the server moved to its own group (else this test proves nothing)"
         );
 
-        let view = satie.view(&t.id).unwrap();
+        let view = tasks.view(&t.id).unwrap();
         assert_eq!(view.up_ports, vec![port], "{view:?}");
         assert!(
             view.missing_ports.is_empty() && view.problems.is_empty(),
@@ -652,10 +703,10 @@
             view.processes.iter().any(|p| p.starts_with("python3")),
             "{view:?}"
         );
-        let report = satie.port_report(&[port]);
-        assert!(report.contains(&format!("Satie task {}", t.id)), "{report}");
+        let report = tasks.port_report(&[port]);
+        assert!(report.contains(&format!("background task {}", t.id)), "{report}");
 
-        satie.stop_task(&t.id).await.unwrap();
+        tasks.stop_task(&t.id).await.unwrap();
         until("server gone", || server().is_empty()).await;
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -669,19 +720,19 @@
     #[tokio::test]
     async fn a_port_taken_after_a_task_ended_is_not_why_it_failed() {
         let dir = tmp("later");
-        let satie = satie_in(&dir).await;
+        let tasks = tasks_in(&dir).await;
         let port = free_port();
-        let t = satie
+        let t = tasks
             .start_task(StartTask {
                 ports: vec![port],
                 ..req("exit 1", &dir)
             })
             .unwrap();
-        until("failed", || status(&satie, &t.id) == TaskStatus::Failed).await;
+        until("failed", || status(&tasks, &t.id) == TaskStatus::Failed).await;
         // Its successor (here: anything) takes the port a while later.
         tokio::time::sleep(Duration::from_millis(2100)).await;
         let _later = Foreign::listening_on(port, &dir).await;
-        let view = satie.view(&t.id).unwrap();
+        let view = tasks.view(&t.id).unwrap();
         assert!(
             !view.problems.iter().any(|p| p.contains("already in use")),
             "{view:?}"
@@ -696,23 +747,23 @@
     #[tokio::test]
     async fn port_info_recognises_its_own_tasks() {
         let dir = tmp("portinfo");
-        let satie = satie_in(&dir).await;
+        let tasks = tasks_in(&dir).await;
         let port = free_port();
-        let t = satie
+        let t = tasks
             .start_task(req(
                 &format!("python3 -m http.server {port} --bind 127.0.0.1"),
                 &dir,
             ))
             .unwrap();
-        satie
+        tasks
             .wait_ready(&t.id, &[port], None, Duration::from_secs(10))
             .await;
-        let report = satie.port_report(&[port]);
-        assert!(report.contains(&format!("Satie task {}", t.id)), "{report}");
-        assert!(!report.contains("not a Satie task"), "{report}");
+        let report = tasks.port_report(&[port]);
+        assert!(report.contains(&format!("background task {}", t.id)), "{report}");
+        assert!(!report.contains("not a background task"), "{report}");
 
         // A second task that wants the same port is told exactly which task has it.
-        let clash = satie
+        let clash = tasks
             .start_task(StartTask {
                 ports: vec![port],
                 ..req(
@@ -722,31 +773,31 @@
             })
             .unwrap();
         until("clash exits", || {
-            status(&satie, &clash.id) != TaskStatus::Running
+            status(&tasks, &clash.id) != TaskStatus::Running
         })
         .await;
-        let view = satie
+        let view = tasks
             .list_settled(None, 0)
             .into_iter()
             .find(|v| v.task.id == clash.id)
             .unwrap();
         assert!(
             view.problems.iter().any(|p| p.contains(&format!(
-                "Port {port} is already in use by Satie task {}",
+                "Port {port} is already in use by background task {}",
                 t.id
             ))),
             "{:?}",
             view.problems
         );
-        satie.stop_task(&t.id).await.unwrap();
+        tasks.stop_task(&t.id).await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
     async fn task_start_reports_which_expected_ports_came_up_and_gives_up_early() {
         let dir = tmp("expected");
-        let satie = satie_in(&dir).await;
-        satie.set_settle_ms(3000); // a short grace period so the test can see both sides of it
+        let tasks = tasks_in(&dir).await;
+        tasks.set_settle_ms(3000); // a short grace period so the test can see both sides of it
         let (good, taken) = (free_port(), free_port());
         let squatter = Foreign::listening_on(taken, &dir).await;
         let a = format!("python3 -m http.server {good} --bind 127.0.0.1");
@@ -756,7 +807,7 @@
         let started = std::time::Instant::now();
         let (err, text) = {
             let run = run_in(&dir);
-            let r = satie
+            let r = tasks
                 .call(&run, "task_start", &json!({ "command": format!("{a} & {b} & wait"), "name": "stack", "ports": [good, taken] }))
                 .await;
             (r.is_err(), r.unwrap_or_else(|e| e))
@@ -791,7 +842,7 @@
         // The same picture is available later, from task_list.
         let (_, list) = (
             0,
-            satie
+            tasks
                 .call(&run_in(&dir), "task_list", &json!({}))
                 .await
                 .unwrap(),
@@ -800,28 +851,28 @@
         assert!(list.contains(&format!("{taken} not up yet")), "{list}");
         assert!(!list.contains(&format!("{taken} up")), "{list}");
         tokio::time::sleep(Duration::from_millis(3200)).await;
-        let later = satie
+        let later = tasks
             .call(&run_in(&dir), "task_list", &json!({}))
             .await
             .unwrap();
         assert!(later.contains(&format!("{taken} NOT listening")), "{later}");
         assert!(later.contains("Problem: Port"), "{later}");
         // ...but a task that is simply still starting is not reported as broken.
-        let slow = satie
+        let slow = tasks
             .start_task(StartTask {
                 ports: vec![free_port()],
                 ..req("sleep 30", &dir)
             })
             .unwrap();
-        let view = satie.view(&slow.id).unwrap();
+        let view = tasks.view(&slow.id).unwrap();
         assert!(
             view.problems.is_empty() && view.missing_ports.is_empty(),
             "{:?}",
             view.problems
         );
 
-        for t in satie.list(None) {
-            satie.stop_task(&t.task.id).await.unwrap();
+        for t in tasks.list(None) {
+            tasks.stop_task(&t.task.id).await.unwrap();
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -830,11 +881,11 @@
     async fn waits_for_all_expected_ports_and_an_http_answer() {
         let dir = tmp("ready");
         std::fs::write(dir.join("index.html"), "hi").unwrap();
-        let satie = satie_in(&dir).await;
+        let tasks = tasks_in(&dir).await;
         let (p1, p2) = (free_port(), free_port());
         let cmd = format!("python3 -m http.server {p1} --bind 127.0.0.1 & python3 -m http.server {p2} --bind 127.0.0.1 & wait");
         let run = run_in(&dir);
-        let text = satie
+        let text = tasks
             .call(&run, "task_start", &json!({ "command": cmd, "ports": [p1, p2], "ready_url": format!("http://localhost:{p2}/index.html") }))
             .await
             .unwrap();
@@ -855,7 +906,7 @@
         );
 
         // A required status that is not what the server returns is reported, not hidden.
-        let text2 = satie
+        let text2 = tasks
             .call(
                 &run,
                 "task_start",
@@ -869,9 +920,9 @@
         );
 
         // Only local URLs are ever requested, and a bad one is refused before anything is launched.
-        let before = satie.list(None).len();
+        let before = tasks.list(None).len();
         let started = std::time::Instant::now();
-        let bad = satie
+        let bad = tasks
             .call(
                 &run,
                 "task_start",
@@ -887,8 +938,8 @@
             started.elapsed() < Duration::from_secs(1),
             "must fail at once, not time out"
         );
-        assert_eq!(satie.list(None).len(), before, "no task was started");
-        let check = satie
+        assert_eq!(tasks.list(None).len(), before, "no task was started");
+        let check = tasks
             .call(
                 &run,
                 "http_check",
@@ -897,7 +948,7 @@
             .await
             .unwrap();
         assert!(check.contains("-> 200"), "{check}");
-        let closed = satie
+        let closed = tasks
             .call(
                 &run,
                 "http_check",
@@ -906,8 +957,8 @@
             .await
             .unwrap();
         assert!(closed.contains("did not answer"), "{closed}");
-        for t in satie.list(None) {
-            satie.stop_task(&t.task.id).await.unwrap();
+        for t in tasks.list(None) {
+            tasks.stop_task(&t.task.id).await.unwrap();
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -915,41 +966,41 @@
     #[tokio::test]
     async fn serves_a_task_log_in_chunks_that_follow_it() {
         let dir = tmp("chunk");
-        let satie = satie_in(&dir).await;
-        let t = satie
+        let tasks = tasks_in(&dir).await;
+        let t = tasks
             .start_task(req("echo first; sleep 1; echo second; sleep 30", &dir))
             .unwrap();
         // (The log's first line echoes the command, so match whole lines.)
         let has_line = |c: &LogChunk, l: &str| c.text.lines().any(|x| x == l);
         until("first line", || {
-            satie
+            tasks
                 .log_chunk(&t.id, None, None, 4096)
                 .is_ok_and(|c| has_line(&c, "first"))
         })
         .await;
-        let c1 = satie.log_chunk(&t.id, None, None, 4096).unwrap();
+        let c1 = tasks.log_chunk(&t.id, None, None, 4096).unwrap();
         until("second line", || {
-            satie
+            tasks
                 .log_chunk(&t.id, None, Some(c1.next), 4096)
                 .is_ok_and(|c| has_line(&c, "second"))
         })
         .await;
-        let c2 = satie.log_chunk(&t.id, None, Some(c1.next), 4096).unwrap();
+        let c2 = tasks.log_chunk(&t.id, None, Some(c1.next), 4096).unwrap();
         assert!(
             has_line(&c2, "second") && !has_line(&c2, "first"),
             "a continuation, not a re-read: {c2:?}"
         );
         assert_eq!(c2.offset, c1.next);
-        assert!(satie.log_chunk("nope", None, None, 100).is_err());
-        satie.stop_task(&t.id).await.unwrap();
+        assert!(tasks.log_chunk("nope", None, None, 100).is_err());
+        tasks.stop_task(&t.id).await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
     async fn tells_subscribers_what_changed() {
         let dir = tmp("events");
-        let satie = satie_in(&dir).await;
-        let mut events = satie.subscribe();
+        let tasks = tasks_in(&dir).await;
+        let mut events = tasks.subscribe();
         async fn next(events: &mut tokio::sync::broadcast::Receiver<TaskEvent>) -> TaskEvent {
             tokio::time::timeout(Duration::from_secs(5), events.recv())
                 .await
@@ -957,14 +1008,14 @@
                 .unwrap()
         }
 
-        let t = satie.start_task(req("sleep 4707", &dir)).unwrap();
+        let t = tasks.start_task(req("sleep 4707", &dir)).unwrap();
         match next(&mut events).await {
             TaskEvent::Changed { task } => {
                 assert_eq!((task.task.id.as_str(), task.task.status), (t.id.as_str(), TaskStatus::Running))
             }
             other => panic!("{other:?}"),
         }
-        satie.stop_task(&t.id).await.unwrap();
+        tasks.stop_task(&t.id).await.unwrap();
         // Its view may change while it runs (its processes, say); then comes the stop.
         loop {
             match next(&mut events).await {
@@ -982,7 +1033,7 @@
                 .await
                 .is_err()
         );
-        satie.remove_task(&t.id).unwrap();
+        tasks.remove_task(&t.id).unwrap();
         assert!(matches!(next(&mut events).await, TaskEvent::Removed { id } if id == t.id));
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -990,22 +1041,22 @@
     #[tokio::test]
     async fn remembers_whether_a_task_is_interactive() {
         let dir = tmp("interactive");
-        let satie = satie_in(&dir).await;
+        let tasks = tasks_in(&dir).await;
         let run = run_in(&dir);
-        let text = satie
+        let text = tasks
             .call(&run, "task_start", &json!({ "command": "sleep 4706", "name": "tests", "interactive": false }))
             .await
             .unwrap();
         assert!(text.contains("not interactive"), "{text}");
         let quiet = text.split_whitespace().nth(1).unwrap().to_string();
-        let text = satie.call(&run, "task_start", &json!({ "command": "sleep 4707", "name": "dev" })).await.unwrap();
+        let text = tasks.call(&run, "task_start", &json!({ "command": "sleep 4707", "name": "dev" })).await.unwrap();
         assert!(!text.contains("interactive"), "{text}");
         let dev = text.split_whitespace().nth(1).unwrap().to_string();
-        assert!(!satie.get(&quiet).unwrap().interactive);
-        assert!(satie.get(&dev).unwrap().interactive, "interactive unless said otherwise");
+        assert!(!tasks.get(&quiet).unwrap().interactive);
+        assert!(tasks.get(&dev).unwrap().interactive, "interactive unless said otherwise");
 
-        drop(satie);
-        let after = satie_in(&dir).await;
+        drop(tasks);
+        let after = tasks_in(&dir).await;
         assert!(!after.get(&quiet).unwrap().interactive, "saved with the task");
         after.stop_task(&quiet).await.unwrap();
         after.stop_task(&dev).await.unwrap();
@@ -1015,7 +1066,7 @@
     #[tokio::test]
     async fn adopts_tasks_recorded_by_an_older_version() {
         let dir = tmp("import");
-        let satie = satie_in(&dir).await;
+        let tasks = tasks_in(&dir).await;
         let log = dir.join("old.log");
         std::fs::write(&log, "$ make serve\nserving\n").unwrap();
         // How tasks were saved in Bach's own database, owned by a `runId`.
@@ -1027,31 +1078,31 @@
         let task = crate::parse_task(old).expect("old tasks still parse");
         assert_eq!(task.owner.as_deref(), Some("run-9"));
         assert!(task.interactive, "tasks from before the flag are the user's");
-        assert_eq!(satie.import(vec![task.clone()]), 1);
-        assert_eq!(satie.import(vec![task]), 0, "already known");
+        assert_eq!(tasks.import(vec![task.clone()]), 1);
+        assert_eq!(tasks.import(vec![task]), 0, "already known");
         // Its process is long gone, which the import notices straight away.
-        assert_eq!(status(&satie, "old1"), TaskStatus::Lost);
-        assert!(satie.logs("old1", 5, None).unwrap().contains("serving"));
+        assert_eq!(status(&tasks, "old1"), TaskStatus::Lost);
+        assert!(tasks.logs("old1", 5, None).unwrap().contains("serving"));
 
-        // And it's in Satie's own database from now on.
-        drop(satie);
-        assert_eq!(status(&satie_in(&dir).await, "old1"), TaskStatus::Lost);
+        // And it's in bach-tasks' own database from now on.
+        drop(tasks);
+        assert_eq!(status(&tasks_in(&dir).await, "old1"), TaskStatus::Lost);
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
     async fn unknown_tasks_are_not_found() {
         let dir = tmp("errors");
-        let satie = satie_in(&dir).await;
-        assert!(matches!(satie.stop_task("nope").await, Err(Error::NotFound(_))));
-        assert!(matches!(satie.remove_task("nope"), Err(Error::NotFound(_))));
-        assert!(matches!(satie.logs("nope", 1, None), Err(Error::NotFound(_))));
+        let tasks = tasks_in(&dir).await;
+        assert!(matches!(tasks.stop_task("nope").await, Err(Error::NotFound(_))));
+        assert!(matches!(tasks.remove_task("nope"), Err(Error::NotFound(_))));
+        assert!(matches!(tasks.logs("nope", 1, None), Err(Error::NotFound(_))));
         assert!(matches!(
-            satie.start_task(req("  ", &dir)),
+            tasks.start_task(req("  ", &dir)),
             Err(Error::Invalid(_))
         ));
-        let t = satie.start_task(req("sleep 4708", &dir)).unwrap();
-        assert!(matches!(satie.remove_task(&t.id), Err(Error::Invalid(_))));
-        satie.stop_task(&t.id).await.unwrap();
+        let t = tasks.start_task(req("sleep 4708", &dir)).unwrap();
+        assert!(matches!(tasks.remove_task(&t.id), Err(Error::Invalid(_))));
+        tasks.stop_task(&t.id).await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }

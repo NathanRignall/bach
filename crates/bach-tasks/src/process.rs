@@ -1,6 +1,6 @@
 //! Processes on this machine: liveness, sessions, signals and their listening ports.
 //!
-//! A task is everything in its session: Satie starts each one with `setsid`, so the session id is
+//! A task is everything in its session: bach-tasks starts each one with `setsid`, so the session id is
 //! the task's pid. Process groups are no good for this, because tools like process-compose or a
 //! shell with job control put each child in a group of its own (but leave it in the session).
 use std::{

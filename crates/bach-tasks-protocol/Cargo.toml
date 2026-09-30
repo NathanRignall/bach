@@ -1,8 +1,8 @@
 [package]
-name = "satie-protocol"
+name = "bach-tasks-protocol"
 version = "0.1.0"
 edition = "2021"
-description = "Wire types for Satie, the background-task launcher"
+description = "Wire types for bach-tasks, the background-task launcher"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

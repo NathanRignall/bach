@@ -94,4 +94,4 @@ This produces a signed, notarized `target/release/bundle/macos/Bach.app` and a D
 ## How it works
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the crates, the protocol, remote connections and
-port forwarding, approvals, terminals and Satie, the background-task launcher.
+port forwarding, approvals, terminals and bach-tasks, the background-task launcher behind the agents' `bach` MCP server.

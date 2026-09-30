@@ -167,12 +167,12 @@ name = "bach-core"
 version = "0.1.0"
 dependencies = [
  "bach-protocol",
+ "bach-tasks",
+ "bach-tasks-protocol",
  "base64 0.23.1",
  "portable-pty",
  "reqwest",
  "rusqlite",
- "satie",
- "satie-protocol",
  "serde",
  "serde_json",
  "shlex",
@@ -185,7 +185,7 @@ dependencies = [
 name = "bach-protocol"
 version = "0.1.0"
 dependencies = [
- "satie-protocol",
+ "bach-tasks-protocol",
  "serde",
  "serde_json",
  "ts-rs",
@@ -204,6 +204,31 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "bach-tasks"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bach-tasks-protocol",
+ "futures-util",
+ "libc",
+ "percent-encoding",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "uuid",
+]
+
+[[package]]
+name = "bach-tasks-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "ts-rs",
 ]
 
 [[package]]
@@ -2834,31 +2859,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
-]
-
-[[package]]
-name = "satie"
-version = "0.1.0"
-dependencies = [
- "axum",
- "futures-util",
- "libc",
- "percent-encoding",
- "rusqlite",
- "satie-protocol",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "uuid",
-]
-
-[[package]]
-name = "satie-protocol"
-version = "0.1.0"
-dependencies = [
- "serde",
- "ts-rs",
 ]
 
 [[package]]

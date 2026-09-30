@@ -1,12 +1,12 @@
-//! process-compose, natively. [`Satie::start_compose`] runs a compose file as a task, in the
+//! process-compose, natively. [`Tasks::start_compose`] runs a compose file as a task, in the
 //! project's environment, with process-compose's API on a socket of the task's own. While the
-//! task runs, Satie polls that API for the state of each process and streams each process's output
+//! task runs, bach-tasks polls that API for the state of each process and streams each process's output
 //! into a file of its own. Those files are read like any task log, and they outlive
 //! process-compose's in-memory buffer and the project itself.
-use crate::{probe::Listener, process::parent_of, Error, Satie, StartTask, Task, TaskStatus};
+use crate::{probe::Listener, process::parent_of, Error, Tasks, StartTask, Task, TaskStatus};
 use futures_util::StreamExt;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use satie_protocol::{ComposeProcess, ProcessAction};
+use bach_tasks_protocol::{ComposeProcess, ProcessAction};
 use serde::Deserialize;
 use std::{
     collections::HashMap,
@@ -38,7 +38,7 @@ pub(crate) fn socket_path(dir: &Path, id: &str) -> PathBuf {
 
 fn shared_socket_dir() -> PathBuf {
     // SAFETY: getuid has no preconditions.
-    PathBuf::from(format!("/tmp/satie-{}", unsafe { libc::getuid() }))
+    PathBuf::from(format!("/tmp/bach-tasks-{}", unsafe { libc::getuid() }))
 }
 
 /// Makes the folder a socket goes in. The one in /tmp must be this user's alone.
@@ -279,7 +279,7 @@ pub(crate) fn failed(p: &ComposeProcess) -> bool {
 // Following the projects in running tasks
 // ---------------------------------------------------------------------------------------------
 
-impl Satie {
+impl Tasks {
     /// Runs a process-compose project as a task, with its API on the task's own socket.
     pub fn start_compose(&self, req: StartCompose) -> Result<Task, Error> {
         let file = req.file.trim();
@@ -398,7 +398,7 @@ impl Satie {
         let saved = std::fs::create_dir_all(&dir)
             .and_then(|_| std::fs::write(state_path(&self.inner.dir, id), serde_json::to_vec(&procs)?));
         if let Err(e) = saved {
-            eprintln!("satie: couldn't save the processes of task {id}: {e}");
+            eprintln!("bach-tasks: couldn't save the processes of task {id}: {e}");
         }
         known.insert(id.to_string(), procs);
         true
@@ -441,28 +441,28 @@ impl Satie {
         if !self.inner.log_streams.lock().unwrap().insert(key.clone()) {
             return;
         }
-        let satie = self.clone();
+        let tasks = self.clone();
         tokio::spawn(async move {
             let (id, process) = &key;
-            let sock = socket_path(&satie.inner.dir, id);
-            let file = process_log(&satie.inner.dir, id, process);
-            let _ = std::fs::create_dir_all(files_dir(&satie.inner.dir, id));
-            // A new log starts with everything process-compose still holds. An existing one (Satie
+            let sock = socket_path(&tasks.inner.dir, id);
+            let file = process_log(&tasks.inner.dir, id, process);
+            let _ = std::fs::create_dir_all(files_dir(&tasks.inner.dir, id));
+            // A new log starts with everything process-compose still holds. An existing one (bach-tasks
             // was restarted) carries on from now: replaying the buffer would repeat lines.
             let mut offset = WHOLE_BUFFER;
             if file.exists() {
                 offset = 0;
                 if let Ok(mut f) = OpenOptions::new().append(true).open(&file) {
-                    let _ = writeln!(f, "… (output while Satie was not watching may be missing)");
+                    let _ = writeln!(f, "… (output while bach-tasks was not watching may be missing)");
                 }
             }
             loop {
                 let _ = stream_logs(&sock, process, offset, &file).await;
                 offset = 0;
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                let still_there = satie.get(id).is_some_and(|t| t.status == TaskStatus::Running)
+                let still_there = tasks.get(id).is_some_and(|t| t.status == TaskStatus::Running)
                     && sock.exists()
-                    && satie
+                    && tasks
                         .inner
                         .compose
                         .lock()
@@ -473,7 +473,7 @@ impl Satie {
                     break;
                 }
             }
-            satie.inner.log_streams.lock().unwrap().remove(&key);
+            tasks.inner.log_streams.lock().unwrap().remove(&key);
         });
     }
 

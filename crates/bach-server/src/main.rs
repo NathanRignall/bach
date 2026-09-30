@@ -1,4 +1,4 @@
-//! `bach-server` — runs Bach's backend (agents, sessions, Satie) where the agents should run.
+//! `bach-server` — runs Bach's backend (agents, sessions, background tasks) where the agents should run.
 //!
 //! - `bach-server [serve]`: the server. Clients reach it on a private Unix socket next to the
 //!   session database (what `attach` uses), and browsers on a WebSocket at 127.0.0.1:3421 (reach
@@ -87,7 +87,7 @@ async fn serve(paths: Paths) {
         }
     };
     eprintln!("sessions in {}", paths.db.display());
-    eprintln!("satie (MCP) on {}", api.satie().url());
+    eprintln!("agents' MCP server (bach) on {}", api.tasks().url());
 
     let socket = {
         let (paths, api) = (Paths::for_db(paths.db.clone()), api.clone());

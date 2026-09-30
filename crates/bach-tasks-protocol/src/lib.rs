@@ -1,4 +1,4 @@
-//! Wire types for Satie, the background-task launcher: what a task looks like, and the arguments
+//! Wire types for bach-tasks, the background-task launcher: what a task looks like, and the arguments
 //! of the commands that manage tasks. Plain data (serde + ts-rs), so any frontend or transport
 //! can use them without pulling in the launcher itself.
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ pub enum TaskStatus {
     Lost,
 }
 
-/// A background process as Satie records it.
+/// A background process as bach-tasks records it.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -42,7 +42,7 @@ pub struct Task {
     /// Ports the task should come up on; a missing one is a sign a part of it failed.
     #[serde(default)]
     pub expected_ports: Vec<u16>,
-    /// For a process-compose project started by Satie: its compose file.
+    /// For a process-compose project started by bach-tasks: its compose file.
     #[serde(default)]
     pub compose_file: Option<String>,
     /// Whether the user is meant to open it (a dev server they browse to) rather than only the
