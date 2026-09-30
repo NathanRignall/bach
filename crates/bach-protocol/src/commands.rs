@@ -8,7 +8,7 @@
 //! arguments are a struct named after it with an `Args` suffix; its doc comment documents the
 //! command.
 use crate::{
-    AgentInfo, AgentKind, ApiError, ModelInfo, Decision, DirListing, FileContent, FileList, GitDiff, GitInfo, PlanUsage, Session,
+    AgentInfo, AgentKind, ApiError, ModelInfo, Decision, DirListing, FileContent, FileList, GitDiff, GitInfo, GitLog, BranchStatus, CommitInfo, PlanUsage, Session,
     SessionLog, TerminalInfo, TerminalSnapshot, WorktreeEntry,
 };
 use bach_tasks_protocol::{
@@ -110,6 +110,12 @@ commands! {
     read_file(ReadFileArgs) -> FileContent;
     git_info(GitInfoArgs) -> GitInfo;
     git_diff(GitDiffArgs) -> GitDiff;
+    git_log(GitLogArgs) -> GitLog;
+    git_status(GitStatusArgs) -> BranchStatus;
+    git_stage(GitStageArgs) -> ();
+    git_stage_hunk(GitStageHunkArgs) -> ();
+    git_commit(GitCommitArgs) -> CommitInfo;
+    git_push(GitPushArgs) -> BranchStatus;
     list_worktrees(ListWorktreesArgs) -> Vec<WorktreeEntry>;
     remove_worktree(RemoveWorktreeArgs) -> ();
 
@@ -314,14 +320,70 @@ pub struct GitInfoArgs {
     pub path: String,
 }
 
-/// The changes in the checkout at `path`: uncommitted ones (including untracked files), or with
-/// `baseBranch`, everything since the branch left it (committed or not).
+/// The changes in the checkout at `path`: uncommitted ones (including untracked files, split
+/// into staged and unstaged), or with `baseBranch`, everything since the branch left it
+/// (committed or not), or with `commit`, what that commit changed.
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(optional_fields)]
 pub struct GitDiffArgs {
     pub path: String,
     pub base_branch: Option<String>,
+    pub commit: Option<String>,
+}
+
+/// The commits of the checkout at `path`, newest first. With `baseBranch` and not `older`, only
+/// those since the branch left it. `skip` and `limit` (default 50) page through them.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(optional_fields)]
+pub struct GitLogArgs {
+    pub path: String,
+    pub base_branch: Option<String>,
+    pub older: Option<bool>,
+    pub skip: Option<u32>,
+    pub limit: Option<u32>,
+}
+
+/// The current branch of the checkout at `path`: its upstream and how far ahead of or behind it.
+#[derive(Debug, Deserialize, TS)]
+pub struct GitStatusArgs {
+    pub path: String,
+}
+
+/// Stages (or with `stage: false`, unstages) whole files, given by path relative to the checkout.
+#[derive(Debug, Deserialize, TS)]
+pub struct GitStageArgs {
+    pub path: String,
+    pub files: Vec<String>,
+    pub stage: bool,
+}
+
+/// Stages (or unstages) one hunk of a file: the `hunk`th of the file's unstaged (or, to unstage,
+/// staged) changes. `header` is that hunk's `@@` line as shown, refused if the file has changed
+/// since.
+#[derive(Debug, Deserialize, TS)]
+pub struct GitStageHunkArgs {
+    pub path: String,
+    pub file: String,
+    pub hunk: u32,
+    pub header: String,
+    pub stage: bool,
+}
+
+/// Commits what is staged, with `message`. Never amends.
+#[derive(Debug, Deserialize, TS)]
+pub struct GitCommitArgs {
+    pub path: String,
+    pub message: String,
+}
+
+/// Pushes the current branch to its upstream, or the first time to the repository's remote
+/// (`origin`, or its only one), setting that as the upstream. Never forces: a rejected push is
+/// an error. Returns the branch's new status.
+#[derive(Debug, Deserialize, TS)]
+pub struct GitPushArgs {
+    pub path: String,
 }
 
 /// Worktrees Bach created on the backend host.

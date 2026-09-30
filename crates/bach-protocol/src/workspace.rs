@@ -61,8 +61,12 @@ pub struct WorktreeEntry {
 #[derive(Debug, Default, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct GitDiff {
-    /// The commit the working tree is compared with (abbreviated), or none before the first commit.
+    /// The commit the changes are compared with (abbreviated), or none before the first commit.
+    /// For a single commit's diff: that commit.
     pub base: Option<String>,
+    /// Uncommitted changes: a file with both staged and unstaged changes is listed twice (see
+    /// `FileDiff::staged`), and files and hunks can be staged and unstaged.
+    pub staging: bool,
     pub files: Vec<FileDiff>,
     /// Some files' lines were left out to keep the diff a reasonable size.
     pub truncated: bool,
@@ -86,6 +90,9 @@ pub struct FileDiff {
     pub status: FileStatus,
     /// Not yet tracked by git.
     pub untracked: bool,
+    /// In an uncommitted diff: the part of the file's changes that is staged (index against
+    /// HEAD), as opposed to the unstaged part (working tree against index).
+    pub staged: bool,
     pub binary: bool,
     pub additions: u32,
     pub deletions: u32,
@@ -143,4 +150,48 @@ pub struct FileContent {
     /// The file's text; none for binary files and files too large to show.
     pub text: Option<String>,
     pub binary: bool,
+}
+
+/// A commit, for the history list.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitInfo {
+    pub sha: String,
+    /// Abbreviated.
+    pub short: String,
+    pub subject: String,
+    pub author: String,
+    /// Unix time in seconds.
+    pub time: i64,
+    /// On the session's branch, as opposed to from before it left its base branch.
+    pub on_branch: bool,
+}
+
+/// A page of the commits reachable from HEAD, newest first.
+#[derive(Debug, Default, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct GitLog {
+    pub commits: Vec<CommitInfo>,
+    /// There are more commits after these.
+    pub has_more: bool,
+}
+
+/// Where a branch stands against the remote.
+#[derive(Debug, Default, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchStatus {
+    /// None when HEAD is detached.
+    pub branch: Option<String>,
+    /// HEAD's commit (abbreviated); none before the first commit.
+    pub head: Option<String>,
+    /// The remote-tracking branch it pushes to, like `origin/feature`; none until first pushed.
+    pub upstream: Option<String>,
+    /// The repository has at least one remote.
+    pub has_remote: bool,
+    /// Commits the upstream lacks. Without an upstream: commits no remote branch has.
+    pub ahead: u32,
+    /// Commits the upstream has that the branch lacks (as of the last fetch).
+    pub behind: u32,
+    /// Files with staged changes.
+    pub staged: u32,
 }

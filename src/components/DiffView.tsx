@@ -1,22 +1,36 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, FileDiff as FileDiffIcon, MessageSquarePlus, RefreshCw, Send } from "lucide-react";
-import { DiffHunk, FileDiff, FileStatus, GitDiff, Session, gitDiff, onReconnect } from "@/api";
+import { ChevronDown, ChevronRight, FileDiff as FileDiffIcon, MessageSquarePlus, Minus, Plus, RefreshCw, Send } from "lucide-react";
+import { BranchStatus, FileDiff, FileStatus, GitDiff, Session, gitCommit, gitDiff, gitPush, gitStage, gitStageHunk, gitStatus, onReconnect } from "@/api";
 import { FileTree } from "@/components/FileTree";
+import { CommitBox, CommitList, GitError, PushControl, useCommits } from "@/components/GitBar";
 import { CommentBox, DraftComment, SelectionActions } from "@/components/ReviewComments";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { type Token, renderLine, useHighlight } from "@/lib/highlight";
-import { type Anchor, type LineSelection, type Review, anchorEnd, anchorOf, explainMessage, hunkSelection, isSelected, rangeLabel, reviewMessage } from "@/lib/review";
+import { type Anchor, type Review, anchorEnd, anchorOf, explainMessage, hunkSelection, inFile, isSelected, rangeLabel, reviewMessage } from "@/lib/review";
 import { cn } from "@/lib/utils";
 
-/** Uncommitted changes, or everything on the session's branch since it left its base branch. */
-export type DiffMode = "uncommitted" | "branch";
+/**
+ * Uncommitted changes (staged and not), everything on the session's branch since it left its base
+ * branch, or the branch's commits, one at a time.
+ */
+export type DiffMode = "uncommitted" | "branch" | "commits";
+
+const errorText = (e: unknown) => String((e as Error)?.message ?? e);
+
+/** The folder the session's git commands run in. */
+export const sessionPath = (s: Session) => (s.workdirRemoved ? "" : (s.workdir ?? s.cwd).trim());
+
+/** Names a file's part of the diff: a file with staged and unstaged changes is shown twice. */
+const fileKey = (f: FileDiff) => `${f.staged ? "s" : "u"}:${f.path}`;
 
 /** The branch a worktree session was created from, which its own branch is compared with. */
 export const diffBase = (s: Session) => (s.worktree && s.branch && s.branch !== s.gitBranch ? s.branch : undefined);
 
 export interface DiffState {
   diff?: GitDiff;
+  /** The branch against its remote. */
+  status?: BranchStatus;
   loading: boolean;
   error?: string;
   refresh: () => void;
@@ -26,12 +40,14 @@ export interface DiffState {
 const LIVE_REFRESH_MS = 3000;
 
 /**
- * The session's changes, refetched when its run ends, on reconnecting, and every few seconds
- * while the agent works and `live` (the changes are being looked at).
+ * The session's changes (in commits mode, those of `commit`), refetched when its run ends, on
+ * reconnecting, and every few seconds while the agent works and `live` (the changes are being
+ * looked at).
  */
-export function useDiff(session: Session | undefined, mode: DiffMode, live: boolean): DiffState {
-  const path = session && !session.workdirRemoved ? (session.workdir ?? session.cwd).trim() : "";
+export function useDiff(session: Session | undefined, mode: DiffMode, live: boolean, commit?: string): DiffState {
+  const path = session ? sessionPath(session) : "";
   const baseBranch = session && mode === "branch" ? diffBase(session) : undefined;
+  const showing = mode === "commits" ? commit : undefined;
   const running = !!session?.runId;
   const [state, setState] = useState<Omit<DiffState, "refresh">>({ loading: false });
   const latest = useRef(0);
@@ -40,16 +56,18 @@ export function useDiff(session: Session | undefined, mode: DiffMode, live: bool
     if (!path) return setState({ loading: false });
     const req = ++latest.current;
     setState((s) => ({ ...s, loading: true }));
-    gitDiff(path, baseBranch)
-      .then((diff) => req === latest.current && setState({ diff, loading: false }))
-      .catch((e) => req === latest.current && setState({ loading: false, error: String(e.message ?? e) }));
+    // In commits mode nothing is shown until a commit is picked.
+    const diff = mode === "commits" && !commit ? Promise.resolve(undefined) : gitDiff(path, baseBranch, showing);
+    Promise.all([diff, gitStatus(path).catch(() => undefined)])
+      .then(([diff, status]) => req === latest.current && setState({ diff, status, loading: false }))
+      .catch((e) => req === latest.current && setState({ loading: false, error: errorText(e) }));
   };
 
   // A different checkout or comparison: start over rather than show the old one meanwhile.
   useEffect(() => {
     setState({ loading: false });
     refresh();
-  }, [path, baseBranch]);
+  }, [path, baseBranch, mode, commit]);
   // The agent finished (or started): whatever it did is on disk now.
   const wasRunning = useRef(running);
   useEffect(() => {
@@ -64,8 +82,8 @@ export function useDiff(session: Session | undefined, mode: DiffMode, live: bool
     if (!live || !running) return;
     const t = setInterval(refresh, LIVE_REFRESH_MS);
     return () => clearInterval(t);
-  }, [live, running, path, baseBranch]);
-  useEffect(() => onReconnect(refresh), [path, baseBranch]);
+  }, [live, running, path, baseBranch, mode, commit]);
+  useEffect(() => onReconnect(refresh), [path, baseBranch, mode, commit]);
 
   return { ...state, refresh };
 }
@@ -129,6 +147,12 @@ interface ReviewContext {
   /** Sends the message to the agent, rejecting if it couldn't be sent. */
   onAsk: (prompt: string) => Promise<void>;
   busy: boolean;
+  /** Present where files and hunks can be staged and unstaged. */
+  stage?: {
+    busy: boolean;
+    onFile: (file: FileDiff) => void;
+    onHunk: (file: FileDiff, index: number) => void;
+  };
 }
 
 function Hunk({ file, index, at, tokens, ctx }: { file: FileDiff; index: number; at?: [0 | 1, number][]; tokens?: Token[][][]; ctx: ReviewContext }) {
@@ -146,7 +170,7 @@ function Hunk({ file, index, at, tokens, ctx }: { file: FileDiff; index: number;
   }, []);
   const pick = (i: number, extend: boolean) => {
     ctx.onCompose(false);
-    review.select({ path: file.path, hunk: index, from: i, to: i }, extend);
+    review.select({ path: file.path, staged: file.staged, hunk: index, from: i, to: i }, extend);
   };
   const gutter = (i: number, n: number | null) => (
     <td className="w-px min-w-10 border-r border-border/60 p-0 text-right align-top text-muted-foreground/70 select-none">
@@ -164,7 +188,7 @@ function Hunk({ file, index, at, tokens, ctx }: { file: FileDiff; index: number;
         }}
         onMouseEnter={() => {
           const from = drag.current;
-          if (from !== undefined) review.select({ path: file.path, hunk: index, from: Math.min(from, i), to: Math.max(from, i) });
+          if (from !== undefined) review.select({ path: file.path, staged: file.staged, hunk: index, from: Math.min(from, i), to: Math.max(from, i) });
         }}
         onClick={(e) => e.detail === 0 && pick(i, e.shiftKey)}
       >
@@ -172,12 +196,15 @@ function Hunk({ file, index, at, tokens, ctx }: { file: FileDiff; index: number;
       </button>
     </td>
   );
-  const anchor = sel && sel.path === file.path && sel.hunk === index ? anchorOf(file, sel) : undefined;
-  const end = (i: number) => !dragging && sel && sel.path === file.path && sel.hunk === index && sel.to === i;
+  const anchor = sel && inFile(sel, file) && sel.hunk === index ? anchorOf(file, sel) : undefined;
+  const end = (i: number) => !dragging && sel && inFile(sel, file) && sel.hunk === index && sel.to === i;
+  // A renamed file's hunks can't be told apart from a whole new file's, and a new file has no
+  // earlier version to stage part of.
+  const stageable = ctx.stage && !file.untracked && !file.binary && !file.omitted && file.status !== "renamed";
   const draftsAfter = (i: number) =>
     review.drafts.filter((d) => {
       const at = anchorEnd(file, d.anchor);
-      return d.anchor.path === file.path && at?.[0] === index && at[1] === i;
+      return inFile(d.anchor, file) && at?.[0] === index && at[1] === i;
     });
   return (
     <>
@@ -188,12 +215,24 @@ function Hunk({ file, index, at, tokens, ctx }: { file: FileDiff; index: number;
             <Button
               size="xs"
               variant="ghost"
-              className="ml-auto h-5 opacity-0 group-hover/hunk:opacity-100 focus-visible:opacity-100"
+              className={"ml-auto h-5 opacity-0 group-hover/hunk:opacity-100 focus-visible:opacity-100"}
               title="Comment on or ask about this whole hunk"
-              onClick={() => (ctx.onCompose(false), review.select(hunkSelection(file.path, index, hunk)))}
+              onClick={() => (ctx.onCompose(false), review.select(hunkSelection(file, index)))}
             >
               <MessageSquarePlus /> Hunk
             </Button>
+            {stageable && (
+              <Button
+                size="xs"
+                variant="outline"
+                className="h-5"
+                disabled={ctx.stage?.busy}
+                title={file.staged ? "Take this hunk out of the commit" : "Add this hunk to the commit"}
+                onClick={() => ctx.stage?.onHunk(file, index)}
+              >
+                {file.staged ? <Minus /> : <Plus />} {file.staged ? "Unstage hunk" : "Stage hunk"}
+              </Button>
+            )}
           </div>
         </td>
       </tr>
@@ -205,7 +244,7 @@ function Hunk({ file, index, at, tokens, ctx }: { file: FileDiff; index: number;
               className={cn(
                 l.kind === "add" && "bg-emerald-500/12 dark:bg-emerald-400/12",
                 l.kind === "delete" && "bg-red-500/12 dark:bg-red-400/12",
-                isSelected(sel, file.path, index, i) && "bg-primary/20 dark:bg-primary/25",
+                isSelected(sel, file, index, i) && "bg-primary/20 dark:bg-primary/25",
               )}
             >
               {gutter(i, l.old)}
@@ -276,23 +315,33 @@ function DiffLines({ file, ctx }: { file: FileDiff; ctx: ReviewContext }) {
 function FileCard({ file, open, onToggle, ctx }: { file: FileDiff; open: boolean; onToggle: () => void; ctx: ReviewContext }) {
   const { dir, name } = splitPath(file.path);
   const empty = file.binary ? "Binary file" : file.omitted ? "Too large to show" : !file.hunks.length ? (file.status === "renamed" ? "Renamed without changes" : "No content changes") : undefined;
+  const stage = ctx.stage;
   return (
-    <section id={`diff-${file.path}`} className="overflow-clip rounded-lg border bg-card">
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={open}
-        className="sticky top-0 z-10 flex w-full items-center gap-2 border-b bg-card px-3 py-2 text-left text-xs hover:bg-muted"
-      >
-        {open ? <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />}
-        <StatusLetter file={file} />
-        <span className="min-w-0 flex-1 truncate font-mono" title={file.path}>
-          {file.oldPath && <span className="text-muted-foreground">{file.oldPath} → </span>}
-          <span className="text-muted-foreground">{dir}</span>
-          <span className="font-medium">{name}</span>
-        </span>
-        <Counts additions={file.additions} deletions={file.deletions} />
-      </button>
+    <section id={`diff-${fileKey(file)}`} className={cn("overflow-clip rounded-lg border bg-card", stage && file.staged && "border-l-2 border-l-emerald-500")}>
+      <div className="sticky top-0 z-10 flex items-center border-b bg-card hover:bg-muted">
+        <button type="button" onClick={onToggle} aria-expanded={open} className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-xs">
+          {open ? <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />}
+          <StatusLetter file={file} />
+          <span className="min-w-0 flex-1 truncate font-mono" title={file.path}>
+            {file.oldPath && <span className="text-muted-foreground">{file.oldPath} → </span>}
+            <span className="text-muted-foreground">{dir}</span>
+            <span className="font-medium">{name}</span>
+          </span>
+          <Counts additions={file.additions} deletions={file.deletions} />
+        </button>
+        {stage && (
+          <Button
+            size="xs"
+            variant="outline"
+            className="mr-2 shrink-0"
+            disabled={stage.busy}
+            title={file.staged ? "Take this file out of the commit" : "Add this file to the commit"}
+            onClick={() => stage.onFile(file)}
+          >
+            {file.staged ? <Minus /> : <Plus />} {file.staged ? "Unstage" : "Stage"}
+          </Button>
+        )}
+      </div>
       {open &&
         (empty ? (
           <p className="px-3 py-3 text-xs text-muted-foreground">{empty}</p>
@@ -307,12 +356,25 @@ function FileCard({ file, open, onToggle, ctx }: { file: FileDiff; open: boolean
 const COLLAPSE_LINES = 600;
 const startsOpen = (f: FileDiff) => f.status !== "deleted" && f.additions + f.deletions <= COLLAPSE_LINES;
 
+/** A part of the changes (the staged ones, or the rest) with what can be done to all of it. */
+function SectionHeading({ title, count, action }: { title: string; count: number; action?: ReactNode }) {
+  return (
+    <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium whitespace-nowrap text-muted-foreground uppercase">
+      <span className="min-w-0 truncate">{title}</span>
+      <span className="shrink-0 rounded-full bg-muted px-1.5 tabular-nums">{count}</span>
+      {action}
+    </div>
+  );
+}
+
 /** The session's changes: a file list, and each file's diff. */
 export function DiffView({
   session,
   state,
   mode,
   onMode,
+  commit,
+  onCommit,
   review,
   onAsk,
 }: {
@@ -320,11 +382,15 @@ export function DiffView({
   state: DiffState;
   mode: DiffMode;
   onMode: (m: DiffMode) => void;
+  /** The commit whose changes are shown in commits mode. */
+  commit?: string;
+  onCommit: (sha: string | undefined) => void;
   review: Review;
   /** Sends a message to the session's agent (queued while it works), rejecting if it couldn't be. */
   onAsk?: (prompt: string) => Promise<void>;
 }) {
-  const { diff, loading, error, refresh } = state;
+  const { diff, status, loading, error, refresh } = state;
+  const path = sessionPath(session);
   const [composing, setComposing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [sendError, setSendError] = useState<string>();
@@ -335,74 +401,127 @@ export function DiffView({
     try {
       await onAsk(prompt);
     } catch (e) {
-      setSendError(String((e as Error).message ?? e));
+      setSendError(errorText(e));
       throw e;
     } finally {
       setBusy(false);
     }
   };
-  const ctx: ReviewContext = { review, composing, onCompose: setComposing, onAsk: (p) => ask(p).then(() => review.select(undefined), () => {}), busy };
+
+  // Staging, committing and pushing change the repository, so the diff is fetched again after.
+  const [acting, setActing] = useState(false);
+  const [actError, setActError] = useState<string>();
+  const act = async (change: () => Promise<unknown>) => {
+    setActing(true);
+    setActError(undefined);
+    try {
+      await change();
+      // Hunks move between the staged and unstaged parts, so the lines picked no longer exist.
+      review.select(undefined);
+    } catch (e) {
+      setActError(errorText(e));
+    } finally {
+      setActing(false);
+      refresh();
+    }
+  };
+  const [pushing, setPushing] = useState(false);
+  const [pushError, setPushError] = useState<string>();
+  const push = async () => {
+    setPushing(true);
+    setPushError(undefined);
+    try {
+      await gitPush(path);
+    } catch (e) {
+      setPushError(errorText(e));
+    } finally {
+      setPushing(false);
+      refresh();
+    }
+  };
+  const paths = (files: FileDiff[]) => files.flatMap((f) => (f.oldPath ? [f.path, f.oldPath] : [f.path]));
+
+  const base = diffBase(session);
+  const files = diff?.files ?? [];
+  const staging = !!diff?.staging;
+  const stage: ReviewContext["stage"] = staging
+    ? {
+        busy: acting,
+        onFile: (f) => void act(() => gitStage(path, paths([f]), !f.staged)),
+        onHunk: (f, i) => void act(() => gitStageHunk({ path, file: f.path, hunk: i, header: f.hunks[i].header, stage: !f.staged })),
+      }
+    : undefined;
+  const ctx: ReviewContext = { review, composing, onCompose: setComposing, onAsk: (p) => ask(p).then(() => review.select(undefined), () => {}), busy, stage };
   // Esc clears the selection (a comment box handles its own Esc).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && !composing && review.select(undefined);
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
-  const base = diffBase(session);
-  // Files toggled away from how they start (see `startsOpen`), by path.
-  const [toggled, setToggled] = useState(new Set<string>());
-  useEffect(() => (setToggled(new Set()), setSelected(undefined), setComposing(false), setSendError(undefined)), [session.id, mode]);
 
-  const files = diff?.files ?? [];
-  const isOpen = (f: FileDiff) => startsOpen(f) !== toggled.has(f.path);
-  const toggle = (path: string) =>
+  const commits = useCommits(path, base, status?.head ?? undefined, mode === "commits");
+  // Looking at commits starts on the newest.
+  useEffect(() => {
+    if (mode === "commits" && !commit && commits.commits.length) onCommit(commits.commits[0].sha);
+  }, [mode, commit, commits.commits]);
+
+  // Files toggled away from how they start (see `startsOpen`), by `fileKey`.
+  const [toggled, setToggled] = useState(new Set<string>());
+  useEffect(() => (setToggled(new Set()), setSelected(undefined), setComposing(false), setSendError(undefined), setActError(undefined), setPushError(undefined)), [session.id, mode, commit]);
+
+  const isOpen = (f: FileDiff) => startsOpen(f) !== toggled.has(fileKey(f));
+  const toggle = (key: string) =>
     setToggled((t) => {
       const next = new Set(t);
-      next.has(path) ? next.delete(path) : next.add(path);
+      next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
   // The file last picked in the tree.
-  const [selected, setSelected] = useState<string>();
+  const [selected, setSelected] = useState<FileDiff>();
   const reveal = (f: FileDiff) => {
-    setSelected(f.path);
-    if (!isOpen(f)) toggle(f.path);
-    requestAnimationFrame(() => document.getElementById(`diff-${f.path}`)?.scrollIntoView({ block: "start" }));
+    setSelected(f);
+    if (!isOpen(f)) toggle(fileKey(f));
+    requestAnimationFrame(() => document.getElementById(`diff-${fileKey(f)}`)?.scrollIntoView({ block: "start" }));
   };
   // Drafts whose lines the diff has moved past (or whose file it no longer has).
   const lost = review.drafts.filter((d) => {
-    const f = files.find((f) => f.path === d.anchor.path);
+    const f = files.find((f) => inFile(d.anchor, f));
     return !f || !anchorEnd(f, d.anchor);
   });
+  const changed = new Set(files.map((f) => f.path)).size;
   const additions = files.reduce((n, f) => n + f.additions, 0);
   const deletions = files.reduce((n, f) => n + f.deletions, 0);
+
+  const sections = staging
+    ? [
+        { key: "staged", title: "Staged changes", files: files.filter((f) => f.staged), all: { label: "Unstage all", icon: <Minus />, stage: false } },
+        { key: "unstaged", title: "Changes", files: files.filter((f) => !f.staged), all: { label: "Stage all", icon: <Plus />, stage: true } },
+      ].filter((x) => x.files.length)
+    : [{ key: "all", title: "", files, all: undefined }];
+  const stagedCount = new Set(files.filter((f) => f.staged).map((f) => f.path)).size;
+  const modes: [DiffMode, string][] = [...(base ? [["branch", `All changes vs ${base}`] as [DiffMode, string]] : []), ["uncommitted", "Uncommitted"], ["commits", "Commits"]];
+  const showNav = mode === "commits" || files.length > 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-3 border-b px-4 py-2 text-xs text-muted-foreground">
-        {base && (
-          <div className="flex rounded-lg bg-muted p-0.5" role="radiogroup" aria-label="Compare with">
-            {(
-              [
-                ["branch", `All changes vs ${base}`],
-                ["uncommitted", "Uncommitted"],
-              ] as const
-            ).map(([m, label]) => (
-              <button
-                key={m}
-                type="button"
-                role="radio"
-                aria-checked={mode === m}
-                onClick={() => onMode(m)}
-                className={cn("rounded-md px-2 py-0.5", mode === m ? "bg-background text-foreground shadow-xs" : "hover:text-foreground")}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="flex rounded-lg bg-muted p-0.5" role="radiogroup" aria-label="Show">
+          {modes.map(([m, label]) => (
+            <button
+              key={m}
+              type="button"
+              role="radio"
+              aria-checked={mode === m}
+              onClick={() => onMode(m)}
+              className={cn("rounded-md px-2 py-0.5", mode === m ? "bg-background text-foreground shadow-xs" : "hover:text-foreground")}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         {diff && (
           <span>
-            {files.length} {files.length === 1 ? "file" : "files"} changed
+            {changed} {changed === 1 ? "file" : "files"} changed
             {files.length > 0 && (
               <>
                 {" · "}
@@ -410,64 +529,146 @@ export function DiffView({
               </>
             )}
             {diff.base && (
-              <span className="font-mono" title="Compared with this commit">
+              <span className="font-mono" title={mode === "commits" ? "This commit" : "Compared with this commit"}>
                 {" · "}
                 {diff.base}
               </span>
             )}
           </span>
         )}
-        <Button variant="ghost" size="icon-xs" className="ml-auto" title="Refresh" aria-label="Refresh" onClick={refresh} disabled={loading}>
-          {loading ? <Spinner /> : <RefreshCw />}
-        </Button>
+        <div className="ml-auto flex items-center gap-3">
+          <PushControl status={status} pushing={pushing} onPush={() => void push()} />
+          <Button variant="ghost" size="icon-xs" title="Refresh" aria-label="Refresh" onClick={refresh} disabled={loading}>
+            {loading ? <Spinner /> : <RefreshCw />}
+          </Button>
+        </div>
       </div>
+      {(pushError || actError) && (
+        <div className="flex shrink-0 flex-col gap-2 border-b px-4 py-2">
+          {pushError && <GitError message={pushError} onDismiss={() => setPushError(undefined)} />}
+          {actError && <GitError message={actError} onDismiss={() => setActError(undefined)} />}
+        </div>
+      )}
 
       {session.workdirRemoved ? (
         <Empty>This session's worktree was removed.</Empty>
-      ) : error ? (
-        <Empty className="text-destructive">{error}</Empty>
-      ) : !diff ? (
-        <Empty>
-          <Spinner /> Loading changes…
-        </Empty>
-      ) : !files.length ? (
-        <Empty>{mode === "branch" && base ? `No changes since ${base}.` : "No uncommitted changes."}</Empty>
       ) : (
         <div className="flex min-h-0 flex-1">
-          <nav className="hidden w-64 shrink-0 overflow-y-auto border-r md:block" aria-label="Changed files">
-            <FileTree
-              files={files}
-              selected={selected}
-              onSelect={reveal}
-              label="Changed files"
-              decorate={(f) => ({
-                before: <StatusLetter file={f} />,
-                after: <Counts additions={f.additions} deletions={f.deletions} />,
-                className: cn(f.status === "deleted" && "line-through"),
-                title: f.oldPath ? `${f.oldPath} → ${f.path}` : f.path,
-              })}
-            />
-          </nav>
-          <div className="min-w-0 flex-1 overflow-y-auto">
-            <div className="flex flex-col gap-3 p-4 select-text">
-              {diff.truncated && (
-                <p className="text-xs text-muted-foreground">Some large files are listed without their lines.</p>
+          {showNav && (
+            <nav className="hidden w-64 shrink-0 flex-col overflow-hidden border-r md:flex" aria-label="Changed files">
+              {staging && (
+                <CommitBox
+                  staged={stagedCount}
+                  onCommit={async (message) => {
+                    await gitCommit(path, message);
+                    review.select(undefined);
+                    refresh();
+                  }}
+                />
               )}
-              {lost.length > 0 && (
-                <section className="rounded-lg border bg-card p-2 text-xs">
-                  <p className="mb-1 px-1 text-muted-foreground">Comments on lines that are no longer in the diff</p>
-                  <div className="@container">
-                    {lost.map((d) => (
-                      <DraftComment key={d.id} draft={d} showPath onEdit={(t) => review.edit(d.id, t)} onRemove={() => review.remove(d.id)} />
-                    ))}
+              {mode === "commits" && (
+                <div className={cn("overflow-y-auto", files.length ? "max-h-[45%] shrink-0 border-b" : "flex-1")}>
+                  <CommitList state={commits} base={base} selected={commit} onSelect={(c) => onCommit(c.sha)} />
+                </div>
+              )}
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                {sections.map((sec) => (
+                  <div key={sec.key}>
+                    {staging && (
+                      <SectionHeading
+                        title={sec.title}
+                        count={sec.files.length}
+                        action={
+                          sec.all && (
+                            <Button size="xs" variant="ghost" className="ml-auto shrink-0 px-1.5" disabled={acting} onClick={() => void act(() => gitStage(path, paths(sec.files), sec.all.stage))}>
+                              {sec.all.icon} {sec.all.label}
+                            </Button>
+                          )
+                        }
+                      />
+                    )}
+                    <FileTree
+                      files={sec.files}
+                      selected={selected && (!staging || selected.staged === (sec.key === "staged")) ? selected.path : undefined}
+                      onSelect={reveal}
+                      actions={
+                        staging
+                          ? (f) => (
+                              <Button
+                                size="icon-xs"
+                                variant="ghost"
+                                disabled={acting}
+                                title={f.staged ? "Unstage this file" : "Stage this file"}
+                                aria-label={f.staged ? `Unstage ${f.path}` : `Stage ${f.path}`}
+                                onClick={() => void act(() => gitStage(path, paths([f]), !f.staged))}
+                              >
+                                {f.staged ? <Minus /> : <Plus />}
+                              </Button>
+                            )
+                          : undefined
+                      }
+                      label={sec.title || "Changed files"}
+                      decorate={(f) => ({
+                        before: <StatusLetter file={f} />,
+                        after: <Counts additions={f.additions} deletions={f.deletions} />,
+                        className: cn(f.status === "deleted" && "line-through"),
+                        title: f.oldPath ? `${f.oldPath} → ${f.path}` : f.path,
+                      })}
+                    />
                   </div>
-                </section>
-              )}
-              {files.map((f) => (
-                <FileCard key={f.path} file={f} open={isOpen(f)} onToggle={() => toggle(f.path)} ctx={ctx} />
-              ))}
+                ))}
+              </div>
+            </nav>
+          )}
+          {error ? (
+            <Empty className="text-destructive">{error}</Empty>
+          ) : mode === "commits" && !commit ? (
+            <Empty>{commits.loading ? "Loading commits…" : "Pick a commit to see what it changed."}</Empty>
+          ) : !diff ? (
+            <Empty>
+              <Spinner /> Loading changes…
+            </Empty>
+          ) : !files.length ? (
+            <Empty>{mode === "commits" ? "This commit changed no files." : mode === "branch" && base ? `No changes since ${base}.` : "No uncommitted changes."}</Empty>
+          ) : (
+            <div className="min-w-0 flex-1 overflow-y-auto">
+              <div className="flex flex-col gap-3 p-4 select-text">
+                {diff.truncated && <p className="text-xs text-muted-foreground">Some large files are listed without their lines.</p>}
+                {lost.length > 0 && (
+                  <section className="rounded-lg border bg-card p-2 text-xs">
+                    <p className="mb-1 px-1 text-muted-foreground">Comments on lines that are no longer in the diff</p>
+                    <div className="@container">
+                      {lost.map((d) => (
+                        <DraftComment key={d.id} draft={d} showPath onEdit={(t) => review.edit(d.id, t)} onRemove={() => review.remove(d.id)} />
+                      ))}
+                    </div>
+                  </section>
+                )}
+                {sections.map((sec) => (
+                  <Fragment key={sec.key}>
+                    {staging && (
+                      <div className="-mb-1 -ml-3">
+                        <SectionHeading
+                          title={sec.title}
+                          count={sec.files.length}
+                          action={
+                            sec.all && (
+                              <Button size="xs" variant="outline" className="ml-2" disabled={acting} onClick={() => void act(() => gitStage(path, paths(sec.files), sec.all.stage))}>
+                                {sec.all.icon} {sec.all.label}
+                              </Button>
+                            )
+                          }
+                        />
+                      </div>
+                    )}
+                    {sec.files.map((f) => (
+                      <FileCard key={fileKey(f)} file={f} open={isOpen(f)} onToggle={() => toggle(fileKey(f))} ctx={ctx} />
+                    ))}
+                  </Fragment>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 

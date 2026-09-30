@@ -96,7 +96,13 @@ export const listFiles = (sessionId: string) => call("list_files", { sessionId }
 /** A file in the session's folder; `path` is relative to it. */
 export const readFile = (sessionId: string, path: string) => call("read_file", { sessionId, path });
 export const gitInfo = (path: string) => call("git_info", { path });
-export const gitDiff = (path: string, baseBranch?: string) => call("git_diff", { path, baseBranch });
+export const gitDiff = (path: string, baseBranch?: string, commit?: string) => call("git_diff", { path, baseBranch, commit });
+export const gitLog = (args: Args<"git_log">) => call("git_log", args);
+export const gitStatus = (path: string) => call("git_status", { path });
+export const gitStage = (path: string, files: string[], stage: boolean) => call("git_stage", { path, files, stage });
+export const gitStageHunk = (args: Args<"git_stage_hunk">) => call("git_stage_hunk", args);
+export const gitCommit = (path: string, message: string) => call("git_commit", { path, message });
+export const gitPush = (path: string) => call("git_push", { path });
 export const listWorktrees = () => call("list_worktrees");
 export const removeWorktree = (args: Args<"remove_worktree">) => call("remove_worktree", args);
 

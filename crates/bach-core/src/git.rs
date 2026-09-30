@@ -2,13 +2,15 @@
 //! Shells out to `git`, which must be on the backend host's PATH.
 use crate::fs::expand_home;
 pub use bach_protocol::{
-    DiffHunk, DiffLine, FileDiff, FileStatus, GitDiff, GitInfo, LineKind, Workspace, WorktreeEntry,
+    BranchStatus, CommitInfo, DiffHunk, DiffLine, FileDiff, FileStatus, GitDiff, GitInfo, GitLog,
+    LineKind, Workspace, WorktreeEntry,
 };
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
-    process::Command,
+    io::Write,
+    process::{Command, Stdio},
 };
 
 /// Where new worktrees are created: `<worktrees_dir>/<repo>-<hash>/<branch>`. Kept outside
@@ -29,6 +31,60 @@ fn run(dir: &Path, args: &[&str]) -> Result<String, String> {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(f).await.map_err(|e| e.to_string())?
+}
+
+/// Runs a git command that changes the repository, with `input` on its stdin. Never waits for
+/// a password or passphrase, and retries once when another git command held the index lock.
+/// Fails with what git said (its stderr, or else its stdout).
+fn run_write(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Result<String, String> {
+    let attempt = || -> Result<(bool, String, String), String> {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GCM_INTERACTIVE", "never")
+            .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().map_err(|e| format!("failed to run git: {e}"))?;
+        // Written from another thread so a large patch can't block against a full output pipe.
+        let writer = input.map(|data| {
+            let mut stdin = child.stdin.take().expect("piped");
+            let data = data.to_vec();
+            std::thread::spawn(move || {
+                let _ = stdin.write_all(&data);
+            })
+        });
+        let out = child.wait_with_output().map_err(|e| e.to_string())?;
+        if let Some(w) = writer {
+            let _ = w.join();
+        }
+        Ok((
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ))
+    };
+    let mut result = attempt()?;
+    if !result.0 && result.2.contains("index.lock") {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        result = attempt()?;
+    }
+    let (ok, stdout, stderr) = result;
+    if ok {
+        Ok(stdout)
+    } else if stderr.is_empty() || stdout.is_empty() {
+        Err(format!("{stdout}{stderr}"))
+    } else {
+        Err(format!("{stdout}\n{stderr}"))
     }
 }
 
@@ -83,10 +139,51 @@ impl Git {
             .map_err(|e| e.to_string())?
     }
 
-    pub async fn diff(&self, path: String, base_branch: Option<String>) -> Result<GitDiff, String> {
-        tokio::task::spawn_blocking(move || diff_sync(&path, base_branch.as_deref()))
-            .await
-            .map_err(|e| e.to_string())?
+    pub async fn diff(
+        &self,
+        path: String,
+        base_branch: Option<String>,
+        commit: Option<String>,
+    ) -> Result<GitDiff, String> {
+        blocking(move || diff_sync(&path, base_branch.as_deref(), commit.as_deref())).await
+    }
+
+    pub async fn log(
+        &self,
+        path: String,
+        base_branch: Option<String>,
+        older: bool,
+        skip: u32,
+        limit: u32,
+    ) -> Result<GitLog, String> {
+        blocking(move || log_sync(&path, base_branch.as_deref(), older, skip, limit)).await
+    }
+
+    pub async fn status(&self, path: String) -> Result<BranchStatus, String> {
+        blocking(move || status_sync(&path)).await
+    }
+
+    pub async fn stage(&self, path: String, files: Vec<String>, stage: bool) -> Result<(), String> {
+        blocking(move || stage_sync(&path, &files, stage)).await
+    }
+
+    pub async fn stage_hunk(
+        &self,
+        path: String,
+        file: String,
+        hunk: u32,
+        header: String,
+        stage: bool,
+    ) -> Result<(), String> {
+        blocking(move || stage_hunk_sync(&path, &file, hunk, &header, stage)).await
+    }
+
+    pub async fn commit(&self, path: String, message: String) -> Result<CommitInfo, String> {
+        blocking(move || commit_sync(&path, &message)).await
+    }
+
+    pub async fn push(&self, path: String) -> Result<BranchStatus, String> {
+        blocking(move || push_sync(&path)).await
     }
 
     pub async fn list_worktrees(&self) -> Vec<WorktreeEntry> {
@@ -406,48 +503,63 @@ const DIFF_OPTS: [&str; 6] = [
     "--dst-prefix=b/",
 ];
 
-fn diff_sync(path: &str, base_branch: Option<&str>) -> Result<GitDiff, String> {
+/// Files changed by the `git diff` with `args` (its options and what it compares).
+fn diff_files(dir: &Path, args: &[&str], staged: bool) -> Result<Vec<FileDiff>, String> {
+    let mut full = vec!["diff"];
+    full.extend(DIFF_OPTS);
+    full.extend(args);
+    let mut files = parse_diff(&run_diff(dir, &full)?);
+    for f in &mut files {
+        f.staged = staged;
+    }
+    Ok(files)
+}
+
+/// A full or abbreviated commit id, checked to name a commit (and so not to be an option).
+fn commit_id(dir: &Path, rev: &str) -> Result<String, String> {
+    if rev.len() < 4 || rev.len() > 64 || !rev.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("`{rev}` isn't a commit."));
+    }
+    run(dir, &["rev-parse", "--verify", "--quiet", &format!("{rev}^{{commit}}")])
+        .map_err(|_| format!("Unknown commit `{rev}`."))
+}
+
+fn diff_sync(path: &str, base_branch: Option<&str>, commit: Option<&str>) -> Result<GitDiff, String> {
     let dir = folder(path)?;
     let info = info_sync(path)?;
     if !info.is_repo {
         return Err(format!("{} is not a git repository.", dir.display()));
     }
     let head = run(&dir, &["rev-parse", "--verify", "--quiet", "HEAD"]).ok();
-    let base = match base_branch {
-        // Only known branches, which also keeps option-like names away from git.
-        Some(b) if !info.branches.iter().any(|x| x == b) => {
-            return Err(format!("Unknown branch `{b}`."))
-        }
-        Some(b) if head.is_some() => Some(run(&dir, &["merge-base", b, "HEAD"])?),
-        _ => head,
-    };
     // Before the first commit, everything is compared with the empty tree.
-    let against = match &base {
-        Some(c) => c.clone(),
-        None => run(&dir, &["hash-object", "-t", "tree", "/dev/null"])?,
-    };
+    let empty_tree = || run(&dir, &["hash-object", "-t", "tree", "/dev/null"]);
 
-    let mut args = vec!["diff"];
-    args.extend(DIFF_OPTS);
-    args.extend([against.as_str(), "--"]);
-    let mut files = parse_diff(&run_diff(&dir, &args)?);
-
-    let untracked = run(&dir, &["ls-files", "--others", "--exclude-standard", "-z"])?;
-    for name in untracked
-        .split('\0')
-        .filter(|n| !n.is_empty())
-        .take(MAX_UNTRACKED)
-    {
-        let mut args = vec!["diff", "--no-index"];
-        args.extend(DIFF_OPTS);
-        args.extend(["--", "/dev/null", name]);
-        for mut f in parse_diff(&run_diff(&dir, &args)?) {
-            f.path = name.to_string();
-            f.untracked = true;
-            files.push(f);
+    let (mut files, base, staging) = if let Some(rev) = commit {
+        let sha = commit_id(&dir, rev)?;
+        let parent = match run(&dir, &["rev-parse", "--verify", "--quiet", &format!("{sha}^")]) {
+            Ok(p) => p,
+            Err(_) => empty_tree()?,
+        };
+        (diff_files(&dir, &[&parent, &sha, "--"], false)?, Some(sha), false)
+    } else if let Some(b) = base_branch {
+        // Only known branches, which also keeps option-like names away from git.
+        if !info.branches.iter().any(|x| x == b) {
+            return Err(format!("Unknown branch `{b}`."));
         }
-    }
-    files.sort_by(|a, b| a.path.cmp(&b.path));
+        let base = match &head {
+            Some(_) => run(&dir, &["merge-base", b, "HEAD"])?,
+            None => empty_tree()?,
+        };
+        let mut files = diff_files(&dir, &[&base, "--"], false)?;
+        files.extend(untracked_files(&dir)?);
+        (files, head.is_some().then_some(base), false)
+    } else {
+        let mut files = diff_files(&dir, &["--cached", "--"], true)?;
+        files.extend(diff_files(&dir, &["--"], false)?);
+        files.extend(untracked_files(&dir)?);
+        (files, head, true)
+    };
+    files.sort_by(|a, b| (&a.path, a.staged).cmp(&(&b.path, b.staged)));
 
     let mut total = 0;
     let mut truncated = false;
@@ -468,9 +580,321 @@ fn diff_sync(path: &str, base_branch: Option<&str>) -> Result<GitDiff, String> {
     };
     Ok(GitDiff {
         base,
+        staging,
         files,
         truncated,
     })
+}
+
+/// Untracked files, each shown as added in full.
+fn untracked_files(dir: &Path) -> Result<Vec<FileDiff>, String> {
+    let untracked = run(dir, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    let mut files = vec![];
+    for name in untracked
+        .split('\0')
+        .filter(|n| !n.is_empty())
+        .take(MAX_UNTRACKED)
+    {
+        let mut args = vec!["diff", "--no-index"];
+        args.extend(DIFF_OPTS);
+        args.extend(["--", "/dev/null", name]);
+        for mut f in parse_diff(&run_diff(dir, &args)?) {
+            f.path = name.to_string();
+            f.untracked = true;
+            files.push(f);
+        }
+    }
+    Ok(files)
+}
+
+const DEFAULT_LOG_PAGE: u32 = 50;
+
+fn log_sync(
+    path: &str,
+    base_branch: Option<&str>,
+    older: bool,
+    skip: u32,
+    limit: u32,
+) -> Result<GitLog, String> {
+    let dir = folder(path)?;
+    let info = info_sync(path)?;
+    if !info.is_repo {
+        return Err(format!("{} is not a git repository.", dir.display()));
+    }
+    if run(&dir, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_err() {
+        return Ok(GitLog::default());
+    }
+    if let Some(b) = base_branch {
+        if !info.branches.iter().any(|x| x == b) {
+            return Err(format!("Unknown branch `{b}`."));
+        }
+    }
+    // The commits that are the branch's own; the rest came with the branch it left.
+    let own: Option<std::collections::HashSet<String>> = match base_branch {
+        Some(b) => Some(
+            run(&dir, &["rev-list", "HEAD", "--not", b, "--"])?
+                .lines()
+                .map(str::to_string)
+                .collect(),
+        ),
+        None => None,
+    };
+    let limit = if limit == 0 { DEFAULT_LOG_PAGE } else { limit.min(500) };
+    let (skip_arg, max_arg) = (format!("--skip={skip}"), format!("--max-count={}", limit + 1));
+    let mut args = vec![
+        "log",
+        "--no-color",
+        "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s",
+        &skip_arg,
+        &max_arg,
+        "HEAD",
+    ];
+    if let (Some(b), false) = (base_branch, older) {
+        args.extend(["--not", b]);
+    }
+    args.push("--");
+    let text = run(&dir, &args)?;
+    let mut commits: Vec<CommitInfo> = text
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.split('\x1f');
+            let sha = f.next()?.to_string();
+            Some(CommitInfo {
+                on_branch: own.as_ref().is_none_or(|o| o.contains(&sha)),
+                sha,
+                short: f.next()?.to_string(),
+                author: f.next()?.to_string(),
+                time: f.next()?.parse().ok()?,
+                subject: f.next().unwrap_or_default().to_string(),
+            })
+        })
+        .collect();
+    let has_more = commits.len() > limit as usize;
+    commits.truncate(limit as usize);
+    Ok(GitLog { commits, has_more })
+}
+
+fn status_sync(path: &str) -> Result<BranchStatus, String> {
+    let dir = folder(path)?;
+    let info = info_sync(path)?;
+    if !info.is_repo {
+        return Err(format!("{} is not a git repository.", dir.display()));
+    }
+    let branch = info.current;
+    let head = run(&dir, &["rev-parse", "--short", "--verify", "--quiet", "HEAD"]).ok();
+    let has_remote = !run(&dir, &["remote"])?.is_empty();
+    let counts = |range: &str| -> Option<(u32, u32)> {
+        let out = run(&dir, &["rev-list", "--left-right", "--count", range, "--"]).ok()?;
+        let (a, b) = out.split_once(char::is_whitespace)?;
+        Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+    };
+    let tracked = branch.as_ref().and_then(|b| {
+        let up = run(
+            &dir,
+            &["for-each-ref", "--format=%(upstream:short)", &format!("refs/heads/{b}")],
+        )
+        .ok()
+        .filter(|u| !u.is_empty())?;
+        // An upstream whose branch is gone from the remote counts as none.
+        let (ahead, behind) = counts(&format!("HEAD...{up}"))?;
+        Some((up, ahead, behind))
+    });
+    let (upstream, ahead, behind) = match tracked {
+        Some((up, a, b)) => (Some(up), a, b),
+        None if head.is_some() => {
+            let n = run(&dir, &["rev-list", "--count", "HEAD", "--not", "--remotes", "--"])?;
+            (None, n.parse().unwrap_or(0), 0)
+        }
+        None => (None, 0, 0),
+    };
+    let staged = run(&dir, &["diff", "--cached", "--name-only", "-z"])?
+        .split('\0')
+        .filter(|n| !n.is_empty())
+        .count() as u32;
+    Ok(BranchStatus {
+        branch,
+        head,
+        upstream,
+        has_remote,
+        ahead,
+        behind,
+        staged,
+    })
+}
+
+fn stage_sync(path: &str, files: &[String], stage: bool) -> Result<(), String> {
+    let dir = folder(path)?;
+    if files.is_empty() {
+        return Ok(());
+    }
+    let has_head = run(&dir, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok();
+    let mut args = vec!["--literal-pathspecs"];
+    args.extend(match (stage, has_head) {
+        (true, _) => vec!["add", "--"],
+        (false, true) => vec!["restore", "--staged", "--"],
+        (false, false) => vec!["rm", "--cached", "-q", "-r", "--"],
+    });
+    args.extend(files.iter().map(String::as_str));
+    run_write(&dir, &args, None).map(drop)
+}
+
+/// A file's diff as bytes, split into its header and its hunks (each hunk's `@@` line on).
+fn split_hunks(diff: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
+    let mut header = vec![];
+    let mut hunks: Vec<Vec<u8>> = vec![];
+    for line in diff.split_inclusive(|&b| b == b'\n') {
+        if line.starts_with(b"@@") {
+            hunks.push(vec![]);
+        }
+        match hunks.last_mut() {
+            Some(h) => h.extend_from_slice(line),
+            None => header.extend_from_slice(line),
+        }
+    }
+    (header, hunks)
+}
+
+fn stage_hunk_sync(
+    path: &str,
+    file: &str,
+    hunk: u32,
+    header: &str,
+    stage: bool,
+) -> Result<(), String> {
+    let dir = folder(path)?;
+    let tracked = run(&dir, &["ls-files", "--error-unmatch", "--", file]).is_ok();
+    if stage && !tracked {
+        return Err("A new file can only be staged whole.".into());
+    }
+    let mut args = vec!["--literal-pathspecs", "diff", "--no-renames"];
+    args.extend(DIFF_OPTS);
+    if !stage {
+        args.push("--cached");
+    }
+    args.extend(["--", file]);
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&dir)
+        .args(["-c", "core.quotePath=false", "-c", "diff.noprefix=false"])
+        .args(&args)
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    let (head, hunks) = split_hunks(&out.stdout);
+    let changed = "The file changed since it was shown; refresh and try again.";
+    let raw = hunks.get(hunk as usize).ok_or(changed)?;
+    if raw.split(|&b| b == b'\n').next() != Some(header.as_bytes()) {
+        return Err(changed.into());
+    }
+    let mut patch = head;
+    patch.extend_from_slice(raw);
+    let mut apply = vec!["apply", "--cached", "--whitespace=nowarn"];
+    if !stage {
+        apply.push("--reverse");
+    }
+    apply.push("-");
+    run_write(&dir, &apply, Some(&patch)).map(drop)
+}
+
+fn commit_sync(path: &str, message: &str) -> Result<CommitInfo, String> {
+    let dir = folder(path)?;
+    if message.trim().is_empty() {
+        return Err("Write a commit message.".into());
+    }
+    if status_sync(path)?.staged == 0 {
+        return Err("Nothing is staged to commit.".into());
+    }
+    run_write(&dir, &["commit", "--quiet", "-F", "-"], Some(message.as_bytes()))?;
+    log_sync(path, None, true, 0, 1)?
+        .commits
+        .pop()
+        .ok_or_else(|| "The commit was made, but can't be read back.".into())
+}
+
+/// Turns git's complaint from a failed push into something that says what to do.
+fn push_error(stderr: &str) -> String {
+    let has = |needles: &[&str]| needles.iter().any(|n| stderr.contains(n));
+    let summary = if has(&["[rejected]", "non-fast-forward", "fetch first", "stale info"]) {
+        "Rejected: the remote branch has commits this branch lacks. Bach never force-pushes; \
+         bring those commits in (merge or rebase) and push again."
+    } else if has(&[
+        "Permission denied",
+        "Authentication failed",
+        "could not read Username",
+        "could not read Password",
+        "terminal prompts disabled",
+        "Host key verification failed",
+        "Invalid username or password",
+        "access denied",
+        "The requested URL returned error: 403",
+    ]) {
+        "Not authorised: the machine running Bach couldn't log in to the remote. Check its SSH key or stored credentials."
+    } else if has(&["pre-receive hook declined", "protected branch", "remote rejected"]) {
+        "The remote refused the push."
+    } else if has(&["does not appear to be a git repository", "Repository not found", "not found"]) {
+        "The remote repository wasn't found. Check the remote's URL."
+    } else if has(&["Could not resolve host", "Connection refused", "Connection timed out", "unable to access", "Could not read from remote repository"]) {
+        "Couldn't reach the remote."
+    } else {
+        "The push failed."
+    };
+    format!("{summary}\n\n{stderr}")
+}
+
+fn push_sync(path: &str) -> Result<BranchStatus, String> {
+    let dir = folder(path)?;
+    let status = status_sync(path)?;
+    let branch = status
+        .branch
+        .ok_or("HEAD is detached: check out a branch to push it.")?;
+    if status.head.is_none() {
+        return Err("Nothing to push: the branch has no commits yet.".into());
+    }
+    if !status.has_remote {
+        return Err("This repository has no remote to push to. Add one (git remote add origin <url>) and try again.".into());
+    }
+    let config = |key: String| run(&dir, &["config", "--get", &key]).ok().filter(|v| !v.is_empty());
+    let own_ref = format!("refs/heads/{branch}");
+    let mut args: Vec<String> = vec!["push".into()];
+    match (
+        status.upstream.is_some(),
+        config(format!("branch.{branch}.remote")),
+        config(format!("branch.{branch}.merge")),
+    ) {
+        (true, Some(remote), Some(merge)) if remote != "." => {
+            args.extend([remote, format!("{own_ref}:{merge}")]);
+        }
+        _ => {
+            let remotes: Vec<String> = run(&dir, &["remote"])?.lines().map(str::to_string).collect();
+            let remote = config(format!("branch.{branch}.pushRemote"))
+                .or_else(|| config("remote.pushDefault".into()))
+                .filter(|r| remotes.contains(r))
+                .or_else(|| remotes.iter().find(|r| *r == "origin").cloned())
+                .or_else(|| (remotes.len() == 1).then(|| remotes[0].clone()))
+                .ok_or_else(|| {
+                    format!("Which remote? There are several ({}) and none is `origin`.", remotes.join(", "))
+                })?;
+            args.extend(["--set-upstream".into(), remote, format!("{own_ref}:{own_ref}")]);
+        }
+    }
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(&dir).args(&args);
+    // A prompt for a passphrase or host key can't be answered here.
+    if std::env::var_os("GIT_SSH_COMMAND").is_none() && config("core.sshCommand".into()).is_none() {
+        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    }
+    let out = cmd
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+    if !out.status.success() {
+        return Err(push_error(String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    status_sync(path)
 }
 
 /// A path from a `--- a/x` / `+++ b/x` line; None for `/dev/null`.
@@ -518,6 +942,7 @@ fn parse_diff(text: &str) -> Vec<FileDiff> {
                 old_path: None,
                 status: FileStatus::Modified,
                 untracked: false,
+                staged: false,
                 binary: false,
                 additions: 0,
                 deletions: 0,
@@ -869,7 +1294,7 @@ mod tests {
     fn diffs_uncommitted_and_branch_changes() {
         let (base, repo) = repo("diff");
         let path = repo.to_str().unwrap();
-        assert!(diff_sync(path, None).unwrap().files.is_empty());
+        assert!(diff_sync(path, None, None).unwrap().files.is_empty());
 
         std::fs::write(repo.join("a.txt"), "a\nb\n").unwrap();
         std::fs::write(repo.join("gone.txt"), "x\n").unwrap();
@@ -883,7 +1308,7 @@ mod tests {
         std::fs::remove_file(repo.join("gone.txt")).unwrap();
         std::fs::write(repo.join("new file.txt"), "n\n").unwrap();
 
-        let d = diff_sync(path, None).unwrap();
+        let d = diff_sync(path, None, None).unwrap();
         let by = |p: &str| d.files.iter().find(|f| f.path == p).unwrap();
         assert_eq!(d.files.len(), 3, "{:?}", d.files);
         let a = by("a.txt");
@@ -904,19 +1329,19 @@ mod tests {
         assert!(n.untracked && n.status == FileStatus::Added && n.additions == 1);
 
         // Against the branch it came from: the committed file shows up too.
-        let d = diff_sync(path, Some("main")).unwrap();
+        let d = diff_sync(path, Some("main"), None).unwrap();
         assert_eq!(d.files.len(), 4);
         assert!(d
             .files
             .iter()
             .any(|f| f.path == "c.txt" && f.status == FileStatus::Added));
-        assert!(diff_sync(path, Some("--all")).is_err());
-        assert!(diff_sync(path, Some("nope")).is_err());
+        assert!(diff_sync(path, Some("--all"), None).is_err());
+        assert!(diff_sync(path, Some("nope"), None).is_err());
 
         sh(&repo, &["add", "-A"]);
         sh(&repo, &["commit", "-q", "-m", "four"]);
         sh(&repo, &["mv", "c.txt", "d.txt"]);
-        let d = diff_sync(path, None).unwrap();
+        let d = diff_sync(path, None, None).unwrap();
         assert_eq!(d.files.len(), 1);
         assert_eq!(d.files[0].status, FileStatus::Renamed);
         assert_eq!(
@@ -946,8 +1371,171 @@ mod tests {
 
         // Its diff is everything there, against nothing.
         std::fs::write(base.join("a.txt"), "a\n").unwrap();
-        let d = diff_sync(path, None).unwrap();
+        let d = diff_sync(path, None, None).unwrap();
         assert!(d.base.is_none() && d.files.len() == 1 && d.files[0].untracked);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    fn numbered(n: usize, edits: &[(usize, &str)]) -> String {
+        (1..=n)
+            .map(|i| {
+                edits
+                    .iter()
+                    .find(|(l, _)| *l == i)
+                    .map_or(format!("line {i}"), |(_, t)| t.to_string())
+                    + "\n"
+            })
+            .collect()
+    }
+
+    #[test]
+    fn stages_files_and_single_hunks_then_commits() {
+        let (base, repo) = repo("stage");
+        let path = repo.to_str().unwrap();
+        std::fs::write(repo.join("f.txt"), numbered(30, &[])).unwrap();
+        sh(&repo, &["add", "."]);
+        sh(&repo, &["commit", "-q", "-m", "f"]);
+
+        // Two hunks far apart, plus a new file.
+        std::fs::write(repo.join("f.txt"), numbered(30, &[(2, "TWO"), (28, "TWENTY-EIGHT")])).unwrap();
+        std::fs::write(repo.join("new.txt"), "n\n").unwrap();
+        let d = diff_sync(path, None, None).unwrap();
+        assert!(d.staging && d.files.iter().all(|f| !f.staged));
+        let f = d.files.iter().find(|f| f.path == "f.txt").unwrap();
+        assert_eq!(f.hunks.len(), 2);
+
+        // Stage only the second hunk: the file shows up in both parts.
+        stage_hunk_sync(path, "f.txt", 1, &f.hunks[1].header, true).unwrap();
+        let d = diff_sync(path, None, None).unwrap();
+        let part = |staged| d.files.iter().find(|f| f.path == "f.txt" && f.staged == staged).unwrap();
+        assert!(part(true).hunks.len() == 1 && part(true).hunks[0].lines.iter().any(|l| l.text == "TWENTY-EIGHT"));
+        assert!(part(false).hunks.len() == 1 && part(false).hunks[0].lines.iter().any(|l| l.text == "TWO"));
+        assert_eq!(status_sync(path).unwrap().staged, 1);
+
+        // A stale hunk is refused, and so is a hunk of a new file.
+        assert!(stage_hunk_sync(path, "f.txt", 0, "@@ -9,9 +9,9 @@", true).unwrap_err().contains("changed"));
+        assert!(stage_hunk_sync(path, "new.txt", 0, "@@ -0,0 +1 @@", true).is_err());
+
+        // Unstage that hunk again, then stage the whole file and the new one.
+        let staged = part(true).hunks[0].header.clone();
+        stage_hunk_sync(path, "f.txt", 0, &staged, false).unwrap();
+        assert_eq!(status_sync(path).unwrap().staged, 0);
+        stage_sync(path, &["f.txt".into(), "new.txt".into()], true).unwrap();
+        let d = diff_sync(path, None, None).unwrap();
+        assert!(d.files.iter().all(|f| f.staged) && d.files.len() == 2);
+        stage_sync(path, &["new.txt".into()], false).unwrap();
+        assert!(diff_sync(path, None, None).unwrap().files.iter().any(|f| f.path == "new.txt" && f.untracked));
+
+        // Commit what is staged; the rest stays.
+        assert!(commit_sync(path, "  ").unwrap_err().contains("message"));
+        sh(&repo, &["config", "user.name", "t"]);
+        sh(&repo, &["config", "user.email", "t@t"]);
+        let c = commit_sync(path, "Edit f\n\nBody").unwrap();
+        assert_eq!(c.subject, "Edit f");
+        assert!(commit_sync(path, "again").unwrap_err().contains("Nothing is staged"));
+        let d = diff_sync(path, None, None).unwrap();
+        assert_eq!(d.files.len(), 1);
+        assert!(d.files[0].untracked);
+
+        // The commit's own diff.
+        let d = diff_sync(path, None, Some(&c.sha)).unwrap();
+        assert!(!d.staging && d.files.len() == 1 && d.files[0].hunks.len() == 2);
+        assert!(diff_sync(path, None, Some("--all")).is_err());
+        assert!(diff_sync(path, None, Some("abcdef0")).is_err());
+        // The first commit is shown against nothing.
+        let first = log_sync(path, None, true, 0, 50).unwrap().commits.pop().unwrap();
+        assert_eq!(diff_sync(path, None, Some(&first.sha)).unwrap().files[0].path, "a.txt");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn stages_in_a_repo_with_no_commits() {
+        let base = std::env::temp_dir().join(format!("bach-git-stage-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        sh(&base, &["init", "-q", "-b", "main"]);
+        let path = base.to_str().unwrap();
+        std::fs::write(base.join("a.txt"), "a\n").unwrap();
+        stage_sync(path, &["a.txt".into()], true).unwrap();
+        assert_eq!(status_sync(path).unwrap().staged, 1);
+        stage_sync(path, &["a.txt".into()], false).unwrap();
+        assert_eq!(status_sync(path).unwrap().staged, 0);
+        assert!(log_sync(path, None, true, 0, 50).unwrap().commits.is_empty());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn lists_the_branch_commits_then_older_ones() {
+        let (base, repo) = repo("log");
+        let path = repo.to_str().unwrap();
+        sh(&repo, &["switch", "-q", "-c", "feature"]);
+        for n in 1..=3 {
+            std::fs::write(repo.join(format!("{n}.txt")), "x").unwrap();
+            sh(&repo, &["add", "."]);
+            sh(&repo, &["commit", "-q", "-m", &format!("feature {n}")]);
+        }
+        let own = log_sync(path, Some("main"), false, 0, 2).unwrap();
+        assert_eq!(own.commits.len(), 2);
+        assert!(own.has_more && own.commits[0].subject == "feature 3");
+        let rest = log_sync(path, Some("main"), false, 2, 2).unwrap();
+        assert!(!rest.has_more && rest.commits.len() == 1);
+
+        let all = log_sync(path, Some("main"), true, 0, 50).unwrap();
+        let flags: Vec<_> = all.commits.iter().map(|c| c.on_branch).collect();
+        assert_eq!(flags, [true, true, true, false]);
+        assert!(log_sync(path, Some("nope"), false, 0, 1).is_err());
+        assert!(log_sync(path, None, false, 0, 50).unwrap().commits.iter().all(|c| c.on_branch));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn pushes_with_upstream_and_reports_problems() {
+        let (base, repo) = repo("push");
+        let path = repo.to_str().unwrap();
+        sh(&repo, &["switch", "-q", "-c", "feature"]);
+
+        // No remote at all.
+        let err = push_sync(path).unwrap_err();
+        assert!(err.contains("no remote"), "{err}");
+        assert!(!status_sync(path).unwrap().has_remote);
+
+        let remote = base.join("remote.git");
+        sh(&base, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
+        sh(&repo, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        let s = status_sync(path).unwrap();
+        assert!(s.has_remote && s.upstream.is_none() && s.ahead == 1);
+
+        // First push sets the upstream.
+        let s = push_sync(path).unwrap();
+        assert_eq!((s.upstream.as_deref(), s.ahead, s.behind), (Some("origin/feature"), 0, 0));
+
+        std::fs::write(repo.join("b.txt"), "b").unwrap();
+        sh(&repo, &["add", "."]);
+        sh(&repo, &["commit", "-q", "-m", "two"]);
+        assert_eq!(status_sync(path).unwrap().ahead, 1);
+        let s = push_sync(path).unwrap();
+        assert_eq!((s.ahead, s.behind), (0, 0));
+
+        // Someone else pushes to the branch: ours is rejected, and nothing is forced.
+        let other = base.join("other");
+        sh(&base, &["clone", "-q", "-b", "feature", remote.to_str().unwrap(), other.to_str().unwrap()]);
+        std::fs::write(other.join("o.txt"), "o").unwrap();
+        sh(&other, &["add", "."]);
+        sh(&other, &["commit", "-q", "-m", "theirs"]);
+        sh(&other, &["push", "-q"]);
+        std::fs::write(repo.join("c.txt"), "c").unwrap();
+        sh(&repo, &["add", "."]);
+        sh(&repo, &["commit", "-q", "-m", "three"]);
+        let err = push_sync(path).unwrap_err();
+        assert!(err.starts_with("Rejected"), "{err}");
+        sh(&repo, &["fetch", "-q"]);
+        let s = status_sync(path).unwrap();
+        assert_eq!((s.ahead, s.behind), (1, 1));
+
+        // An unreachable remote.
+        sh(&repo, &["remote", "set-url", "origin", base.join("missing.git").to_str().unwrap()]);
+        let err = push_sync(path).unwrap_err();
+        assert!(err.contains("remote") || err.contains("Couldn't"), "{err}");
         let _ = std::fs::remove_dir_all(base);
     }
 }
