@@ -3,7 +3,7 @@
 // transcript renders.
 import type { AgentEvent, AgentKind, Decision, DeltaKind, Entry, LogEntry, Session } from "./api";
 
-export type Block =
+export type Block = (
   | { kind: "user"; text: string; /** Sent with it, as `data:` URLs. */ images?: string[] }
   | { kind: "text"; text: string }
   /** `streaming`: still being written (a live draft, not from the transcript). */
@@ -11,7 +11,11 @@ export type Block =
   | ToolBlock
   | ApprovalBlock
   | { kind: "error"; text: string; /** The message that failed to start, so Retry resends that one. */ retryText?: string }
-  | { kind: "note"; text: string };
+  | { kind: "note"; text: string }
+) & {
+  /** The transcript entry it came from (top-level blocks), to find a search hit's block. */
+  seq?: number;
+};
 
 /** Progress of a sub-agent or background task started by a tool call. */
 export interface TaskInfo {
@@ -227,10 +231,21 @@ export function applyEntries(t: Transcript, entries: LogEntry[]): Transcript {
   let { blocks, seq } = t;
   for (const e of entries) {
     if (e.seq <= seq) continue;
+    const before = blocks.length;
     blocks = applyEntry(blocks, e.entry, e.at);
+    if (blocks.length > before) blocks = blocks.map((b, i) => (i < before ? b : { ...b, seq: e.seq }));
     seq = e.seq;
   }
   return { blocks, seq };
+}
+
+/** The block a transcript entry is shown in: the latest one that began at or before it. */
+export function blockOfEntry(blocks: Block[], seq: number): number {
+  let found = -1;
+  blocks.forEach((b, i) => {
+    if (b.seq === undefined || b.seq <= seq) found = i;
+  });
+  return found;
 }
 
 export const emptyTranscript: Transcript = { blocks: [], seq: 0 };

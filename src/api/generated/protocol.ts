@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "f58a6a4ced3f30f5";
+export const PROTOCOL = "34b418d055a4504e";
 
 /**
  * Agent-independent events the UI renders.
@@ -687,6 +687,54 @@ export type ResizeTerminalArgs = { terminalId: string, cols: number, rows: numbe
 export type RunOutcome = "done" | "failed";
 
 /**
+ * A transcript entry that matches a search.
+ */
+export type SearchHit = { 
+/**
+ * The matching entry's `seq`.
+ */
+seq: number, kind: SearchKind, 
+/**
+ * A short stretch of the entry around the match.
+ */
+snippet: Array<SnippetPart>, };
+
+/**
+ * What a search hit is part of.
+ */
+export type SearchKind = "user" | "agent" | "tool";
+
+/**
+ * What a search found in one session.
+ */
+export type SearchResult = { sessionId: string, 
+/**
+ * The session's title matches the query.
+ */
+titleMatch: boolean, 
+/**
+ * The best matches in its transcript, best first (a few, not all).
+ */
+hits: Array<SearchHit>, 
+/**
+ * How many transcript entries match in all.
+ */
+hitCount: number, };
+
+/**
+ * Finds sessions, in every project and archived ones too, whose title or transcript (what the
+ * user and the agent said, and the inputs of the agent's tool calls) contains all the words of
+ * `query`, each anywhere in a word ("sock" finds "websocket"); the transcript is searched only when
+ * a word has 3+ characters, titles always. Sessions whose title matches come first, then the
+ * most recently active. Each comes with its best matching entries, to show and open.
+ */
+export type SearchSessionsArgs = { query: string, 
+/**
+ * At most this many sessions (default 30).
+ */
+limit?: number, };
+
+/**
  * Sends a message to a session's agent; while it is busy, the message is queued instead.
  */
 export type SendMessageArgs = { sessionId: string, prompt: string, 
@@ -815,6 +863,11 @@ export type SessionEvent = { "type": "changed", session: Session, } | { "type": 
  * A session with (part of) its transcript.
  */
 export type SessionLog = { session: Session, entries: Array<LogEntry>, };
+
+/**
+ * A piece of a snippet: `matched` ones are what the query found.
+ */
+export type SnippetPart = { text: string, matched: boolean, };
 
 /**
  * Creates a session and sends its first message. Readies where it runs first: switches `cwd` to
@@ -1075,6 +1128,14 @@ export type Commands = {
    * A session and its transcript, or only the entries after `afterSeq`.
    */
   get_session: { args: GetSessionArgs; output: SessionLog };
+  /**
+   * Finds sessions, in every project and archived ones too, whose title or transcript (what the
+   * user and the agent said, and the inputs of the agent's tool calls) contains all the words of
+   * `query`, each anywhere in a word ("sock" finds "websocket"); the transcript is searched only when
+   * a word has 3+ characters, titles always. Sessions whose title matches come first, then the
+   * most recently active. Each comes with its best matching entries, to show and open.
+   */
+  search_sessions: { args: SearchSessionsArgs; output: Array<SearchResult> };
   /**
    * Creates a session and sends its first message. Readies where it runs first: switches `cwd` to
    * `branch`, or (with `worktree`) creates a new branch from it in an isolated worktree. Nothing is

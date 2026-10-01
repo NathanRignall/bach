@@ -521,6 +521,10 @@ impl Handler for Api {
         self.sessions.list()
     }
 
+    async fn search_sessions(&self, a: SearchSessionsArgs) -> Result<Vec<SearchResult>, ApiError> {
+        self.sessions.search(&a.query, a.limit.map_or(30, |n| n as usize))
+    }
+
     async fn get_session(&self, a: GetSessionArgs) -> Result<SessionLog, ApiError> {
         Ok(SessionLog {
             session: self.sessions.get(&a.session_id)?,

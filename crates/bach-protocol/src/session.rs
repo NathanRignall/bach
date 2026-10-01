@@ -157,6 +157,49 @@ pub struct SessionLog {
     pub entries: Vec<LogEntry>,
 }
 
+/// What a search found in one session.
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    pub session_id: String,
+    /// The session's title matches the query.
+    pub title_match: bool,
+    /// The best matches in its transcript, best first (a few, not all).
+    pub hits: Vec<SearchHit>,
+    /// How many transcript entries match in all.
+    pub hit_count: u32,
+}
+
+/// A transcript entry that matches a search.
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    /// The matching entry's `seq`.
+    pub seq: u64,
+    pub kind: SearchKind,
+    /// A short stretch of the entry around the match.
+    pub snippet: Vec<SnippetPart>,
+}
+
+/// What a search hit is part of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchKind {
+    /// A message from the user.
+    User,
+    /// A reply from the agent.
+    Agent,
+    /// The input of a tool call the agent made.
+    Tool,
+}
+
+/// A piece of a snippet: `matched` ones are what the query found.
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+pub struct SnippetPart {
+    pub text: String,
+    pub matched: bool,
+}
+
 /// A change to sessions, pushed to every client.
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]

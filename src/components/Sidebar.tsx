@@ -10,6 +10,7 @@ import { groupByProject, projectKey, projectName, sessionStatus } from "@/sessio
 import { AgentDot } from "./AgentBadge";
 import { ConnectionPicker } from "./ConnectionPicker";
 import { ResizeHandle } from "./ResizeHandle";
+import { SessionSearch } from "./SessionSearch";
 
 export const SIDEBAR_WIDTH = { default: 256, min: 200, max: 480 };
 
@@ -17,7 +18,10 @@ interface Props {
   sessions: Session[];
   activeId?: string;
   collapsed: Set<string>;
-  onSelect: (id: string) => void;
+  /** Opens a session, at a transcript entry when given. */
+  onSelect: (id: string, seq?: number) => void;
+  /** Changes when something (the shortcut) asks for the search field. */
+  searchFocus: number;
   onNew: () => void;
   onNewInProject: (cwd: string, agent: Session["agent"]) => void;
   onToggleProject: (key: string) => void;
@@ -32,7 +36,7 @@ interface Props {
   onWidth: (w: number) => void;
 }
 
-export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewInProject, onToggleProject, onArchive, onDelete, onRename, onOpenCleanup, tasks, onToggleTasks, onOpenSettings, width, onWidth }: Props) {
+export function Sidebar({ sessions, activeId, collapsed, onSelect, searchFocus, onNew, onNewInProject, onToggleProject, onArchive, onDelete, onRename, onOpenCleanup, tasks, onToggleTasks, onOpenSettings, width, onWidth }: Props) {
   // Tasks only agents use (not interactive) are hidden from the panel by default, so not counted.
   const runningTasks = tasks.filter((t) => t.status === "running" && t.interactive).length;
   const [showArchived, setShowArchived] = useState(false);
@@ -59,6 +63,7 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
         New session
       </Button>
 
+      <SessionSearch sessions={sessions} activeId={activeId} onOpen={onSelect} focusSignal={searchFocus}>
       <nav className="-mx-1 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-1">
         {groupByProject(live).map(([key, group]) => {
           const open = !collapsed.has(key) || group.some((s) => s.id === activeId);
@@ -172,6 +177,7 @@ export function Sidebar({ sessions, activeId, collapsed, onSelect, onNew, onNewI
           </Collapsible>
         )}
       </nav>
+      </SessionSearch>
 
       <div className="flex flex-col gap-3 border-t pt-3">
         <Button variant="ghost" size="sm" className="justify-start text-muted-foreground" onClick={onToggleTasks}>
