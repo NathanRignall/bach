@@ -155,6 +155,9 @@ events are appended to the transcript, which the frontend folds into blocks:
 - The model each run reports is shown in the session header. Context usage and the account's
   5-hour and weekly limits come from Claude Code's `rate_limit_event` and message usage, so they
   are as of the latest run on that backend.
+- Where a build has a budget source (`bach_core::budget`; none is built in), the usage popover also
+  shows the spend against an LLM API budget, looked up every 10 minutes and after runs finish (at
+  most once a minute).
 
 ## Approvals
 

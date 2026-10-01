@@ -8,7 +8,7 @@
 //! arguments are a struct named after it with an `Args` suffix; its doc comment documents the
 //! command.
 use crate::{
-    AgentInfo, AgentKind, ApiError, ModelInfo, Decision, DirListing, FileContent, FileList, GitDiff, GitInfo, GitLog, BranchStatus, CommitInfo, PlanUsage, SearchResult, Session,
+    AgentInfo, AgentKind, ApiError, BudgetUsage, ModelInfo, Decision, DirListing, FileContent, FileList, GitDiff, GitInfo, GitLog, BranchStatus, CommitInfo, PlanUsage, SearchResult, Session,
     SessionLog, TerminalInfo, TerminalSnapshot, WorktreeEntry,
 };
 use bach_tasks_protocol::{
@@ -91,6 +91,7 @@ commands! {
     list_agents(ListAgentsArgs) -> Vec<AgentInfo>;
     list_models(ListModelsArgs) -> Vec<ModelInfo>;
     get_usage(GetUsageArgs) -> Option<PlanUsage>;
+    get_budget(GetBudgetArgs) -> Option<BudgetUsage>;
 
     list_sessions(ListSessionsArgs) -> Vec<Session>;
     get_session(GetSessionArgs) -> SessionLog;
@@ -163,6 +164,10 @@ pub struct ListModelsArgs {
 /// The account's usage limits as last reported by an agent run (none before the first run).
 #[derive(Debug, Default, Deserialize, TS)]
 pub struct GetUsageArgs {}
+
+/// The account's API budget as last looked up (none where there's no way to look it up).
+#[derive(Debug, Default, Deserialize, TS)]
+pub struct GetBudgetArgs {}
 
 /// Every session, most recently active first (without transcripts).
 #[derive(Debug, Default, Deserialize, TS)]

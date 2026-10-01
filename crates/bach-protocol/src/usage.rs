@@ -34,3 +34,18 @@ pub struct ContextUsage {
     /// The model's context window, once the agent has reported it.
     pub window: Option<u64>,
 }
+
+/// What the account has spent through its LLM API endpoint against its budget, for agents run
+/// through a proxy that keeps one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetUsage {
+    /// Spent this budget period, in US dollars.
+    pub spend: f64,
+    /// The budget, in US dollars; none if unlimited.
+    pub max_budget: Option<f64>,
+    /// When the budget resets (ms since the epoch).
+    pub resets_at: Option<i64>,
+    /// When this was looked up (ms since the epoch).
+    pub observed_at: i64,
+}

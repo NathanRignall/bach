@@ -30,7 +30,7 @@ import { TASKS_WIDTH, TaskLogView, TasksPanel, useTasks } from "@/components/Tas
 import { useForwarding } from "@/components/Ports";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { TerminalPanel } from "@/components/TerminalPanel";
-import { UsageIndicator, usePlanUsage } from "@/components/UsageIndicator";
+import { UsageIndicator, useBudget, usePlanUsage } from "@/components/UsageIndicator";
 import { Composer } from "@/components/Composer";
 import { NewSessionPage } from "@/components/NewSessionPage";
 import { SessionHeader, SessionView } from "@/components/SessionHeader";
@@ -105,6 +105,7 @@ export function App() {
   const tasks = useTasks();
   const forwarding = useForwarding();
   const planUsage = usePlanUsage();
+  const budget = useBudget();
   // Transcripts of the sessions opened so far. Kept in a ref so event handlers see the latest
   // `seq` (to spot gaps); `rerender` shows changes.
   const transcripts = useRef(new Map<string, Transcript>());
@@ -542,7 +543,7 @@ export function App() {
             starting={starting}
             recentProjects={recentProjects}
             onChange={(p) => setNewDraft((d) => ({ ...d, ...p }))}
-            indicator={<UsageIndicator usage={planUsage} />}
+            indicator={<UsageIndicator usage={planUsage} budget={budget} />}
             error={connectionError}
             paused={paused}
           />
@@ -656,7 +657,7 @@ export function App() {
                 cwd={active.workdir ?? active.cwd}
                 agentLocked
                 onAgent={() => {}}
-                indicator={<UsageIndicator context={active.context} usage={planUsage} />}
+                indicator={<UsageIndicator context={active.context} usage={planUsage} budget={budget} />}
                 modelChoice={active.modelChoice ?? undefined}
                 onModel={(modelChoice) => void update({ sessionId: active.id, modelChoice })}
                 effort={active.effort ?? undefined}

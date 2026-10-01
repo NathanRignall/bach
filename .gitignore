@@ -5,3 +5,4 @@ target
 result
 .playwright-mcp
 src-tauri/gen
+patches

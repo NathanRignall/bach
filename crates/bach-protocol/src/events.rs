@@ -1,4 +1,4 @@
-use crate::{PlanUsage, SessionEvent, TerminalEvent};
+use crate::{BudgetUsage, PlanUsage, SessionEvent, TerminalEvent};
 use bach_tasks_protocol::TaskEvent;
 use serde::Serialize;
 use ts_rs::TS;
@@ -12,5 +12,7 @@ pub enum ServerEvent {
     Task(TaskEvent),
     /// New readings of the account's usage limits.
     Usage(PlanUsage),
+    /// A new look-up of the account's API budget.
+    Budget(BudgetUsage),
     Terminal(TerminalEvent),
 }
