@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "34b418d055a4504e";
+export const PROTOCOL = "ee0bd272eafe0a9d";
 
 /**
  * Agent-independent events the UI renders.
@@ -911,6 +911,15 @@ export type SessionEvent = { "type": "changed", session: Session, } | { "type": 
  * A session with (part of) its transcript.
  */
 export type SessionLog = { session: Session, entries: Array<LogEntry>, };
+
+/**
+ * The session a session was made from. The source may have been deleted since.
+ */
+export type SessionOrigin = { kind: OriginKind, sessionId: string, 
+/**
+ * For a fork: `seq` of the user message it was forked before.
+ */
+seq: number | null, };
 
 /**
  * A piece of a snippet: `matched` ones are what the query found.
