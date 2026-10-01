@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { ArrowDown, PanelLeft, ShieldAlert } from "lucide-react";
 import {
   AgentInfo,
@@ -23,7 +23,8 @@ import {
   stopSession,
   updateSession,
 } from "@/api";
-import { BlockView, TranscriptContext } from "@/components/Transcript";
+import { BlockPlace, BlockView, TranscriptContext } from "@/components/Transcript";
+import { ImageLinks } from "@/lib/imageLinks";
 import { WorktreeCleanup } from "@/components/WorktreeCleanup";
 import { TASKS_WIDTH, TaskLogView, TasksPanel, useTasks } from "@/components/TasksPanel";
 import { useForwarding } from "@/components/Ports";
@@ -80,6 +81,8 @@ export function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   /** The open session; none means the create page. */
   const [activeId, setActiveId] = useState<string>();
+  // A fresh set per session: images only link within the transcript they're in.
+  const imageLinks = useMemo(() => new ImageLinks(), [activeId]);
   /** What the create page is setting up. */
   const [newDraft, setNewDraft] = useState<NewSession>(() => newSession("claude"));
   const [draft, setDraft] = useState("");
@@ -436,6 +439,10 @@ export function App() {
   const running = !!active?.runId;
   // Approvals left open by a run that is over (e.g. the backend restarted) can't be answered.
   const blocks = running ? (transcript?.blocks ?? []) : expireApprovals(transcript?.blocks ?? []);
+  // Each block's turn (the user's messages so far), so images are only linked within one turn.
+  const turns: number[] = [];
+  for (const b of blocks) turns.push((turns[turns.length - 1] ?? 0) + (b.kind === "user" ? 1 : 0));
+  const lastTurn = turns[turns.length - 1] ?? 0;
   const recentProjects = groupByProject(sessions)
     .map(([key]) => key)
     .filter((k) => k && k !== newDraft.cwd.trim())
@@ -537,6 +544,7 @@ export function App() {
                 showTask: (id) => (setTasksOpen(true), setViewingTask({ id })),
                 showSession: setActiveId,
                 inRepo: !!active.gitBranch,
+                images: imageLinks,
               }}
             >
             <div className="relative min-h-0 flex-1">
@@ -550,11 +558,17 @@ export function App() {
                   {blocks.map((b, i) => (
                     // Takes no space of its own; it only lets a search hit find the block.
                     <div key={i} data-block={i} className="contents">
-                      <BlockView block={b} live={running} />
+                      <BlockPlace.Provider value={{ turn: turns[i], index: i }}>
+                        <BlockView block={b} live={running} />
+                      </BlockPlace.Provider>
                     </div>
                   ))}
                   {running && live.thinking && <BlockView block={{ kind: "thinking", text: live.thinking.text, streaming: true }} live />}
-                  {running && live.text && <BlockView block={{ kind: "text", text: live.text.text }} live />}
+                  {running && live.text && (
+                    <BlockPlace.Provider value={{ turn: lastTurn, index: blocks.length }}>
+                      <BlockView block={{ kind: "text", text: live.text.text }} live />
+                    </BlockPlace.Provider>
+                  )}
                   {(running || starting) &&
                     (awaitingApproval(active) ? (
                       <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">

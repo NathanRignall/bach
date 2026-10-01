@@ -1,7 +1,7 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useId, useState, useSyncExternalStore } from "react";
 import Markdown, { type Components, defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, Cog, EyeOff, Folder, GitBranch, ImageOff, Network, MessageSquarePlus, RotateCcw, ScrollText, ServerCog, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
+import { AlertCircle, ArrowDown, ArrowUp, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, Cog, EyeOff, Folder, GitBranch, ImageOff, Network, MessageSquarePlus, RotateCcw, ScrollText, ServerCog, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
 import { AgentKind, Decision, Forwarding, TaskView, readImage } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { describe } from "@/lib/attachments";
+import { ImageLinks, Place, reveal } from "@/lib/imageLinks";
 import { cn } from "@/lib/utils";
 import { FileChip } from "@/components/FileChip";
 import { PortLink } from "@/components/Ports";
@@ -34,8 +35,22 @@ export interface TranscriptActions {
   showSession?: (id: string) => void;
   /** The session works in a git repository (so sessions it starts get worktrees by default). */
   inRepo?: boolean;
+  /** The images shown so far, so a tool's image and the same one in the reply can point at each other. */
+  images?: ImageLinks;
 }
 export const TranscriptContext = createContext<TranscriptActions>({ decide: async () => {} });
+
+/** Where the block being shown sits in the transcript; unset outside one (no linking then). */
+export const BlockPlace = createContext<Place | undefined>(undefined);
+
+/** Re-renders when the transcript's images change, so links appear as their other half loads. */
+function useImageLinks(): ImageLinks | undefined {
+  const { images } = useContext(TranscriptContext);
+  useSyncExternalStore(images?.subscribe ?? noSubscribe, images?.snapshot ?? noSnapshot);
+  return images;
+}
+const noSubscribe = () => () => {};
+const noSnapshot = () => 0;
 
 
 const summaryClass =
@@ -158,11 +173,11 @@ function Images({ images, alt, className, thumbClass = "max-h-72" }: { images: s
 }
 
 /** One image, click to see it full size. Only inline elements, so it can sit in a paragraph. */
-function Thumbnail({ src, alt, thumbClass, onError }: { src: string; alt: string; thumbClass: string; onError?: () => void }) {
+function Thumbnail({ src, alt, thumbClass, onError, id }: { src: string; alt: string; thumbClass: string; onError?: () => void; id?: string }) {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <button onClick={() => setOpen(true)} title="View full size" className="not-prose inline-block overflow-hidden rounded-lg border bg-muted align-top">
+      <button id={id} onClick={() => setOpen(true)} title="View full size" className="not-prose inline-block overflow-hidden rounded-lg border bg-muted align-top transition-shadow">
         <img src={src} alt={alt} onError={onError} className={cn("block max-w-full object-contain", thumbClass)} />
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
@@ -220,7 +235,58 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
       </span>
     );
   if (!url) return <Spinner className="inline-block size-4 align-middle" />;
-  return <Thumbnail src={url} alt={alt ?? ""} thumbClass="max-h-72" onError={() => setFailed(true)} />;
+  return <ReplyImage src={url} alt={alt ?? ""} onError={() => setFailed(true)} />;
+}
+
+/** An image in the agent's reply, with a link back to the tool call that showed it first, if one did. */
+function ReplyImage({ src, alt, onError }: { src: string; alt: string; onError: () => void }) {
+  const anchor = `img-${useId()}`;
+  const place = useContext(BlockPlace);
+  const links = useImageLinks();
+  useEffect(() => (place ? links?.add("reply", src, { place, anchor }) : undefined), [links, src, place?.turn, place?.index, anchor]);
+  const viewed = place && links?.viewedIn(src, place);
+  const thumb = <Thumbnail id={anchor} src={src} alt={alt} thumbClass="max-h-72" onError={onError} />;
+  if (!viewed) return thumb;
+  return (
+    <span className="not-prose inline-flex max-w-full flex-col items-start gap-1 align-top">
+      {thumb}
+      <button onClick={() => reveal(viewed.anchor)} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+        <ArrowUp className="size-3" />
+        Viewed with <span className="font-medium">{viewed.tool}</span>
+      </button>
+    </span>
+  );
+}
+
+/**
+ * The images a tool returned. One the agent then also showed in its reply shrinks to a small
+ * thumbnail that points there, since the reply is where it was meant to be seen.
+ */
+function ToolImages({ images, tool, id }: { images: string[]; tool: string; id: string }) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {images.map((src, i) => (
+        <ToolImage key={i} src={src} tool={tool} anchor={`tool-img-${id}-${i}`} />
+      ))}
+    </div>
+  );
+}
+
+function ToolImage({ src, tool, anchor }: { src: string; tool: string; anchor: string }) {
+  const place = useContext(BlockPlace);
+  const links = useImageLinks();
+  useEffect(() => (place ? links?.add("tool", src, { place, anchor, tool }) : undefined), [links, src, place?.turn, place?.index, anchor, tool]);
+  const shown = place && links?.shownIn(src, place);
+  if (!shown) return <Thumbnail id={anchor} src={src} alt={`Image from ${tool}`} thumbClass="max-h-72" />;
+  return (
+    <div className="flex items-center gap-2">
+      <Thumbnail id={anchor} src={src} alt={`Image from ${tool}`} thumbClass="max-h-14" />
+      <button onClick={() => reveal(shown.anchor)} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+        <ArrowDown className="size-3" />
+        Shown in reply
+      </button>
+    </div>
+  );
 }
 
 function ToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
@@ -257,7 +323,7 @@ function ToolCard({ block, live }: { block: ToolBlock; live: boolean }) {
       </CollapsibleContent>
     </Collapsible>
     {partial && <pre className={preClass + " mt-2 max-h-32"} aria-label="Output so far">{partial}</pre>}
-    {!!block.images?.length && <Images images={block.images} alt={`Image from ${toolLabel(block.name)}`} className="mt-2" />}
+    {!!block.images?.length && <ToolImages images={block.images} tool={toolLabel(block.name)} id={block.id} />}
     </div>
   );
 }
