@@ -166,6 +166,27 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
+/// The images in an MCP tool's result content as `data:` URLs (a browser tool's screenshot).
+fn mcp_images(content: &[Value]) -> Vec<String> {
+    content
+        .iter()
+        .filter(|c| c["type"] == "image")
+        .filter_map(|c| {
+            let mime = c["mimeType"].as_str()?;
+            let data = c["data"].as_str()?;
+            mime.starts_with("image/").then(|| format!("data:{mime};base64,{data}"))
+        })
+        .collect()
+}
+
+/// An `imageView` item's path, which may be a `file://` URL, as a plain path.
+fn image_path(path: &str) -> String {
+    match path.strip_prefix("file://") {
+        Some(p) => crate::attachments::percent_decode(p),
+        None => path.to_string(),
+    }
+}
+
 /// The prompt, and where to find the attachments Codex can't take as images (PDFs, text files):
 /// it reads them itself.
 fn prompt_text(prompt: &str, files: &[SavedFile]) -> String {
@@ -596,13 +617,12 @@ impl Conversation {
             }],
             ("item/completed", Some("mcpToolCall")) => {
                 let failed = !item["error"].is_null() || item["status"] == "failed";
+                let content = item["result"]["content"].as_array().map(Vec::as_slice).unwrap_or_default();
                 let output = if failed {
                     item["error"]["message"].as_str().unwrap_or("failed").to_string()
                 } else {
-                    item["result"]["content"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
+                    content
+                        .iter()
                         .filter_map(|c| c["text"].as_str())
                         .collect::<Vec<_>>()
                         .join("\n")
@@ -611,9 +631,27 @@ impl Conversation {
                     id,
                     output,
                     is_error: failed,
-                    images: vec![],
+                    images: if failed { vec![] } else { mcp_images(content) },
                     parent: None,
                 }]
+            }
+            // Codex looking at an image file (its `view_image` tool), shown as Claude's `Read` of
+            // one is: with the image. Only its path is given, so the image is read from there.
+            ("item/completed", Some("imageView")) => {
+                let path = image_path(&s(&item["path"]));
+                let (output, images, is_error) = match crate::fs::read_image(&path) {
+                    Ok(url) => (String::new(), vec![url], false),
+                    Err(e) => (e.message, vec![], true),
+                };
+                vec![
+                    AgentEvent::ToolUse {
+                        id: id.clone(),
+                        name: "View image".into(),
+                        input: json!({ "path": path }),
+                        parent: None,
+                    },
+                    AgentEvent::ToolResult { id, output, is_error, images, parent: None },
+                ]
             }
             // A plan mode turn's plan is its answer.
             ("item/completed", Some("agentMessage" | "plan")) => {
@@ -1211,6 +1249,35 @@ mod tests {
         let r: Value = serde_json::from_str(&replies[0]).unwrap();
         assert_eq!(r["id"], 3);
         assert_eq!(r["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn viewed_images_and_mcp_screenshots_are_shown() {
+        let mut c = conversation(&[]);
+        let dir = std::env::temp_dir().join(format!("bach codex-image-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("shot.png");
+        std::fs::write(&file, b"png").unwrap();
+        let url = format!("file://{}", file.display()).replace(' ', "%20");
+        let item = json!({ "type": "imageView", "id": "v1", "path": url });
+        let (ev, _) = c.on_line(&json!({ "method": "item/completed", "params": { "item": item } }));
+        match &ev[..] {
+            [AgentEvent::ToolUse { id, name, input, .. }, AgentEvent::ToolResult { id: rid, images, is_error: false, .. }] => {
+                assert_eq!((id.as_str(), name.as_str(), rid.as_str()), ("v1", "View image", "v1"));
+                assert_eq!(input["path"], file.display().to_string());
+                assert_eq!(images, &["data:image/png;base64,cG5n"]);
+            }
+            other => panic!("{other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+
+        let item = json!({ "type": "mcpToolCall", "id": "m1", "status": "completed", "result": { "content": [
+            { "type": "text", "text": "shot" },
+            { "type": "image", "mimeType": "image/png", "data": "AAAA" },
+        ] } });
+        let (ev, _) = c.on_line(&json!({ "method": "item/completed", "params": { "item": item } }));
+        assert!(matches!(&ev[..], [AgentEvent::ToolResult { output, images, .. }]
+            if output == "shot" && images == &["data:image/png;base64,AAAA"]));
     }
 
     #[test]
