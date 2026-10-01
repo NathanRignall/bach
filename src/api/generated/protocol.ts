@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "0fa925a67cc255d8";
+export const PROTOCOL = "d2310969751c3bdd";
 
 /**
  * Agent-independent events the UI renders.
@@ -47,7 +47,12 @@ export type AgentWrapper = { command: string,
  * wrapper's sandbox is the only one (many can't have Codex's inside them), and Codex's modes
  * are kept by asking instead (see [`AgentInfo::permission_modes`]).
  */
-codexSandbox: boolean, };
+codexSandbox: boolean, 
+/**
+ * A command background tasks are started through, taking `sh -c <command>` after it
+ * (`BACH_TASK_WRAPPER`); `""` starts them directly.
+ */
+taskCommand: string, };
 
 /**
  * Answers an approval request (or a question) the session's agent is waiting on.

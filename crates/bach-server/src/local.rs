@@ -160,13 +160,13 @@ fn lock_holders(paths: &Paths) -> Vec<i32> {
         .collect()
 }
 
-/// The agent wrapper settings (see `bach_core::wrapper`) process `pid` was started with.
+/// The agent and task wrapper settings (see `bach_core::wrapper`) process `pid` was started with.
 fn wrapper_env(pid: i32) -> Vec<(String, String)> {
     let environ = std::fs::read(format!("/proc/{pid}/environ")).unwrap_or_default();
     environ
         .split(|b| *b == 0)
         .filter_map(|kv| std::str::from_utf8(kv).ok()?.split_once('='))
-        .filter(|(k, _)| k.starts_with("BACH_AGENT_WRAPPER"))
+        .filter(|(k, _)| k.starts_with("BACH_AGENT_WRAPPER") || *k == "BACH_TASK_WRAPPER")
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect()
 }
@@ -178,15 +178,22 @@ fn server_running(paths: &Paths) -> bool {
 
 /// Stops the running server, if any, and starts this binary's in its place: how a server left
 /// running from an older build gets replaced. Agent turns in progress end with it; background
-/// tasks don't (bach-tasks detaches them). The new server keeps the old one's agent wrapper unless
-/// we were given one (`BACH_AGENT_WRAPPER`): a restart never takes a wrapper away.
+/// tasks don't (bach-tasks detaches them). The new server keeps the old one's agent and task
+/// wrappers unless we were given them (`BACH_AGENT_WRAPPER`, `BACH_TASK_WRAPPER`): a restart never
+/// takes a wrapper away.
 pub async fn restart(paths: &Paths) -> Result<(), String> {
     let mut env = vec![];
     if server_running(paths) {
         let holders = lock_holders(paths);
-        if std::env::var_os("BACH_AGENT_WRAPPER").is_none() {
-            env = holders.first().map(|pid| wrapper_env(*pid)).unwrap_or_default();
-        }
+        let given = |var: &str| std::env::var_os(var).is_some();
+        env = holders.first().map(|pid| wrapper_env(*pid)).unwrap_or_default();
+        env.retain(|(k, _)| {
+            if k == "BACH_TASK_WRAPPER" {
+                !given(k)
+            } else {
+                !given("BACH_AGENT_WRAPPER")
+            }
+        });
         if holders.is_empty() {
             return Err(format!(
                 "bach-server is running for {} but I can't tell which process it is; stop it yourself.",

@@ -40,7 +40,7 @@ export function useConnection() {
 
 /** Why new agent turns can't start, when the server must restart first (see `ConnectionBanner`). */
 export function pausedReason(s: ConnectionStatus | undefined) {
-  return s?.wrapperMismatch ? "Paused until bach-server restarts with the agent wrapper set here" : undefined;
+  return s?.wrapperMismatch ? "Paused until bach-server restarts with the wrappers set here" : undefined;
 }
 
 const where = (s: ConnectionStatus) => (s.connection.mode === "local" ? "this computer" : s.connection.host);
@@ -110,21 +110,36 @@ export function ConnectionPicker({ tasks }: { tasks: TaskView[] }) {
   );
 }
 
-/** How the wrapper is set up: `sandbox`, `sandbox` with Codex's sandbox too, or none. */
+/** How the wrappers are set up: agents through `sandbox` (with Codex's sandbox too), tasks through `sandbox exec`, or neither. */
 function describe(w: AgentWrapper) {
-  if (!w.command) return "no wrapper";
+  if (!w.command && !w.taskCommand) return "no wrapper";
   return (
     <>
-      <code>{w.command}</code>
-      {w.codexSandbox && " with Codex's own sandbox"}
+      {w.command ? (
+        <>
+          agents through <code>{w.command}</code>
+          {w.codexSandbox && " with Codex's own sandbox"}
+        </>
+      ) : (
+        "agents directly"
+      )}
+      {" and "}
+      {w.taskCommand ? (
+        <>
+          tasks through <code>{w.taskCommand}</code>
+        </>
+      ) : (
+        "tasks directly"
+      )}
     </>
   );
 }
 
 /**
  * Across the top of the window when the server needs restarting before agents can run: it's a
- * different build from the app, or it wasn't started with the agent wrapper set here (new turns
- * are refused until it is, so agents never run outside the sandbox asked for).
+ * different build from the app, or it wasn't started with the agent or task wrapper set here (new
+ * turns are refused until it is, so agents and the tasks they start never run outside the sandbox
+ * asked for).
  */
 export function ConnectionBanner({ inset }: { inset: boolean }) {
   const status = useConnection();
@@ -141,7 +156,7 @@ export function ConnectionBanner({ inset }: { inset: boolean }) {
     return (
       <Banner inset={inset}>
         <p className="font-medium">
-          New agent turns are paused: bach-server on {host} runs agents with {describe(status.wrapper)}, but this app is set to{" "}
+          New agent turns are paused: bach-server on {host} starts {describe(status.wrapper)}, but this app is set to start{" "}
           {describe(wrapper)}.
         </p>
         <p>Messages already queued still go when their session's turn ends, run as the server runs agents now.</p>
@@ -201,15 +216,16 @@ function Relaunch({ ssh, why, relaunch = true }: { ssh: boolean; why: string; re
   );
 }
 
-// Starting agents through a wrapper needs a bach-server built with the `agent-wrapper` feature.
-const WRAPPER = !!import.meta.env.VITE_BACH_AGENT_WRAPPER;
+// Starting agents and tasks through wrappers needs a bach-server built with the `wrappers` feature.
+const WRAPPER = !!import.meta.env.VITE_BACH_WRAPPERS;
+const NO_WRAPPER: AgentWrapper = { command: "", codexSandbox: false, taskCommand: "" };
 
 function ConnectionDialog({ status, onClose }: { status: ConnectionStatus; onClose: () => void }) {
   const c = status.connection;
   const [mode, setMode] = useState<string>(c.mode);
   const [host, setHost] = useState(c.mode === "ssh" ? c.host : "");
   const [command, setCommand] = useState(c.mode === "ssh" ? c.command : "bach-server");
-  const [wrapper, setWrapper] = useState<AgentWrapper>(c.mode === "ssh" ? c.wrapper : { command: "", codexSandbox: false });
+  const [wrapper, setWrapper] = useState<AgentWrapper>(c.mode === "ssh" ? c.wrapper : NO_WRAPPER);
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [knownHosts, setKnownHosts] = useState<string[]>([]);
@@ -222,7 +238,7 @@ function ConnectionDialog({ status, onClose }: { status: ConnectionStatus; onClo
   async function apply() {
     setSaving(true);
     try {
-      const agents = WRAPPER ? { ...wrapper, command: wrapper.command.trim() } : { command: "", codexSandbox: false };
+      const agents = WRAPPER ? { ...wrapper, command: wrapper.command.trim(), taskCommand: wrapper.taskCommand.trim() } : NO_WRAPPER;
       await setConnection(mode === "local" ? { mode: "local" } : { mode: "ssh", host: host.trim(), command: command.trim(), wrapper: agents });
       // Everything on screen belongs to the old backend.
       location.reload();
@@ -328,6 +344,24 @@ function ConnectionDialog({ status, onClose }: { status: ConnectionStatus; onClo
                       Codex's own sandbox too (off: Codex runs anything the wrapper allows)
                     </label>
                   )}
+                </div>
+              )}
+              {WRAPPER && (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="ssh-task-wrapper">Start background tasks through</Label>
+                  <Input
+                    id="ssh-task-wrapper"
+                    value={wrapper.taskCommand}
+                    placeholder="nothing"
+                    spellCheck={false}
+                    className="font-mono"
+                    onChange={(e) => setWrapper({ ...wrapper, taskCommand: e.target.value })}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    A command put before the task's <code>sh -c</code>: <code>sandbox exec --</code> runs{" "}
+                    <code>sandbox exec -- sh -c …</code>. Tasks run outside the agents' wrapper otherwise, so set both. Leave it
+                    empty to keep the server's own (<code>BACH_TASK_WRAPPER</code>), if any.
+                  </p>
                 </div>
               )}
             </>

@@ -116,9 +116,10 @@ ssh -L 3421:localhost:3421 <remote>        # then open http://<remote>:3420
 | `BACH_PORT` | WebSocket port (default `3421`). |
 | `BACH_ALLOWED_ORIGINS` | Comma-separated browser origins, replacing the defaults. |
 | `VITE_BACH_WS` | Where the UI connects (default `ws://localhost:3421`). |
-| `BACH_AGENT_WRAPPER` | A command to start the agent CLIs through (`sandbox` runs `sandbox claude …`), fixed when the server starts; `restart` keeps it. Needs bach-server built with `--features agent-wrapper`, which otherwise refuses to start. |
+| `BACH_AGENT_WRAPPER` | A command to start the agent CLIs through (`sandbox` runs `sandbox claude …`), fixed when the server starts; `restart` keeps it. Needs bach-server built with `--features wrappers`, which otherwise refuses to start. |
+| `BACH_TASK_WRAPPER` | A command to start background tasks through, taking `sh -c <command>` after it (`sandbox exec --`). Without it tasks run unsandboxed, as bach-server, even when agents are wrapped: set both. The wrapper starts in the task's project and the command `cd`s to the task's folder inside it, so the sandbox covers the project whichever `cwd` the agent names. Same rules as `BACH_AGENT_WRAPPER`: fixed at start, kept by `restart`, needs `wrappers`. |
 | `BACH_AGENT_WRAPPER_CODEX_SANDBOX` | `1` keeps Codex's own sandbox inside the wrapper's. Otherwise Codex runs anything the wrapper allows, asking only before commands it thinks are dangerous (Manual asks before any change), and the app's mode picker says so. |
-| `VITE_BACH_AGENT_WRAPPER` | Set when building the UI to show "Start agents through" in the SSH settings, passed to the server when the app starts or restarts it. |
+| `VITE_BACH_WRAPPERS` | Set when building the UI to show "Start agents through" and "Start background tasks through" in the SSH settings, passed to the server when the app starts or restarts it. New agent turns are paused while the server runs with other wrappers than the ones set there. |
 | `BACH_DB` | Session database (default `~/.local/share/bach/bach.db`); the socket, lock and `server.log` move with it. |
 
 ## Sessions, branches and worktrees

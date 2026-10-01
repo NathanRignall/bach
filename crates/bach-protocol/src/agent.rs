@@ -77,6 +77,9 @@ pub struct AgentWrapper {
     /// wrapper's sandbox is the only one (many can't have Codex's inside them), and Codex's modes
     /// are kept by asking instead (see [`AgentInfo::permission_modes`]).
     pub codex_sandbox: bool,
+    /// A command background tasks are started through, taking `sh -c <command>` after it
+    /// (`BACH_TASK_WRAPPER`); `""` starts them directly.
+    pub task_command: String,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
