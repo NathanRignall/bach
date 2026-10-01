@@ -26,6 +26,8 @@ import {
 import { BlockPlace, BlockView, TranscriptContext } from "@/components/Transcript";
 import { ImageLinks } from "@/lib/imageLinks";
 import { WorktreeCleanup } from "@/components/WorktreeCleanup";
+import { BROWSER_WIDTH, BrowserPanel } from "@/components/BrowserPanel";
+import { closePreview, usePreview } from "@/lib/preview";
 import { TASKS_WIDTH, TaskLogView, TasksPanel, useTasks } from "@/components/TasksPanel";
 import { useForwarding } from "@/components/Ports";
 import { SettingsDialog } from "@/components/SettingsDialog";
@@ -102,6 +104,8 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useStored("bach.sidebarOpen", true, isBoolean);
   const [sidebarWidth, setSidebarWidth] = useStored("bach.sidebarWidth", SIDEBAR_WIDTH.default, isNumber);
   const [tasksWidth, setTasksWidth] = useStored("bach.tasksWidth", TASKS_WIDTH.default, isNumber);
+  const [browserWidth, setBrowserWidth] = useStored("bach.browserWidth", BROWSER_WIDTH.default, isNumber);
+  const preview = usePreview();
   const tasks = useTasks();
   const forwarding = useForwarding();
   const planUsage = usePlanUsage();
@@ -672,6 +676,8 @@ export function App() {
         )}
         <TerminalPanel project={projectKey(active?.cwd ?? newDraft.cwd)} cwd={(active?.workdir ?? active?.cwd ?? newDraft.cwd).trim()} />
       </main>
+
+      {preview && <BrowserPanel preview={preview} width={browserWidth} onWidth={setBrowserWidth} onClose={closePreview} />}
 
       {tasksOpen && (
         <TasksPanel

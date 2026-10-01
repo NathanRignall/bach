@@ -339,6 +339,12 @@ async fn open_port(ports: State<'_, ports::Ports>, port: u16) -> Result<(), Stri
     ports.open(port).await
 }
 
+/// The port on this computer for one on the agents' machine, for showing it inside the app.
+#[tauri::command]
+async fn local_port(ports: State<'_, ports::Ports>, port: u16) -> Result<u16, String> {
+    ports.local_port(port).await
+}
+
 #[tauri::command]
 async fn set_auto_forward(ports: State<'_, ports::Ports>, auto: bool) -> Result<(), String> {
     ports.set_auto(auto).await
@@ -471,6 +477,7 @@ pub fn run() {
             forward_port,
             stop_forward,
             open_port,
+            local_port,
             open_url,
             set_auto_forward,
             titlebar::title_bar,

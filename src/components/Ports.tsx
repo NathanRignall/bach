@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { previewPort } from "@/lib/preview";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 
@@ -22,15 +23,27 @@ export function useForwarding() {
 const chip = "rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary";
 
 /**
- * A port on the agents' machine. In the app a click opens it in the browser (forwarding it to
- * this computer first when agents run elsewhere); in a browser it links to the backend's host.
+ * A port on the agents' machine. A click shows it in Bach's browser panel (forwarding it to this
+ * computer first when agents run elsewhere); ⌘/Ctrl-click opens it in the default browser, or in a
+ * browser tab when Bach itself runs in one.
  */
 export function PortLink({ port, forwarding, className }: { port: number; forwarding: Forwarding | null; className?: string }) {
   const [error, setError] = useState<string>();
   if (!inTauri) {
     const host = taskHost();
     return host ? (
-      <a href={`http://${host}:${port}`} target="_blank" rel="noopener noreferrer" className={cn(chip, "hover:underline", className)}>
+      <a
+        href={`http://${host}:${port}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={`Show port ${port} here (⌘/Ctrl-click: new tab)`}
+        onClick={(e) => {
+          if (e.metaKey || e.ctrlKey) return;
+          e.preventDefault();
+          void previewPort(port);
+        }}
+        className={cn(chip, "hover:underline", className)}
+      >
         :{port}
       </a>
     ) : (
@@ -41,17 +54,17 @@ export function PortLink({ port, forwarding, className }: { port: number; forwar
   const title = error
     ? error
     : fwd
-      ? `Open localhost:${fwd.local} (forwarded from port ${port})`
+      ? `Show localhost:${fwd.local} (forwarded from port ${port}); ⌘/Ctrl-click: default browser`
       : forwarding?.available
-        ? `Forward port ${port} and open it`
-        : `Open localhost:${port}`;
+        ? `Forward port ${port} and show it; ⌘/Ctrl-click: default browser`
+        : `Show localhost:${port}; ⌘/Ctrl-click: default browser`;
   return (
     <button
       type="button"
       title={title}
-      onClick={() => {
+      onClick={(e) => {
         setError(undefined);
-        openPort(port).catch((e) => setError(String(e)));
+        (e.metaKey || e.ctrlKey ? openPort(port) : previewPort(port)).catch((err) => setError(String(err)));
       }}
       className={cn(chip, "inline-flex items-center gap-1 hover:underline", error && "bg-destructive/10 text-destructive", className)}
     >
