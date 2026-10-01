@@ -135,6 +135,14 @@ The folder, branch and worktree are fixed once the first message is sent. The **
 diffs where the session runs, untracked files included; for a worktree session it defaults to
 everything since the base branch.
 
+**Manual edits.** Files can be edited in place from the Changes tab (a file or hunk's **Edit**) and
+the file browser, in a CodeMirror editor that loads on first use and shares the viewer's token
+classes. `write_file` replaces an existing text file inside the session's folder (same path rules
+as `read_file`). It carries the file's `version` (a content hash) from when it was opened; if the
+file differs on disk it fails with code `conflict` and the UI offers reload or overwrite. The
+backend remembers the files written per session and prefixes the agent's next message with a note
+naming them (kept in memory, so a server restart drops it).
+
 ## The transcript
 
 Bach runs one agent process per message, resuming the CLI's own session each time. Each run's

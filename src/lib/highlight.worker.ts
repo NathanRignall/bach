@@ -1,40 +1,9 @@
 // Syntax highlighting off the main thread: parses documents with CodeMirror's Lezer parsers
 // (loaded per language on first use) and sends back each line's styled ranges.
 import { LanguageDescription, type Language } from "@codemirror/language";
-import { languages } from "@codemirror/language-data";
-import { highlightTree, tagHighlighter, tags as t } from "@lezer/highlight";
+import { highlightTree } from "@lezer/highlight";
 import type { HighlightRequest, HighlightResponse } from "./highlight";
-
-/** Token classes, styled in index.css. Kept few, so the colours stay calm. */
-const highlighter = tagHighlighter([
-  { tag: [t.keyword, t.modifier, t.controlKeyword, t.operatorKeyword, t.definitionKeyword, t.moduleKeyword, t.self], class: "tok-keyword" },
-  { tag: [t.string, t.special(t.string), t.character, t.docString], class: "tok-string" },
-  { tag: [t.regexp, t.escape], class: "tok-escape" },
-  { tag: t.comment, class: "tok-comment" },
-  { tag: [t.number, t.bool, t.null, t.atom, t.unit, t.constant(t.variableName), t.standard(t.variableName)], class: "tok-constant" },
-  { tag: [t.typeName, t.className, t.namespace, t.standard(t.typeName)], class: "tok-type" },
-  { tag: [t.function(t.variableName), t.function(t.propertyName), t.macroName], class: "tok-function" },
-  { tag: [t.propertyName, t.attributeName, t.labelName], class: "tok-property" },
-  { tag: [t.tagName, t.angleBracket], class: "tok-tag" },
-  { tag: [t.meta, t.annotation, t.processingInstruction, t.documentMeta], class: "tok-meta" },
-  { tag: t.heading, class: "tok-heading" },
-  { tag: t.emphasis, class: "tok-emphasis" },
-  { tag: t.strong, class: "tok-strong" },
-  { tag: [t.link, t.url], class: "tok-link" },
-  { tag: t.inserted, class: "tok-inserted" },
-  { tag: t.deleted, class: "tok-deleted" },
-  { tag: t.invalid, class: "tok-invalid" },
-]);
-
-const known = [
-  ...languages,
-  // Not in @codemirror/language-data.
-  LanguageDescription.of({
-    name: "Nix",
-    extensions: ["nix"],
-    load: () => import("@replit/codemirror-lang-nix").then((m) => m.nix()),
-  }),
-];
+import { highlighter, known } from "./languages";
 
 /** Past this, a document isn't worth parsing (and the diff or file is capped well below it anyway). */
 const MAX_CHARS = 5_000_000;

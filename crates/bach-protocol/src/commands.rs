@@ -112,6 +112,7 @@ commands! {
     read_image(ReadImageArgs) -> String;
     list_files(ListFilesArgs) -> FileList;
     read_file(ReadFileArgs) -> FileContent;
+    write_file(WriteFileArgs) -> FileContent;
     git_info(GitInfoArgs) -> GitInfo;
     git_diff(GitDiffArgs) -> GitDiff;
     git_log(GitLogArgs) -> GitLog;
@@ -364,6 +365,26 @@ pub struct ReadFileArgs {
     /// Relative to the session's folder, and inside it: `..`, absolute paths and symlinks that
     /// lead out are refused.
     pub path: String,
+}
+
+/// Replaces the text of an existing text file in a session's folder (on the backend host), for
+/// edits made by hand. Returns the file as written. The agent is told about the edit with its next
+/// message.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteFileArgs {
+    pub session_id: String,
+    /// Relative to the session's folder, as for `read_file`.
+    pub path: String,
+    /// The file's new text.
+    pub text: String,
+    /// The `version` of the file the edit started from. If the file on disk is no longer that
+    /// (the agent changed it, say), nothing is written and the command fails with code `conflict`.
+    pub expected_version: String,
+    /// Write even when the file changed since `expectedVersion`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub overwrite: Option<bool>,
 }
 
 /// Branches and state of the repository containing `path`.

@@ -1,7 +1,7 @@
 //! Directory browsing for the folder picker, reading images agents link to, and the file
 //! browser's view of a session's folder. Runs on the backend host, since that's where agents run
 //! (and so where project folders live).
-pub use bach_protocol::{ApiError, DirEntry, DirListing, FileContent, FileList};
+pub use bach_protocol::{ApiError, DirEntry, DirListing, ErrorCode, FileContent, FileList};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use std::{
     path::{Component, Path, PathBuf},
@@ -168,9 +168,9 @@ fn walk(dir: &Path, prefix: &str, files: &mut Vec<String>) {
     }
 }
 
-/// The file at `path` in the folder `root`. `path` must be relative and stay inside `root`, also
-/// after following symlinks. Text files up to 1 MB come with their text.
-pub fn read_file(root: &str, path: &str) -> Result<FileContent, ApiError> {
+/// The regular file at `path` in the folder `root`, resolved. `path` must be relative and stay
+/// inside `root`, also after following symlinks.
+fn file_in(root: &str, path: &str) -> Result<(PathBuf, std::fs::Metadata), ApiError> {
     let root = session_root(root)?;
     let rel = Path::new(path);
     let outside = || ApiError::invalid(format!("{path}: not a file in the session's folder"));
@@ -192,22 +192,74 @@ pub fn read_file(root: &str, path: &str) -> Result<FileContent, ApiError> {
     if !meta.is_file() {
         return Err(ApiError::invalid(format!("{path}: not a file")));
     }
+    Ok((full, meta))
+}
+
+/// Names a file's contents (FNV-1a), so an edit can tell whether the file changed under it.
+fn version(bytes: &[u8]) -> String {
+    let hash = bytes
+        .iter()
+        .fold(0xcbf29ce484222325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
+    format!("{hash:016x}")
+}
+
+/// Like git: a NUL near the start means binary.
+fn is_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(8000).any(|&b| b == 0)
+}
+
+/// The file at `path` in the folder `root`. `path` must be relative and stay inside `root`, also
+/// after following symlinks. Text files up to 1 MB come with their text.
+pub fn read_file(root: &str, path: &str) -> Result<FileContent, ApiError> {
+    let (full, meta) = file_in(root, path)?;
     let mut file = FileContent {
         path: path.to_string(),
         size: meta.len(),
         text: None,
         binary: false,
+        version: String::new(),
+        editable: false,
     };
     if meta.len() > MAX_TEXT_BYTES {
         return Ok(file);
     }
     let bytes = std::fs::read(&full).map_err(|e| ApiError::failed(format!("{path}: {e}")))?;
-    // Like git: a NUL near the start means binary.
-    file.binary = bytes.iter().take(8000).any(|&b| b == 0);
+    file.binary = is_binary(&bytes);
     if !file.binary {
+        file.version = version(&bytes);
+        file.editable = std::str::from_utf8(&bytes).is_ok();
         file.text = Some(String::from_utf8_lossy(&bytes).into_owned());
     }
     Ok(file)
+}
+
+/// Replaces the text of the existing text file at `path` in `root` (same rules as [`read_file`]).
+/// `expected` is the [`FileContent::version`] the edit started from: if the file is something else
+/// now, it isn't written and the error's code is `Conflict`, unless `overwrite`. Returns the file
+/// as written.
+pub fn write_file(
+    root: &str,
+    path: &str,
+    text: &str,
+    expected: &str,
+    overwrite: bool,
+) -> Result<FileContent, ApiError> {
+    let (full, meta) = file_in(root, path)?;
+    if meta.len() > MAX_TEXT_BYTES {
+        return Err(ApiError::invalid(format!("{path}: larger than 1 MB, too large to edit")));
+    }
+    let current = std::fs::read(&full).map_err(|e| ApiError::failed(format!("{path}: {e}")))?;
+    if is_binary(&current) || std::str::from_utf8(&current).is_err() {
+        return Err(ApiError::invalid(format!("{path}: not a UTF-8 text file")));
+    }
+    if !overwrite && version(&current) != expected {
+        return Err(ApiError::new(
+            ErrorCode::Conflict,
+            format!("{path} changed on disk since it was opened."),
+        ));
+    }
+    std::fs::write(&full, text).map_err(|e| ApiError::failed(format!("{path}: {e}")))?;
+    read_file(root, path)
 }
 
 #[cfg(test)]
@@ -285,6 +337,44 @@ mod tests {
         for bad in ["../secret", "link-out", secret.to_str().unwrap(), "src", "", "missing"] {
             assert!(read_file(r, bad).is_err(), "{bad}");
         }
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn writes_files_unless_they_changed_or_are_outside_the_folder() {
+        let base = temp("write");
+        let root = base.join("proj");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(root.join("bin"), [0u8, 1, 2]).unwrap();
+        std::fs::write(root.join("latin1"), [b'a', 0xe9]).unwrap();
+        std::fs::write(base.join("secret"), "s").unwrap();
+        std::os::unix::fs::symlink(base.join("secret"), root.join("link-out")).unwrap();
+        let r = root.to_str().unwrap();
+
+        let opened = read_file(r, "src/a.rs").unwrap();
+        assert!(opened.editable);
+        let saved = write_file(r, "src/a.rs", "fn b() {}\n", &opened.version, false).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn b() {}\n");
+        assert_eq!(saved.text.as_deref(), Some("fn b() {}\n"));
+        assert_ne!(saved.version, opened.version);
+
+        // Changed behind the editor's back: refused, unless told to overwrite.
+        std::fs::write(root.join("src/a.rs"), "fn agent() {}\n").unwrap();
+        let e = write_file(r, "src/a.rs", "fn mine() {}\n", &saved.version, false).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Conflict);
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn agent() {}\n");
+        write_file(r, "src/a.rs", "fn mine() {}\n", &saved.version, true).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn mine() {}\n");
+
+        // Only existing text files inside the folder.
+        let secret = base.join("secret");
+        for bad in ["../secret", "link-out", secret.to_str().unwrap(), "src", "", "missing", "new.txt", "bin", "latin1"] {
+            assert!(write_file(r, bad, "x", "", true).is_err(), "{bad}");
+        }
+        assert_eq!(std::fs::read_to_string(base.join("secret")).unwrap(), "s");
+        assert!(!read_file(r, "latin1").unwrap().editable);
+        assert!(!root.join("new.txt").exists());
         let _ = std::fs::remove_dir_all(base);
     }
 

@@ -1,6 +1,7 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, FileDiff as FileDiffIcon, MessageSquarePlus, Minus, Plus, RefreshCw, Send } from "lucide-react";
+import { ChevronDown, ChevronRight, FileDiff as FileDiffIcon, MessageSquarePlus, Minus, Pencil, Plus, RefreshCw, Send } from "lucide-react";
 import { BranchStatus, FileDiff, FileStatus, GitDiff, Session, gitCommit, gitDiff, gitPush, gitStage, gitStageHunk, gitStatus, onReconnect } from "@/api";
+import { FileEditor, hasDraft } from "@/components/FileEditor";
 import { FileTree } from "@/components/FileTree";
 import { CommitBox, CommitList, GitError, PushControl, useCommits } from "@/components/GitBar";
 import { CommentBox, DraftComment, SelectionActions } from "@/components/ReviewComments";
@@ -153,7 +154,22 @@ interface ReviewContext {
     onFile: (file: FileDiff) => void;
     onHunk: (file: FileDiff, index: number) => void;
   };
+  /** Present where the working-tree files can be edited in place. */
+  edit?: {
+    sessionId: string;
+    /** The card being edited: its `fileKey`, the file, and the line it opened on. */
+    current?: { key: string; path: string; line?: number };
+    onStart: (file: FileDiff, line?: number) => void;
+    onClose: () => void;
+    onSaved: () => void;
+  };
 }
+
+/** The file can be edited: it's there, and text. */
+const editable = (f: FileDiff) => !f.binary && f.status !== "deleted";
+
+/** The first line of the hunk in the new file, where editing it starts. */
+const hunkLine = (hunk: FileDiff["hunks"][number]) => hunk.lines.find((l) => l.new !== null)?.new ?? undefined;
 
 function Hunk({ file, index, at, tokens, ctx }: { file: FileDiff; index: number; at?: [0 | 1, number][]; tokens?: Token[][][]; ctx: ReviewContext }) {
   const hunk = file.hunks[index];
@@ -221,12 +237,17 @@ function Hunk({ file, index, at, tokens, ctx }: { file: FileDiff; index: number;
             >
               <MessageSquarePlus /> Hunk
             </Button>
+            {ctx.edit && editable(file) && hunkLine(hunk) !== undefined && (
+              <Button size="xs" variant="ghost" className="h-5 opacity-0 group-hover/hunk:opacity-100 focus-visible:opacity-100" title="Edit the file at this hunk" onClick={() => ctx.edit?.onStart(file, hunkLine(hunk))}>
+                <Pencil /> Edit
+              </Button>
+            )}
             {stageable && (
               <Button
                 size="xs"
                 variant="outline"
                 className="h-5"
-                disabled={ctx.stage?.busy}
+                disabled={ctx.stage?.busy || ctx.edit?.current?.path === file.path}
                 title={file.staged ? "Take this hunk out of the commit" : "Add this hunk to the commit"}
                 onClick={() => ctx.stage?.onHunk(file, index)}
               >
@@ -316,6 +337,10 @@ function FileCard({ file, open, onToggle, ctx }: { file: FileDiff; open: boolean
   const { dir, name } = splitPath(file.path);
   const empty = file.binary ? "Binary file" : file.omitted ? "Too large to show" : !file.hunks.length ? (file.status === "renamed" ? "Renamed without changes" : "No content changes") : undefined;
   const stage = ctx.stage;
+  const edit = ctx.edit;
+  const editing = edit?.current?.key === fileKey(file) ? edit.current : undefined;
+  // Staging moves the file between cards, which would drop what is being typed.
+  const staging = !!stage && (stage.busy || edit?.current?.path === file.path);
   return (
     <section id={`diff-${fileKey(file)}`} className={cn("overflow-clip rounded-lg border bg-card", stage && file.staged && "border-l-2 border-l-emerald-500")}>
       <div className="sticky top-0 z-10 flex items-center border-b bg-card hover:bg-muted">
@@ -329,12 +354,23 @@ function FileCard({ file, open, onToggle, ctx }: { file: FileDiff; open: boolean
           </span>
           <Counts additions={file.additions} deletions={file.deletions} />
         </button>
+        {edit && editable(file) && !editing && (
+          <Button
+            size="xs"
+            variant="ghost"
+            className="mr-1 shrink-0"
+            title={hasDraft(edit.sessionId, file.path) ? "Continue editing (you have unsaved changes)" : "Edit this file"}
+            onClick={() => edit.onStart(file)}
+          >
+            <Pencil /> {hasDraft(edit.sessionId, file.path) ? "Resume editing" : "Edit"}
+          </Button>
+        )}
         {stage && (
           <Button
             size="xs"
             variant="outline"
             className="mr-2 shrink-0"
-            disabled={stage.busy}
+            disabled={staging}
             title={file.staged ? "Take this file out of the commit" : "Add this file to the commit"}
             onClick={() => stage.onFile(file)}
           >
@@ -342,12 +378,16 @@ function FileCard({ file, open, onToggle, ctx }: { file: FileDiff; open: boolean
           </Button>
         )}
       </div>
-      {open &&
+      {open && editing && edit ? (
+        <FileEditor key={file.path} sessionId={edit.sessionId} path={file.path} line={editing.line} maxHeight="36rem" onClose={edit.onClose} onSaved={edit.onSaved} />
+      ) : (
+        open &&
         (empty ? (
           <p className="px-3 py-3 text-xs text-muted-foreground">{empty}</p>
         ) : (
           <DiffLines file={file} ctx={ctx} />
-        ))}
+        ))
+      )}
     </section>
   );
 }
@@ -451,7 +491,24 @@ export function DiffView({
         onHunk: (f, i) => void act(() => gitStageHunk({ path, file: f.path, hunk: i, header: f.hunks[i].header, stage: !f.staged })),
       }
     : undefined;
-  const ctx: ReviewContext = { review, composing, onCompose: setComposing, onAsk: (p) => ask(p).then(() => review.select(undefined), () => {}), busy, stage };
+  // The file being edited in place, and the card it's shown in. Committed changes can't be.
+  const [editing, setEditing] = useState<{ key: string; path: string; line?: number }>();
+  const edit: ReviewContext["edit"] =
+    mode === "commits"
+      ? undefined
+      : {
+          sessionId: session.id,
+          current: editing,
+          onStart: (f, line) => {
+            if (!isOpen(f)) toggle(fileKey(f));
+            review.select(undefined);
+            setEditing({ key: fileKey(f), path: f.path, line });
+          },
+          onClose: () => setEditing(undefined),
+          // What was typed is on disk now, so the diff shows it and the lines picked are gone.
+          onSaved: () => (setEditing(undefined), review.select(undefined), refresh()),
+        };
+  const ctx: ReviewContext = { review, composing, onCompose: setComposing, onAsk: (p) => ask(p).then(() => review.select(undefined), () => {}), busy, stage, edit };
   // Esc clears the selection (a comment box handles its own Esc).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && !composing && review.select(undefined);
@@ -467,7 +524,7 @@ export function DiffView({
 
   // Files toggled away from how they start (see `startsOpen`), by `fileKey`.
   const [toggled, setToggled] = useState(new Set<string>());
-  useEffect(() => (setToggled(new Set()), setSelected(undefined), setComposing(false), setSendError(undefined), setActError(undefined), setPushError(undefined)), [session.id, mode, commit]);
+  useEffect(() => (setToggled(new Set()), setSelected(undefined), setEditing(undefined), setComposing(false), setSendError(undefined), setActError(undefined), setPushError(undefined)), [session.id, mode, commit]);
 
   const isOpen = (f: FileDiff) => startsOpen(f) !== toggled.has(fileKey(f));
   const toggle = (key: string) =>
@@ -597,7 +654,7 @@ export function DiffView({
                               <Button
                                 size="icon-xs"
                                 variant="ghost"
-                                disabled={acting}
+                                disabled={acting || editing?.path === f.path}
                                 title={f.staged ? "Unstage this file" : "Stage this file"}
                                 aria-label={f.staged ? `Unstage ${f.path}` : `Stage ${f.path}`}
                                 onClick={() => void act(() => gitStage(path, paths([f]), !f.staged))}

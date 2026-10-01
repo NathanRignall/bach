@@ -1,7 +1,8 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { FolderTree, RefreshCw, Search } from "lucide-react";
+import { FolderTree, Pencil, RefreshCw, Search } from "lucide-react";
 import { FileContent, FileList, Session, listFiles, onReconnect, readFile } from "@/api";
 import { CodeView } from "@/components/CodeView";
+import { FileEditor, hasDraft } from "@/components/FileEditor";
 import { FileTree } from "@/components/FileTree";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -38,12 +39,14 @@ function useLoad<T>(load: (() => Promise<T>) | undefined, deps: unknown[]): Load
   return { ...state, refresh };
 }
 
-/** Every file in the session's folder as a tree; the selected one is shown, read-only. */
+/** Every file in the session's folder as a tree; the selected one is shown, and can be edited. */
 export function FileBrowser({ session }: { session: Session }) {
   const [selected, setSelected] = useState(() => lastOpen.get(session.id));
   const [filter, setFilter] = useState("");
   const list = useLoad<FileList>(() => listFiles(session.id), [session.id]);
   const file = useLoad<FileContent>(selected ? () => readFile(session.id, selected) : undefined, [session.id, selected]);
+  // Whether the selected file is being edited. A file with unsaved edits goes on where it was left.
+  const [editing, setEditing] = useState(() => !!selected && hasDraft(session.id, selected));
 
   const refresh = () => (list.refresh(), file.refresh());
   // When the agent finishes (or starts), files have likely changed; so may they have while offline.
@@ -58,6 +61,7 @@ export function FileBrowser({ session }: { session: Session }) {
   const select = (path: string) => {
     lastOpen.set(session.id, path);
     setSelected(path);
+    setEditing(hasDraft(session.id, path));
   };
 
   const files = useMemo(() => (list.value?.files ?? []).map((path) => ({ path })), [list.value]);
@@ -97,7 +101,11 @@ export function FileBrowser({ session }: { session: Session }) {
           ) : (
             <>
               {/* Filtering shows every match; otherwise folders start closed. */}
-              <FileTree key={filter ? "filtered" : "all"} files={shown} selected={selected} onSelect={(f) => select(f.path)} collapsed={!filter} label="Files" />
+              <FileTree key={filter ? "filtered" : "all"} files={shown} selected={selected} onSelect={(f) => select(f.path)}
+                collapsed={!filter}
+                label="Files"
+                decorate={(f) => (f.path !== selected && hasDraft(session.id, f.path) ? { after: <span className="size-1.5 shrink-0 rounded-full bg-primary" />, title: `${f.path} (unsaved edits)` } : {})}
+              />
               {list.value.truncated && <p className="px-3 py-2 text-xs text-muted-foreground">Only the first {files.length.toLocaleString()} files are listed.</p>}
             </>
           )}
@@ -109,9 +117,23 @@ export function FileBrowser({ session }: { session: Session }) {
           <Empty>Select a file to view it.</Empty>
         ) : (
           <>
-            <FileHeader path={selected} size={file.value?.path === selected ? file.value.size : undefined} loading={file.loading} />
+            <FileHeader
+              path={selected}
+              size={file.value?.path === selected ? file.value.size : undefined}
+              loading={file.loading}
+              onEdit={file.value?.path === selected && file.value.editable && !editing ? () => setEditing(true) : undefined}
+              unsaved={hasDraft(session.id, selected)}
+            />
             <div className="flex min-h-0 flex-1 flex-col overflow-auto bg-card select-text">
-              {file.error ? (
+              {editing ? (
+                <FileEditor
+                  key={selected}
+                  sessionId={session.id}
+                  path={selected}
+                  onClose={() => setEditing(false)}
+                  onSaved={() => (setEditing(false), file.refresh())}
+                />
+              ) : file.error ? (
                 <Empty className="text-destructive">{file.error}</Empty>
               ) : !file.value ? (
                 <Empty>
@@ -132,7 +154,7 @@ export function FileBrowser({ session }: { session: Session }) {
   );
 }
 
-function FileHeader({ path, size, loading }: { path: string; size?: number; loading: boolean }) {
+function FileHeader({ path, size, loading, onEdit, unsaved }: { path: string; size?: number; loading: boolean; onEdit?: () => void; unsaved?: boolean }) {
   const i = path.lastIndexOf("/");
   return (
     <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2 text-xs">
@@ -142,6 +164,11 @@ function FileHeader({ path, size, loading }: { path: string; size?: number; load
       </span>
       {loading && <Spinner className="text-muted-foreground" />}
       {size !== undefined && <span className="shrink-0 text-muted-foreground tabular-nums">{formatSize(size)}</span>}
+      {onEdit && (
+        <Button size="xs" variant="outline" onClick={onEdit} title={unsaved ? "Continue editing (you have unsaved changes)" : "Edit this file"}>
+          <Pencil /> {unsaved ? "Resume editing" : "Edit"}
+        </Button>
+      )}
     </div>
   );
 }
