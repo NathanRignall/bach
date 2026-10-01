@@ -216,7 +216,19 @@ pub async fn list_skills(cwd: Option<&str>) -> Result<Vec<bach_protocol::SkillIn
     Ok(skills_from(&event))
 }
 
-/// The commands in an `initialize` response, without Claude Code's internal ones (`__…`).
+/// Claude Code's own commands that do nothing useful in Bach's chat: they are for its terminal UI
+/// (`/color`, `/clear`), set what Bach has pickers for (`/model`, `/effort`) or manage its account
+/// and setup. The response doesn't tell these from skills, so they are listed by name; a command
+/// Claude Code adds later shows until it is added here.
+const HIDDEN: [&str; 30] = [
+    "advisor", "agents", "auto-mode-setup", "autocompact", "clear", "color", "config", "design-consent",
+    "design-revoke", "doctor", "effort", "extra-usage", "fast", "focus", "heapdump", "import", "insights",
+    "list-agents", "mcp", "model", "output-style", "recap", "reload-plugins", "reload-skills", "rename",
+    "skill-doctor", "team-onboarding", "usage", "usage-credits", "workflow-launch-exec",
+];
+
+/// The commands in an `initialize` response worth offering: not Claude Code's internal ones
+/// (`__…`) or the [`HIDDEN`] ones.
 fn skills_from(event: &Value) -> Vec<bach_protocol::SkillInfo> {
     let text = |v: &Value| v.as_str().unwrap_or_default().to_string();
     event["commands"]
@@ -228,7 +240,7 @@ fn skills_from(event: &Value) -> Vec<bach_protocol::SkillInfo> {
             description: text(&c["description"]),
             argument_hint: text(&c["argumentHint"]),
         })
-        .filter(|c| !c.name.is_empty() && !c.name.starts_with("__"))
+        .filter(|c| !c.name.is_empty() && !c.name.starts_with("__") && !HIDDEN.contains(&c.name.as_str()))
         .collect()
 }
 
@@ -551,13 +563,15 @@ mod tests {
         let event = json!({ "commands": [
             { "name": "code-review", "description": "Review the diff", "argumentHint": "[level]", "builtin": true },
             { "name": "__remote-workflow", "description": "", "argumentHint": "" },
+            { "name": "color", "description": "Set the prompt bar color" },
+            { "name": "compact", "description": "Summarize" },
             { "name": "docs", "description": "Docs" },
         ]});
         let skills = skills_from(&event);
         let names: Vec<_> = skills.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["code-review", "docs"]);
+        assert_eq!(names, ["code-review", "compact", "docs"]);
         assert_eq!(skills[0].argument_hint, "[level]");
-        assert_eq!(skills[1].argument_hint, "");
+        assert_eq!(skills[2].argument_hint, "");
     }
     use std::{
         io::Write,
