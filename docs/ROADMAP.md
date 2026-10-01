@@ -39,6 +39,14 @@ Planned features and known issues, roughly grouped by area.
   saved approvals. The task launcher crate (now `bach-tasks`) stays independent of
   the rest of Bach.
 
+## Browser
+
+- [x] **Browser panel**: click a port chip to show the page beside the chat (forwarded
+  over SSH first), with an address bar, reload and an "open externally" button.
+  ⌘/Ctrl-click still opens the default browser.
+- [ ] **Agents drive it**: `bach` MCP tools to navigate, screenshot and read the console
+  of the page you're looking at.
+
 ## Worktree cleanup
 
 - [x] **"Merged" label**: mark worktrees whose branch is already merged, so it's clear

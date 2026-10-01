@@ -208,15 +208,20 @@ impl Ports {
 
     /// Opens `http://localhost:<port>` for a port on the agents' machine: forwarded first when
     /// that's another machine.
-    pub async fn open(&self, port: u16) -> Result<(), String> {
-        let local = match self.current() {
-            None => port,
+    /// The port on this computer that reaches `port` on the agents' machine, forwarding it first
+    /// when agents run elsewhere.
+    pub async fn local_port(&self, port: u16) -> Result<u16, String> {
+        match self.current() {
+            None => Ok(port),
             Some(forwards) => match forwards.list().await.into_iter().find(|f| f.remote == port) {
-                Some(f) => f.local,
-                None => self.forward(port).await?.local,
+                Some(f) => Ok(f.local),
+                None => Ok(self.forward(port).await?.local),
             },
-        };
-        open_url(&format!("http://localhost:{local}"))
+        }
+    }
+
+    pub async fn open(&self, port: u16) -> Result<(), String> {
+        open_url(&format!("http://localhost:{}", self.local_port(port).await?))
     }
 }
 
