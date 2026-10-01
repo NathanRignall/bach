@@ -80,7 +80,7 @@ pub struct SavedFile {
 }
 
 /// `%20`-style escapes (the UI's `encodeURIComponent`) undone; bad ones are left as they are.
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
