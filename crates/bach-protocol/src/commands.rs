@@ -8,7 +8,7 @@
 //! arguments are a struct named after it with an `Args` suffix; its doc comment documents the
 //! command.
 use crate::{
-    AgentInfo, AgentKind, ApiError, ModelInfo, Decision, DirListing, FileContent, FileList, GitDiff, GitInfo, GitLog, BranchStatus, CommitInfo, PlanUsage, SearchResult, Session,
+    AgentInfo, AgentKind, ApiError, ModelInfo, SkillInfo, Decision, DirListing, FileContent, FileList, GitDiff, GitInfo, GitLog, BranchStatus, CommitInfo, PlanUsage, SearchResult, Session,
     SessionLog, TerminalInfo, TerminalSnapshot, WorktreeEntry,
 };
 use bach_tasks_protocol::{
@@ -90,6 +90,7 @@ fn parse_args<T: DeserializeOwned>(cmd: &str, args: Value) -> Result<T, ApiError
 commands! {
     list_agents(ListAgentsArgs) -> Vec<AgentInfo>;
     list_models(ListModelsArgs) -> Vec<ModelInfo>;
+    list_skills(ListSkillsArgs) -> Vec<SkillInfo>;
     get_usage(GetUsageArgs) -> Option<PlanUsage>;
 
     list_sessions(ListSessionsArgs) -> Vec<Session>;
@@ -154,6 +155,17 @@ pub struct ListAgentsArgs {}
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ListModelsArgs {
+    pub agent: AgentKind,
+    #[serde(default)]
+    #[ts(optional)]
+    pub cwd: Option<String>,
+}
+
+/// The skills and slash commands an agent offers in a project folder (`cwd`, whose own skills
+/// are included). Only Claude Code lists any.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ListSkillsArgs {
     pub agent: AgentKind,
     #[serde(default)]
     #[ts(optional)]

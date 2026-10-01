@@ -261,6 +261,15 @@ pub async fn list_models(
     }
 }
 
+/// The skills and slash commands `agent` offers in folder `cwd`, for the composer's `/` menu.
+/// Only Claude Code's are listed.
+pub async fn list_skills(agent: AgentKind, cwd: Option<&str>) -> Result<Vec<bach_protocol::SkillInfo>, String> {
+    match agent {
+        AgentKind::Claude => claude::list_skills(cwd).await,
+        AgentKind::Codex | AgentKind::Opencode => Ok(vec![]),
+    }
+}
+
 /// The agent CLIs Bach knows, and whether each (and the wrapper) is on the backend host's PATH.
 pub fn list_agents() -> Vec<bach_protocol::AgentInfo> {
     AgentKind::ALL

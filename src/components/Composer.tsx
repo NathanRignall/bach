@@ -2,7 +2,7 @@ import { DragEvent, Fragment, ReactNode, useEffect, useState } from "react";
 import { ArrowUp, Brain, ListPlus, Paperclip, Pencil, Square, X } from "lucide-react";
 import { Slider } from "@base-ui/react/slider";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { AgentInfo, AgentKind, ModelInfo, QueuedMessage, listModels } from "@/api";
+import { AgentInfo, AgentKind, ModelInfo, QueuedMessage, SkillInfo, listModels, listSkills } from "@/api";
 import { AgentBadge } from "@/components/AgentBadge";
 import { FileChip } from "@/components/FileChip";
 import { Button } from "@/components/ui/button";
@@ -77,6 +77,41 @@ function useModels(agent: AgentKind, cwd?: string): ModelInfo[] {
     return () => void (current = false);
   }, [agent, folder]);
   return models;
+}
+
+/** The agent's skills and slash commands in the project folder, for the `/` menu (none while loading, or if it lists none). */
+const skillLists = new Map<string, Promise<SkillInfo[]>>();
+
+function useSkills(agent: AgentKind, cwd?: string): SkillInfo[] {
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const folder = cwd?.trim() || undefined;
+  useEffect(() => {
+    let current = true;
+    setSkills([]);
+    // Only Claude Code lists any; asking the others is pointless.
+    if (agent !== "claude") return;
+    const key = `${agent}\u0000${folder ?? ""}`;
+    let list = skillLists.get(key);
+    if (!list) {
+      list = listSkills(agent, folder);
+      skillLists.set(key, list);
+      // Ask again next time rather than keep a failure; the backend keeps the good ones for a while.
+      list.catch(() => skillLists.delete(key));
+      list.then(() => setTimeout(() => skillLists.delete(key), 5 * 60_000), () => {});
+    }
+    list.then((s) => current && setSkills(s), () => {});
+    return () => void (current = false);
+  }, [agent, folder]);
+  return skills;
+}
+
+/** The skills a draft that is just `/` and a name so far could be: names starting with it, or if none do, names containing it. */
+function matchSkills(skills: SkillInfo[], draft: string): SkillInfo[] {
+  const m = /^\/([^\s]*)$/.exec(draft);
+  if (!m) return [];
+  const q = m[1].toLowerCase();
+  const starts = skills.filter((s) => s.name.toLowerCase().startsWith(q));
+  return starts.length ? starts : skills.filter((s) => s.name.toLowerCase().includes(q));
 }
 
 /** The model picker's choices: the agent's default, its models, and the current choice if it isn't one of them. */
@@ -244,6 +279,14 @@ export function Composer(p: Props) {
   const agentName = info?.name ?? p.agent;
   const modes = modeChoices(info);
   const models = useModels(p.agent, p.cwd);
+  const skills = useSkills(p.agent, p.cwd);
+  // The `/` menu: open while the draft is a slash and a name, closed by Escape until the draft changes.
+  const matches = matchSkills(skills, p.draft);
+  const [picked, setPicked] = useState(0);
+  const [dismissed, setDismissed] = useState<string>();
+  const menuOpen = matches.length > 0 && dismissed !== p.draft;
+  const at = Math.min(picked, matches.length - 1);
+  useEffect(() => setPicked(0), [p.draft]);
   const [dragging, setDragging] = useState(false);
   const [attachError, setAttachError] = useState<string>();
 
@@ -320,6 +363,33 @@ export function Composer(p: Props) {
           </div>
         )}
         {attachError && <p className="px-1 text-xs text-destructive">{attachError}</p>}
+        {menuOpen && (
+          <div role="listbox" aria-label="Skills" className="absolute inset-x-0 bottom-full z-20 mb-2 max-h-56 overflow-y-auto rounded-xl border bg-popover p-1 shadow-md">
+            {matches.map((s, i) => (
+              <button
+                key={s.name}
+                type="button"
+                role="option"
+                aria-selected={i === at}
+                ref={(el) => {
+                  if (i === at) el?.scrollIntoView({ block: "nearest" });
+                }}
+                // Keep the textarea focused.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => p.onDraft(`/${s.name} `)}
+                onMouseMove={() => setPicked(i)}
+                className={cn("flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-1.5 text-left", i === at && "bg-accent")}
+              >
+                <span className="font-mono text-xs">
+                  /{s.name}
+                  {/* The arguments are only for the one being chosen. */}
+                  {i === at && s.argumentHint && <span className="text-muted-foreground"> {s.argumentHint}</span>}
+                </span>
+                <span className="line-clamp-1 text-xs text-muted-foreground">{s.description}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2">
           <Textarea
             autoFocus={p.autoFocus}
@@ -334,6 +404,26 @@ export function Composer(p: Props) {
               void attach(files);
             }}
             onKeyDown={(e) => {
+              if (menuOpen) {
+                const skill = matches[at];
+                // Enter sends once the name is typed out; before that it completes it.
+                const complete = e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && p.draft !== `/${skill.name}`);
+                if (complete) {
+                  e.preventDefault();
+                  p.onDraft(`/${skill.name} `);
+                  return;
+                }
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setPicked((at + (e.key === "ArrowDown" ? 1 : matches.length - 1)) % matches.length);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setDismissed(p.draft);
+                  return;
+                }
+              }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 if (canSend) p.onSend();

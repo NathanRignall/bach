@@ -40,6 +40,18 @@ pub struct ModelInfo {
     pub default_effort: Option<String>,
 }
 
+/// A skill or slash command an agent offers, for the composer's `/` menu. Sending `/name` (with
+/// any arguments after it) runs it.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillInfo {
+    /// What follows the `/`.
+    pub name: String,
+    pub description: String,
+    /// What it takes after its name (`[file]`), empty for nothing.
+    pub argument_hint: String,
+}
+
 /// A permission mode an agent can run in, for the mode picker.
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]

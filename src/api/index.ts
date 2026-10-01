@@ -73,6 +73,7 @@ export const onSessionEvent = (cb: (e: SessionEvent) => void) =>
 // Shorthands for the commands the UI uses most.
 export const listAgents = () => call("list_agents");
 export const listModels = (agent: AgentKind, cwd?: string) => call("list_models", { agent, cwd });
+export const listSkills = (agent: AgentKind, cwd?: string) => call("list_skills", { agent, cwd });
 export const getUsage = () => call("get_usage");
 
 export const listSessions = () => call("list_sessions");
