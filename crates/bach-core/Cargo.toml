@@ -5,9 +5,9 @@ edition = "2021"
 description = "Agent adapters, runs, git, storage and background tasks behind Bach (no UI or transport)"
 
 [features]
-# Starting the agent CLIs through a wrapper command (see `wrapper`). Off: agents start directly,
-# and a server started with `BACH_AGENT_WRAPPER` refuses to run.
-agent-wrapper = []
+# Starting the agent CLIs and background tasks through wrapper commands (see `wrapper`). Off: they
+# start directly, and a server started with `BACH_AGENT_WRAPPER` or `BACH_TASK_WRAPPER` refuses to run.
+wrappers = []
 
 [dependencies]
 bach-protocol = { path = "../bach-protocol" }

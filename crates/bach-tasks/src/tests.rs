@@ -120,6 +120,29 @@
     }
 
     #[tokio::test]
+    async fn a_wrapper_starts_in_the_project_and_the_command_in_its_folder() {
+        let dir = tmp("wrapper");
+        let sub = dir.join("sub dir");
+        std::fs::create_dir_all(&sub).unwrap();
+        let tasks = tasks_in(&dir).await;
+        let wrapper = ["sh", "-c", r#"echo "wrapper in $(pwd)"; exec "$@""#, "w"];
+        tasks.set_wrapper(wrapper.map(String::from).to_vec());
+
+        let t = tasks
+            .start_task(StartTask {
+                project: Some(dir.to_string_lossy().into()),
+                ..req("echo \"command in $(pwd)\"; exit 4", &sub)
+            })
+            .unwrap();
+        until("exit 4", || status(&tasks, &t.id) == TaskStatus::Failed).await;
+        let out = tasks.logs(&t.id, 10, None).unwrap();
+        assert!(out.contains(&format!("wrapper in {}\n", dir.display())), "{out}");
+        assert!(out.contains(&format!("command in {}", sub.display())), "{out}");
+        assert_eq!(tasks.get(&t.id).unwrap().exit_code, Some(4), "recorded from outside the wrapper");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn stop_kills_everything_the_task_started() {
         let dir = tmp("stop");
         let tasks = tasks_in(&dir).await;

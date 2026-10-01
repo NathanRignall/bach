@@ -2,5 +2,5 @@
 
 interface ImportMetaEnv {
   readonly VITE_BACH_WS?: string;
-  readonly VITE_BACH_AGENT_WRAPPER?: string;
+  readonly VITE_BACH_WRAPPERS?: string;
 }

@@ -1,33 +1,46 @@
 //! A command the agent CLIs are started through on this machine, such as a sandbox: with
 //! `sandbox`, Claude Code runs as `sandbox claude …`. Read once, when the server starts, from
 //! `BACH_AGENT_WRAPPER` (and `BACH_AGENT_WRAPPER_CODEX_SANDBOX`), and fixed from then on: nothing
-//! a client sends can take it away. Only with the `agent-wrapper` feature; without it a server
-//! asked for a wrapper refuses to start rather than start agents directly.
+//! a client sends can take it away. Background tasks have a wrapper of their own,
+//! `BACH_TASK_WRAPPER` (see [`task_command`]). Only with the `wrappers` feature; without it a server
+//! asked for a wrapper refuses to start rather than start agents or tasks directly.
 use bach_protocol::AgentWrapper;
 use std::sync::OnceLock;
 
 struct Current {
     wrapper: AgentWrapper,
     words: Vec<String>,
+    /// What background tasks start through (`BACH_TASK_WRAPPER`), as words.
+    task_words: Vec<String>,
 }
 
 static CURRENT: OnceLock<Current> = OnceLock::new();
 
-fn load(command: &str, codex_sandbox: bool) -> Result<Current, String> {
+fn load(command: &str, codex_sandbox: bool, task_command: &str) -> Result<Current, String> {
     let words = parse(command)?;
-    if !words.is_empty() && !cfg!(feature = "agent-wrapper") {
-        return Err(format!(
-            "BACH_AGENT_WRAPPER is `{command}`, but this bach-server was built without `agent-wrapper`."
-        ));
+    let task_words = parse(task_command)?;
+    for (var, value, w) in [
+        ("BACH_AGENT_WRAPPER", command, &words),
+        ("BACH_TASK_WRAPPER", task_command, &task_words),
+    ] {
+        if !w.is_empty() && !cfg!(feature = "wrappers") {
+            return Err(format!(
+                "{var} is `{value}`, but this bach-server was built without `wrappers`."
+            ));
+        }
     }
-    let wrapper = AgentWrapper { command: command.trim().to_string(), codex_sandbox };
-    Ok(Current { wrapper, words })
+    let wrapper = AgentWrapper {
+        command: command.trim().to_string(),
+        codex_sandbox,
+        task_command: task_command.trim().to_string(),
+    };
+    Ok(Current { wrapper, words, task_words })
 }
 
 fn from_env() -> Result<Current, String> {
-    let command = std::env::var("BACH_AGENT_WRAPPER").unwrap_or_default();
-    let codex_sandbox = std::env::var("BACH_AGENT_WRAPPER_CODEX_SANDBOX").is_ok_and(|v| v == "1");
-    load(&command, codex_sandbox)
+    let var = |name| std::env::var(name).unwrap_or_default();
+    let codex_sandbox = var("BACH_AGENT_WRAPPER_CODEX_SANDBOX") == "1";
+    load(&var("BACH_AGENT_WRAPPER"), codex_sandbox, &var("BACH_TASK_WRAPPER"))
 }
 
 /// Reads the wrapper from the environment, failing if it can't be used. Called as the backend
@@ -73,6 +86,13 @@ pub fn codex_sandbox() -> bool {
     !active() || get().codex_sandbox
 }
 
+/// The command background tasks start through, taking `sh -c …` after it (`BACH_TASK_WRAPPER`,
+/// such as `sandbox exec --`): none when empty. Separate from the agents' wrapper, since a sandbox
+/// usually starts an agent and an arbitrary command differently.
+pub fn task_command() -> Vec<String> {
+    current().task_words.clone()
+}
+
 /// [`command`] for a shell command line.
 pub fn shell_command(binary: &str) -> String {
     shlex::try_join(command(binary).iter().map(String::as_str)).expect("no NUL bytes in a command")
@@ -97,19 +117,29 @@ mod tests {
         assert!(parse("sandbox 'oops").unwrap_err().contains("quotes"));
     }
 
-    #[cfg(not(feature = "agent-wrapper"))]
+    #[cfg(not(feature = "wrappers"))]
     #[test]
     fn refuses_a_wrapper_without_the_feature() {
-        assert!(load("sandbox", false).err().unwrap().contains("agent-wrapper"));
-        assert!(load(" ", false).unwrap().words.is_empty());
+        assert!(load("sandbox", false, "").err().unwrap().contains("wrappers"));
+        assert!(load("", false, "sandbox exec").err().unwrap().contains("BACH_TASK_WRAPPER"));
+        assert!(load(" ", false, " ").unwrap().words.is_empty());
     }
 
-    #[cfg(feature = "agent-wrapper")]
+    #[cfg(feature = "wrappers")]
     #[test]
     fn reads_the_wrapper() {
-        let c = load(" sandbox --net ", true).unwrap();
+        let c = load(" sandbox --net ", true, "sandbox exec --").unwrap();
         assert_eq!(c.words, ["sandbox", "--net"]);
-        assert_eq!(c.wrapper, AgentWrapper { command: "sandbox --net".into(), codex_sandbox: true });
-        assert!(load("sandbox 'oops", false).is_err());
+        assert_eq!(c.task_words, ["sandbox", "exec", "--"]);
+        assert_eq!(
+            c.wrapper,
+            AgentWrapper {
+                command: "sandbox --net".into(),
+                codex_sandbox: true,
+                task_command: "sandbox exec --".into(),
+            }
+        );
+        assert!(load("sandbox 'oops", false, "").is_err());
+        assert!(load("", false, "sandbox 'oops").is_err());
     }
 }

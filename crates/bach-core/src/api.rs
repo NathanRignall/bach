@@ -58,6 +58,7 @@ impl Api {
         let tasks = Tasks::start("127.0.0.1:0".parse().unwrap(), dir.join("tasks"))
             .await
             .map_err(|e| format!("couldn't start the task launcher: {e}"))?;
+        tasks.set_wrapper(crate::wrapper::task_command());
         // Tasks used to live in the session database; bach-tasks keeps its own now.
         let legacy = store.legacy_tasks()?;
         if !legacy.is_empty() {

@@ -166,6 +166,8 @@ struct Inner {
     extra_tools: RwLock<Vec<Arc<dyn Tools>>>,
     /// What the MCP server calls itself to its clients.
     server_name: RwLock<String>,
+    /// A command every task is started through, such as a sandbox (see [`Tasks::set_wrapper`]).
+    wrapper: RwLock<Vec<String>>,
 }
 
 /// Handle to the launcher. Cheap to clone.
@@ -208,6 +210,7 @@ impl Tasks {
                 log_streams: Mutex::default(),
                 extra_tools: RwLock::default(),
                 server_name: RwLock::new("bach-tasks".into()),
+                wrapper: RwLock::default(),
             }),
         };
         tasks.tick(); // reconcile: what ran while we were down?
@@ -266,6 +269,15 @@ impl Tasks {
     /// The name the MCP server gives its clients (`tasks` by default).
     pub fn set_server_name(&self, name: &str) {
         *self.inner.server_name.write().unwrap() = name.to_string();
+    }
+
+    /// Starts every task from now on through `wrapper`, a program and its arguments that take a
+    /// command line after them: `["sandbox", "--"]` runs `sandbox -- sh -c <command>`. The wrapper
+    /// starts in the task's project (where its sandbox will let it write) and the command `cd`s to
+    /// the task's own folder inside it, so a task can't widen the sandbox by naming another folder.
+    /// The exit code is still recorded from outside it.
+    pub fn set_wrapper(&self, wrapper: Vec<String>) {
+        *self.inner.wrapper.write().unwrap() = wrapper;
     }
 
     /// Grants that are still held.
@@ -511,14 +523,28 @@ impl Tasks {
         let err = log.try_clone().map_err(failed)?;
 
         // The outer shell records the inner command's exit code, so the result is known even
-        // if bach-tasks was restarted in the meantime.
+        // if bach-tasks was restarted in the meantime. A wrapper goes between the two.
+        let wrapper = self.inner.wrapper.read().unwrap().clone();
+        let (start_in, inner) = if wrapper.is_empty() {
+            (cwd.clone(), vec!["sh".into(), "-c".into(), command.clone()])
+        } else {
+            let project = req.project.as_deref().map(process::expand_home);
+            let inner = ["sh", "-c", r#"cd "$1" && exec sh -c "$2""#, "bach-tasks"]
+                .into_iter()
+                .map(String::from)
+                .chain([cwd.to_string_lossy().into_owned(), command.clone()]);
+            (
+                project.filter(|p| p.is_dir()).unwrap_or_else(|| cwd.clone()),
+                wrapper.into_iter().chain(inner).collect(),
+            )
+        };
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
-            .arg(r#"sh -c "$1"; code=$?; echo "$code" > "$2"; exit "$code""#)
+            .arg(r#"exit_path=$1; shift; "$@"; code=$?; echo "$code" > "$exit_path"; exit "$code""#)
             .arg("bach-tasks")
-            .arg(&command)
             .arg(&exit_path)
-            .current_dir(&cwd)
+            .args(&inner)
+            .current_dir(&start_in)
             .envs(colour_env())
             .stdin(Stdio::null())
             .stdout(log)

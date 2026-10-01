@@ -17,7 +17,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [features]
-agent-wrapper = ["bach-core/agent-wrapper"]
+wrappers = ["bach-core/wrappers"]
 
 [dependencies]
 bach-client = { path = "../crates/bach-client" }

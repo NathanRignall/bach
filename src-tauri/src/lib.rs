@@ -74,15 +74,19 @@ fn ssh_command(host: &str, command: &str, wrapper: &AgentWrapper) -> Vec<String>
 /// `wrapper` goes in the server's environment, for when this starts it; a server already running
 /// keeps its own, which the app checks once connected.
 fn ssh_args_for(host: &str, command: &str, wrapper: &AgentWrapper, verb: &str) -> Vec<String> {
-    let mut env = String::new();
+    let quote = |c: &str| shlex::try_quote(c).expect("no NUL bytes in a command").into_owned();
+    let mut vars = vec![];
     if !wrapper.command.is_empty() {
-        let quoted = shlex::try_quote(&wrapper.command).expect("no NUL bytes in a command");
-        // `env`, so it works whatever the login shell there is (csh has no `VAR=value cmd`).
-        env = format!("env BACH_AGENT_WRAPPER={quoted} ");
+        vars.push(format!("BACH_AGENT_WRAPPER={}", quote(&wrapper.command)));
         if wrapper.codex_sandbox {
-            env.push_str("BACH_AGENT_WRAPPER_CODEX_SANDBOX=1 ");
+            vars.push("BACH_AGENT_WRAPPER_CODEX_SANDBOX=1".into());
         }
     }
+    if !wrapper.task_command.is_empty() {
+        vars.push(format!("BACH_TASK_WRAPPER={}", quote(&wrapper.task_command)));
+    }
+    // `env`, so it works whatever the login shell there is (csh has no `VAR=value cmd`).
+    let env = if vars.is_empty() { String::new() } else { format!("env {} ", vars.join(" ")) };
     [
         "-T",
         "-o",
@@ -259,11 +263,16 @@ fn load_connection(path: &PathBuf) -> Connection {
         .unwrap_or(Connection::Local)
 }
 
-/// Whether the server's agent wrapper isn't the one `connection` asks for. None asked for leaves
-/// the server's own, whatever it is.
+/// Whether the server's agent or task wrapper isn't the one `connection` asks for. None asked for
+/// leaves the server's own, whatever it is. A task wrapper counts as much as the agents': agents
+/// start tasks mid-turn, so a turn would reach outside the sandbox through them.
 fn wrapper_mismatch(connection: &Connection, server: &AgentWrapper) -> bool {
     match connection {
-        Connection::Ssh { wrapper, .. } => !wrapper.command.is_empty() && wrapper != server,
+        Connection::Ssh { wrapper, .. } => {
+            let agents = (&wrapper.command, wrapper.codex_sandbox) != (&server.command, server.codex_sandbox);
+            (!wrapper.command.is_empty() && agents)
+                || (!wrapper.task_command.is_empty() && wrapper.task_command != server.task_command)
+        }
         Connection::Local => false,
     }
 }
@@ -278,7 +287,7 @@ async fn rpc(app: State<'_, App>, name: String, args: Option<Value>) -> Result<V
     if STARTS_A_TURN.contains(&name.as_str()) && app.status.lock().unwrap().wrapper_mismatch {
         return Err(ApiError::new(
             ErrorCode::Unavailable,
-            "bach-server wasn't started with the agent wrapper set here; restart it first.",
+            "bach-server wasn't started with the wrappers set here; restart it first.",
         ));
     }
     let backend = match &*app.backend.lock().unwrap() {
@@ -387,6 +396,7 @@ async fn set_connection(app: State<'_, App>, connection: Connection) -> Result<(
             }
             let command = command.trim();
             bach_core::wrapper::parse(&wrapper.command)?;
+            bach_core::wrapper::parse(&wrapper.task_command)?;
             Connection::Ssh {
                 host,
                 command: if command.is_empty() {
@@ -396,6 +406,7 @@ async fn set_connection(app: State<'_, App>, connection: Connection) -> Result<(
                 },
                 wrapper: AgentWrapper {
                     command: wrapper.command.trim().to_string(),
+                    task_command: wrapper.task_command.trim().to_string(),
                     ..wrapper
                 },
             }
@@ -476,28 +487,36 @@ mod tests {
 
     #[test]
     fn a_wrapper_asked_for_must_be_the_servers() {
-        let ssh = |command: &str| Connection::Ssh {
-            host: "h".into(),
-            command: "bach-server".into(),
-            wrapper: AgentWrapper { command: command.into(), codex_sandbox: false },
+        let wrapper = |command: &str, tasks: &str| AgentWrapper {
+            command: command.into(),
+            codex_sandbox: false,
+            task_command: tasks.into(),
         };
-        let server = |command: &str| AgentWrapper { command: command.into(), codex_sandbox: false };
-        assert!(!wrapper_mismatch(&ssh("sandbox"), &server("sandbox")));
-        assert!(wrapper_mismatch(&ssh("sandbox"), &server("")));
-        assert!(wrapper_mismatch(&ssh("sandbox"), &AgentWrapper { codex_sandbox: true, ..server("sandbox") }));
+        let ssh = |w| Connection::Ssh { host: "h".into(), command: "bach-server".into(), wrapper: w };
+        let server = |command: &str| wrapper(command, "");
+        assert!(!wrapper_mismatch(&ssh(server("sandbox")), &server("sandbox")));
+        assert!(wrapper_mismatch(&ssh(server("sandbox")), &server("")));
+        assert!(wrapper_mismatch(&ssh(server("sandbox")), &AgentWrapper { codex_sandbox: true, ..server("sandbox") }));
         // None asked for: the server's own stands, whatever it is.
-        assert!(!wrapper_mismatch(&ssh(""), &server("sandbox")));
+        assert!(!wrapper_mismatch(&ssh(server("")), &server("sandbox")));
         assert!(!wrapper_mismatch(&Connection::Local, &server("")));
+        // Tasks the same, on their own or with the agents'.
+        assert!(wrapper_mismatch(&ssh(wrapper("", "sandbox exec")), &server("")));
+        assert!(wrapper_mismatch(&ssh(wrapper("sandbox", "sandbox exec")), &server("sandbox")));
+        assert!(!wrapper_mismatch(&ssh(wrapper("", "sandbox exec")), &wrapper("other", "sandbox exec")));
+        assert!(!wrapper_mismatch(&ssh(server("sandbox")), &wrapper("sandbox", "sandbox exec")));
     }
 
     #[test]
     fn the_wrapper_goes_in_the_servers_environment() {
         let args = |w| ssh_args_for("h", "bach-server", &w, "attach").last().unwrap().clone();
         assert_eq!(args(AgentWrapper::default()), "bach-server attach");
-        let w = AgentWrapper { command: "sandbox --net".into(), codex_sandbox: true };
+        let w = AgentWrapper { command: "sandbox --net".into(), codex_sandbox: true, task_command: "".into() };
         assert_eq!(
             args(w),
             "env BACH_AGENT_WRAPPER='sandbox --net' BACH_AGENT_WRAPPER_CODEX_SANDBOX=1 bach-server attach"
         );
+        let w = AgentWrapper { task_command: "sandbox exec --".into(), ..AgentWrapper::default() };
+        assert_eq!(args(w), "env BACH_TASK_WRAPPER='sandbox exec --' bach-server attach");
     }
 }

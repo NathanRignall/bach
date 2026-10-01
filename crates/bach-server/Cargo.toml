@@ -5,7 +5,7 @@ edition = "2021"
 description = "Serves Bach's API over a WebSocket, for using it from a browser or a remote app"
 
 [features]
-agent-wrapper = ["bach-core/agent-wrapper"]
+wrappers = ["bach-core/wrappers"]
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
