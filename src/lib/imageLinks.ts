@@ -1,6 +1,6 @@
 // Which images in a transcript are the same picture: one a tool returned (an agent reading a
-// screenshot) and one the agent then put in its reply. The transcript links the two rather than
-// hide either, so the reply stays as the agent wrote it.
+// screenshot) and one the agent then put in its reply. The tool's copy points to the reply's
+// rather than either being hidden, so the reply stays as the agent wrote it.
 
 /** Where a block sits: which turn (counted by the user's messages) and its index in the transcript. */
 export interface Place {
@@ -14,8 +14,6 @@ export interface ImageSpot {
   place: Place;
   /** The element's DOM id, to scroll to it. */
   anchor: string;
-  /** The tool that returned it, for a tool's image. */
-  tool?: string;
 }
 
 /** A `data:` URL's payload, which is the same for the same file however the MIME type was named. */
@@ -47,11 +45,6 @@ export class ImageLinks {
   /** The first reply after `place`, in the same turn, that shows `src` too. */
   shownIn(src: string, place: Place): ImageSpot | undefined {
     return this.find("reply", src, (s) => s.place.turn === place.turn && s.place.index > place.index, (a, b) => a.index - b.index);
-  }
-
-  /** The last tool before `place`, in the same turn, that returned `src`. */
-  viewedIn(src: string, place: Place): ImageSpot | undefined {
-    return this.find("tool", src, (s) => s.place.turn === place.turn && s.place.index < place.index, (a, b) => b.index - a.index);
   }
 
   private find(kind: ImageKind, src: string, ok: (s: ImageSpot) => boolean, order: (a: Place, b: Place) => number) {
