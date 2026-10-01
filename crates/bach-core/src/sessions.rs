@@ -1,6 +1,7 @@
 //! Sessions as the backend keeps them: stored, recorded as their runs go, and announced to
 //! clients as [`SessionEvent`]s.
 use crate::{
+    budget::Budget,
     runs::{Emit, RunEvent},
     store::Store,
 };
@@ -18,6 +19,7 @@ pub type OnFinish = Arc<dyn Fn(&mut Session, &str) + Send + Sync>;
 pub struct Sessions {
     store: Store,
     events: broadcast::Sender<ServerEvent>,
+    budget: Budget,
 }
 
 fn not_found() -> ApiError {
@@ -25,8 +27,8 @@ fn not_found() -> ApiError {
 }
 
 impl Sessions {
-    pub fn new(store: Store, events: broadcast::Sender<ServerEvent>) -> Self {
-        Self { store, events }
+    pub fn new(store: Store, events: broadcast::Sender<ServerEvent>, budget: Budget) -> Self {
+        Self { store, events, budget }
     }
 
     fn send(&self, ev: SessionEvent) {
@@ -180,6 +182,8 @@ impl Sessions {
                 Some(Box::new(move |s| s.open_approvals.retain(|r| *r != request_id)))
             }
             AgentEvent::Done { .. } | AgentEvent::Cancelled => {
+                // The run spent some of the budget.
+                self.budget.refresh();
                 let clean = matches!(event, AgentEvent::Done { is_error: false, .. });
                 // A run the user stopped isn't news to them.
                 let outcome = match event {

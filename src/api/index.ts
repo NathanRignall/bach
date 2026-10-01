@@ -1,7 +1,7 @@
 // The typed client for Bach's backend. Commands, their arguments and results, and every type they
 // use are generated from Rust (crates/bach-protocol) into ./generated/protocol.ts.
 import { remoteUrl } from "./backend";
-import type { AgentKind, Commands, PlanUsage, ProcessAction, ServerEvent, SessionEvent, TaskEvent, TerminalEvent } from "./generated/protocol";
+import type { AgentKind, BudgetUsage, Commands, PlanUsage, ProcessAction, ServerEvent, SessionEvent, TaskEvent, TerminalEvent } from "./generated/protocol";
 import { SocketTransport, TauriTransport, type Transport } from "./transport";
 
 export * from "./generated/protocol";
@@ -52,6 +52,12 @@ export const onUsage = (cb: (u: PlanUsage) => void) =>
     if (e.topic === "usage") cb(e.data);
   });
 
+/** New look-ups of the account's API budget. */
+export const onBudget = (cb: (b: BudgetUsage) => void) =>
+  onEvent((e) => {
+    if (e.topic === "budget") cb(e.data);
+  });
+
 /** Terminals opening, closing, and their output. */
 export const onTerminalEvent = (cb: (e: TerminalEvent) => void) =>
   onEvent((e) => {
@@ -74,6 +80,7 @@ export const onSessionEvent = (cb: (e: SessionEvent) => void) =>
 export const listAgents = () => call("list_agents");
 export const listModels = (agent: AgentKind, cwd?: string) => call("list_models", { agent, cwd });
 export const getUsage = () => call("get_usage");
+export const getBudget = () => call("get_budget");
 
 export const listSessions = () => call("list_sessions");
 export const getSession = (sessionId: string, afterSeq?: number) => call("get_session", { sessionId, afterSeq });

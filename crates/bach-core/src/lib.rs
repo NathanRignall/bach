@@ -1,6 +1,7 @@
 pub mod adapters;
 pub mod api;
 pub mod attachments;
+pub mod budget;
 pub mod fs;
 pub mod git;
 mod handoff;

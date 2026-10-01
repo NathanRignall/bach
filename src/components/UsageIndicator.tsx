@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ContextUsage, PlanUsage, getUsage, onReconnect, onUsage } from "@/api";
+import { BudgetUsage, ContextUsage, PlanUsage, getBudget, getUsage, onBudget, onReconnect, onUsage } from "@/api";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
@@ -15,6 +15,23 @@ export function usePlanUsage() {
   }, []);
   return usage;
 }
+
+/** The account's API budget, where the backend can look it up: fetched once, then kept current. */
+export function useBudget() {
+  const [budget, setBudget] = useState<BudgetUsage | null>(null);
+  useEffect(() => {
+    const load = () => void getBudget().then(setBudget, () => {});
+    load();
+    const unBudget = onBudget(setBudget);
+    const unReconnect = onReconnect(load);
+    return () => (unBudget(), unReconnect());
+  }, []);
+  return budget;
+}
+
+/** 30.99 -> "$30.99", 2000 -> "$2,000". */
+const usd = (n: number) =>
+  n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: n >= 1000 ? 0 : 2 });
 
 /** 35612 -> "35.6k", 1000000 -> "1M". */
 function tokens(n: number) {
@@ -36,12 +53,13 @@ const WINDOW_NAMES: Record<string, string> = {
 /** `five_hour` -> "5-hour limit"; names we don't know yet are shown as they come. */
 const windowName = (key: string) => WINDOW_NAMES[key] ?? key.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
 
-/** Soon: "Resets in 34 min"; later: "Resets Sun 12:00 AM". */
+/** Soon: "Resets in 34 min"; later: "Resets Sun 12:00 AM"; weeks away: "Resets 1 Nov". */
 function resets(at: number | null, now: number) {
   if (!at) return "";
   const mins = Math.max(0, Math.round((at - now) / 60_000));
   if (mins < 60) return `Resets in ${mins} min`;
   if (mins < 5 * 60) return `Resets in ${Math.floor(mins / 60)} hr ${mins % 60} min`;
+  if (mins > 6 * 24 * 60) return `Resets ${new Date(at).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
   return `Resets ${new Date(at).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}`;
 }
 
@@ -83,16 +101,26 @@ function Ring({ share }: { share: number }) {
 }
 
 /**
- * How full the session's context is and how much of the account's usage limits are used, like
- * Claude's own apps show it. Limits are as of the latest agent run; there is no live source.
+ * How full the session's context is and how much of the account's usage limits and API budget
+ * are used, like Claude's own apps show it. Limits are as of the latest agent run; there is no
+ * live source.
  */
-export function UsageIndicator({ context, usage }: { context?: ContextUsage | null; usage: PlanUsage | null }) {
+export function UsageIndicator({
+  context,
+  usage,
+  budget,
+}: {
+  context?: ContextUsage | null;
+  usage: PlanUsage | null;
+  budget?: BudgetUsage | null;
+}) {
   const [now, setNow] = useState(Date.now);
   const contextShare = context?.window ? context.used / context.window : null;
   const windows = Object.entries(usage?.windows ?? {});
-  if (!context && !windows.length) return null;
+  const budgetShare = budget?.maxBudget ? budget.spend / budget.maxBudget : null;
+  if (!context && !windows.length && !budget) return null;
   // The ring shows the context when there is one, else the fullest limit.
-  const ringShare = contextShare ?? Math.max(0, ...windows.map(([, w]) => w.utilization));
+  const ringShare = contextShare ?? Math.max(0, budgetShare ?? 0, ...windows.map(([, w]) => w.utilization));
   const limited = usage && usage.status !== "allowed";
 
   return (
@@ -100,7 +128,7 @@ export function UsageIndicator({ context, usage }: { context?: ContextUsage | nu
       <PopoverTrigger
         className="flex size-7 items-center justify-center rounded-md hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
         aria-label="Usage"
-        title="Context and usage limits"
+        title="Context, usage limits and budget"
       >
         <Ring share={ringShare} />
       </PopoverTrigger>
@@ -136,6 +164,23 @@ export function UsageIndicator({ context, usage }: { context?: ContextUsage | nu
               </div>
             ))}
             <p className="text-xs text-muted-foreground">As of {ago(usage.observedAt, now)} · updated while agents run</p>
+          </section>
+        )}
+
+        {budget && (
+          <section className="flex flex-col gap-1.5">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-muted-foreground">API budget</span>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {resets(budget.resetsAt, now)}
+                {budgetShare !== null && <span className="ml-1 text-foreground">{pct(budgetShare)}%</span>}
+              </span>
+            </div>
+            {budgetShare !== null && <Bar share={budgetShare} />}
+            <p className="text-xs text-muted-foreground tabular-nums">
+              {usd(budget.spend)} {budget.maxBudget ? `of ${usd(budget.maxBudget)}` : "spent · no limit"} · as of{" "}
+              {ago(budget.observedAt, now)}
+            </p>
           </section>
         )}
       </PopoverContent>

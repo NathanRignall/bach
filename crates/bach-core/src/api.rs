@@ -4,6 +4,7 @@
 use crate::{
     adapters::list_agents,
     attachments::Attachment,
+    budget::Budget,
     git::Git,
     runs::{Emit, RunRequest, Runs},
     sessions::{OnFinish, Sessions},
@@ -34,6 +35,7 @@ pub struct Api {
     launcher: Launcher,
     git: Git,
     sessions: Sessions,
+    budget: Budget,
     terminals: Terminals,
     tasks: Tasks,
     events: broadcast::Sender<ServerEvent>,
@@ -69,7 +71,8 @@ impl Api {
     pub fn new(store: Store, git: Git, tasks: Tasks) -> Api {
         let (events, _) = broadcast::channel(1024);
         let runs = Runs::with_tasks(Some(tasks.clone()));
-        let sessions = Sessions::new(store, events.clone());
+        let budget = Budget::new(events.clone());
+        let sessions = Sessions::new(store, events.clone(), budget.clone());
         let launcher = Launcher::new(sessions.clone(), runs.clone(), git.clone());
         // Agents see one `bach` server: bach-tasks' task tools and Bach's own.
         tasks.set_server_name(crate::adapters::MCP_SERVER);
@@ -82,6 +85,7 @@ impl Api {
             runs,
             git,
             sessions,
+            budget,
             terminals: Terminals::new(events.clone()),
             tasks,
             events,
@@ -766,6 +770,10 @@ impl Handler for Api {
 
     async fn get_usage(&self, _: GetUsageArgs) -> Result<Option<PlanUsage>, ApiError> {
         self.sessions.plan_usage()
+    }
+
+    async fn get_budget(&self, _: GetBudgetArgs) -> Result<Option<BudgetUsage>, ApiError> {
+        Ok(self.budget.get())
     }
 
     async fn list_sessions(&self, _: ListSessionsArgs) -> Result<Vec<Session>, ApiError> {

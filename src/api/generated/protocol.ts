@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "d8b77ce302e03668";
+export const PROTOCOL = "0fa925a67cc255d8";
 
 /**
  * Agent-independent events the UI renders.
@@ -99,6 +99,28 @@ behind: number,
  * Files with staged changes.
  */
 staged: number, };
+
+/**
+ * What the account has spent through its LLM API endpoint against its budget, for agents run
+ * through a proxy that keeps one.
+ */
+export type BudgetUsage = { 
+/**
+ * Spent this budget period, in US dollars.
+ */
+spend: number, 
+/**
+ * The budget, in US dollars; none if unlimited.
+ */
+maxBudget: number | null, 
+/**
+ * When the budget resets (ms since the epoch).
+ */
+resetsAt: number | null, 
+/**
+ * When this was looked up (ms since the epoch).
+ */
+observedAt: number, };
 
 /**
  * A command sent over the WebSocket bridge. `id` is echoed back in the reply.
@@ -355,6 +377,11 @@ auto: boolean, forwards: Array<PortForward>,
  * The latest thing that went wrong, if anything.
  */
 error: string | null, };
+
+/**
+ * The account's API budget as last looked up (none where there's no way to look it up).
+ */
+export type GetBudgetArgs = Record<symbol, never>;
 
 /**
  * A session and its transcript, or only the entries after `afterSeq`.
@@ -799,7 +826,7 @@ export type SendQueuedArgs = { sessionId: string, messageId: string, };
 /**
  * Everything the backend pushes to clients, whichever transport carries it.
  */
-export type ServerEvent = { "topic": "session", "data": SessionEvent } | { "topic": "task", "data": TaskEvent } | { "topic": "usage", "data": PlanUsage } | { "topic": "terminal", "data": TerminalEvent };
+export type ServerEvent = { "topic": "session", "data": SessionEvent } | { "topic": "task", "data": TaskEvent } | { "topic": "usage", "data": PlanUsage } | { "topic": "budget", "data": BudgetUsage } | { "topic": "terminal", "data": TerminalEvent };
 
 /**
  * What the WebSocket bridge (and `bach-server attach`) sends: first a `hello`, then replies to
@@ -1210,6 +1237,10 @@ export type Commands = {
    * The account's usage limits as last reported by an agent run (none before the first run).
    */
   get_usage: { args: GetUsageArgs; output: PlanUsage | null };
+  /**
+   * The account's API budget as last looked up (none where there's no way to look it up).
+   */
+  get_budget: { args: GetBudgetArgs; output: BudgetUsage | null };
   /**
    * Every session, most recently active first (without transcripts).
    */
