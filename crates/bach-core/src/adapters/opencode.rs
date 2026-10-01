@@ -372,7 +372,7 @@ impl Stream {
                     id,
                     output: if failed { s(&state["error"]) } else { s(&state["output"]) },
                     is_error: failed,
-                    images: vec![],
+                    images: tool_images(&state["attachments"]),
                     parent: None,
                 });
             }
@@ -570,6 +570,17 @@ pub fn answer(
     Ok(Reply { path: format!("/permission/{id}/reply"), body })
 }
 
+/// The images a tool returned, as `data:` URLs: a read of an image file, a browser's screenshot.
+fn tool_images(attachments: &Value) -> Vec<String> {
+    attachments
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| a["mime"].as_str().is_some_and(|m| m.starts_with("image/")))
+        .filter_map(|a| a["url"].as_str().filter(|u| u.starts_with("data:image/")).map(String::from))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -632,6 +643,24 @@ mod tests {
         assert_eq!(parts[1], json!({ "type": "file", "mime": "image/png", "filename": "a.png", "url": "file:///tmp/1/a.png" }));
         assert_eq!(parts[2], json!({ "type": "file", "mime": "application/pdf", "filename": "b c.pdf", "url": "file:///tmp/2/b c.pdf" }));
         assert_eq!(prompt_parts("", &[]), json!([]));
+    }
+
+    #[test]
+    fn tool_results_bring_their_images() {
+        let mut stream = Stream::new("ses_1", &[], &[]);
+        // As opencode 1.18 records a read of a PNG.
+        let read = json!({ "type": "message.part.updated", "properties": { "part": {
+            "sessionID": "ses_1", "id": "prt_1", "messageID": "msg_1", "type": "tool",
+            "tool": "read", "callID": "call_1",
+            "state": { "status": "completed", "input": { "filePath": "/p/demo.png" },
+                "output": "Image read successfully", "attachments": [
+                    { "type": "file", "mime": "image/png", "url": "data:image/png;base64,AAAA" },
+                    { "type": "file", "mime": "application/pdf", "url": "data:application/pdf;base64,AAAA" },
+                ] },
+        }}});
+        let (ev, _) = stream.on_event(&read);
+        assert!(matches!(ev.last(), Some(AgentEvent::ToolResult { output, images, .. })
+            if output == "Image read successfully" && images == &["data:image/png;base64,AAAA"]), "{ev:?}");
     }
 
     #[test]
