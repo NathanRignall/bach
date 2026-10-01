@@ -174,6 +174,64 @@ pub fn fork_point(session_id: &str, turn: usize, text: &str) -> Result<String, S
     Err("Claude Code's record of this conversation doesn't have that message.".into())
 }
 
+/// Asks a short-lived Claude Code for its skills and slash commands (an `initialize` control
+/// request, which needs no prompt, so this costs no tokens).
+pub async fn list_skills(cwd: Option<&str>) -> Result<Vec<bach_protocol::SkillInfo>, String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let program = crate::wrapper::command("claude");
+    let mut cmd = tokio::process::Command::new(&program[0]);
+    cmd.args(&program[1..])
+        .args(["-p", "--input-format", "stream-json", "--output-format", "stream-json"])
+        .args(["--settings".to_string(), settings(false)])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("couldn't start `claude`: {e}"))?;
+    // Held open until the list arrives: closing it would end the run first.
+    let mut stdin = child.stdin.take().expect("piped");
+    let request = json!({ "type": "control_request", "request_id": "skills", "request": { "subtype": "initialize" } });
+    stdin
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .map_err(|e| format!("couldn't ask Claude Code for its skills: {e}"))?;
+    let mut out = BufReader::new(child.stdout.take().expect("piped")).lines();
+    let event = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while let Ok(Some(line)) = out.next_line().await {
+            let v: Value = serde_json::from_str(&line).unwrap_or_default();
+            if v["type"] == "control_response" && v["response"]["request_id"] == "skills" {
+                return Some(v["response"]["response"].clone());
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
+    .ok_or("Claude Code didn't list its skills.")?;
+    drop(stdin);
+    Ok(skills_from(&event))
+}
+
+/// The commands in an `initialize` response, without Claude Code's internal ones (`__…`).
+fn skills_from(event: &Value) -> Vec<bach_protocol::SkillInfo> {
+    let text = |v: &Value| v.as_str().unwrap_or_default().to_string();
+    event["commands"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| bach_protocol::SkillInfo {
+            name: text(&c["name"]),
+            description: text(&c["description"]),
+            argument_hint: text(&c["argumentHint"]),
+        })
+        .filter(|c| !c.name.is_empty() && !c.name.starts_with("__"))
+        .collect()
+}
+
 /// Claude Code's permission modes (`--permission-mode`), worded as its own picker does. "default"
 /// passes none: Claude Code asks before changes.
 pub fn permission_modes() -> Vec<bach_protocol::PermissionModeInfo> {
@@ -487,6 +545,20 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skills_come_from_the_initialize_response() {
+        let event = json!({ "commands": [
+            { "name": "code-review", "description": "Review the diff", "argumentHint": "[level]", "builtin": true },
+            { "name": "__remote-workflow", "description": "", "argumentHint": "" },
+            { "name": "docs", "description": "Docs" },
+        ]});
+        let skills = skills_from(&event);
+        let names: Vec<_> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["code-review", "docs"]);
+        assert_eq!(skills[0].argument_hint, "[level]");
+        assert_eq!(skills[1].argument_hint, "");
+    }
     use std::{
         io::Write,
         process::{Command, Stdio},

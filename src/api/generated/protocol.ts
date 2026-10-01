@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "d8b77ce302e03668";
+export const PROTOCOL = "d7095cd37fa79399";
 
 /**
  * Agent-independent events the UI renders.
@@ -517,6 +517,12 @@ export type ListModelsArgs = { agent: AgentKind, cwd?: string, };
 export type ListSessionsArgs = Record<symbol, never>;
 
 /**
+ * The skills and slash commands an agent offers in a project folder (`cwd`, whose own skills
+ * are included). Only Claude Code lists any.
+ */
+export type ListSkillsArgs = { agent: AgentKind, cwd?: string, };
+
+/**
  * Every task, oldest first.
  */
 export type ListTasksArgs = Record<symbol, never>;
@@ -931,6 +937,20 @@ export type SessionOrigin = { kind: OriginKind, sessionId: string,
 seq: number | null, };
 
 /**
+ * A skill or slash command an agent offers, for the composer's `/` menu. Sending `/name` (with
+ * any arguments after it) runs it.
+ */
+export type SkillInfo = { 
+/**
+ * What follows the `/`.
+ */
+name: string, description: string, 
+/**
+ * What it takes after its name (`[file]`), empty for nothing.
+ */
+argumentHint: string, };
+
+/**
  * A piece of a snippet: `matched` ones are what the query found.
  */
 export type SnippetPart = { text: string, matched: boolean, };
@@ -1206,6 +1226,11 @@ export type Commands = {
    * which may add providers of its own.
    */
   list_models: { args: ListModelsArgs; output: Array<ModelInfo> };
+  /**
+   * The skills and slash commands an agent offers in a project folder (`cwd`, whose own skills
+   * are included). Only Claude Code lists any.
+   */
+  list_skills: { args: ListSkillsArgs; output: Array<SkillInfo> };
   /**
    * The account's usage limits as last reported by an agent run (none before the first run).
    */

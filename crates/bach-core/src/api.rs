@@ -29,6 +29,10 @@ use tokio::{
 type ModelLists =
     std::collections::HashMap<(AgentKind, Option<String>), (std::time::Instant, Vec<ModelInfo>)>;
 
+/// Each agent's skills per project folder, and when they were listed.
+type SkillLists =
+    std::collections::HashMap<(AgentKind, Option<String>), (std::time::Instant, Vec<SkillInfo>)>;
+
 pub struct Api {
     runs: Runs,
     launcher: Launcher,
@@ -41,6 +45,8 @@ pub struct Api {
     task_events: Mutex<Option<JoinHandle<()>>>,
     /// Each agent's models, as last listed, and when.
     models: Mutex<ModelLists>,
+    /// Each agent's skills, as last listed, and when.
+    skills: Mutex<SkillLists>,
 }
 
 impl Api {
@@ -87,6 +93,7 @@ impl Api {
             events,
             task_events: Mutex::default(),
             models: Mutex::default(),
+            skills: Mutex::default(),
         }
     }
 
@@ -762,6 +769,34 @@ impl Handler for Api {
             .unwrap()
             .insert(key, (std::time::Instant::now(), models.clone()));
         Ok(models)
+    }
+
+    async fn list_skills(&self, a: ListSkillsArgs) -> Result<Vec<SkillInfo>, ApiError> {
+        // Asking starts the agent, so like the models the lists are kept for a while. Project
+        // skills come with the folder, so they're kept per folder.
+        const FRESH: Duration = Duration::from_secs(5 * 60);
+        if a.agent != AgentKind::Claude {
+            return Ok(vec![]);
+        }
+        let cwd = a
+            .cwd
+            .filter(|d| !d.trim().is_empty())
+            .map(|d| crate::fs::expand_home(d.trim()))
+            .map(|d| d.canonicalize().unwrap_or(d).to_string_lossy().into_owned());
+        let key = (a.agent, cwd.clone());
+        if let Some((at, skills)) = self.skills.lock().unwrap().get(&key) {
+            if at.elapsed() < FRESH {
+                return Ok(skills.clone());
+            }
+        }
+        let skills = crate::adapters::list_skills(a.agent, cwd.as_deref())
+            .await
+            .map_err(ApiError::failed)?;
+        self.skills
+            .lock()
+            .unwrap()
+            .insert(key, (std::time::Instant::now(), skills.clone()));
+        Ok(skills)
     }
 
     async fn get_usage(&self, _: GetUsageArgs) -> Result<Option<PlanUsage>, ApiError> {
