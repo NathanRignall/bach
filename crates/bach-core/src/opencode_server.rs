@@ -121,7 +121,9 @@ async fn start(dir: &str, tasks: Option<&bach_tasks::Tasks>) -> Result<(Server, 
     let grant = tasks.map(|s| {
         Arc::new(s.grant(bach_tasks::Scope { project: Some(dir.to_string()), owner: None }))
     });
-    let mut child = Command::new("sh")
+    let mut child = Command::new("sh");
+    crate::project_env::load(std::path::Path::new(dir)).await.apply(&mut child);
+    let mut child = child
         .args(["-c", &supervise()])
         .env("OPENCODE_SERVER_PASSWORD", &password)
         .envs(crate::runs::no_proxy_for_loopback())

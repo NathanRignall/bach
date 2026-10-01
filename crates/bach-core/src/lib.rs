@@ -5,6 +5,7 @@ pub mod fs;
 pub mod git;
 pub mod login_shell;
 pub mod opencode_server;
+pub mod project_env;
 pub mod runs;
 pub mod sessions;
 pub mod store;

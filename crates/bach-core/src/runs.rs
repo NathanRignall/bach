@@ -545,6 +545,10 @@ impl Runs {
 
         let program = crate::wrapper::command(agent.binary());
         let mut cmd = Command::new(&program[0]);
+        // The project's dev shell, for the agent and the MCP servers it starts.
+        if let Some(dir) = &cwd {
+            crate::project_env::load(dir).await.apply(&mut cmd);
+        }
         cmd.args(&program[1..]).args(agent.args(
             session_id.as_deref(),
             model.as_deref(),
