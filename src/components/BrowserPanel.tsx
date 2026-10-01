@@ -30,7 +30,7 @@ export function BrowserPanel({ preview, width, onWidth, onClose }: { preview: Pr
   const external = () => (inTauri ? void openUrl(url).catch(() => {}) : void window.open(url, "_blank", "noopener,noreferrer"));
 
   return (
-    <aside style={{ width }} className="relative flex shrink-0 flex-col border-l bg-background" aria-label="Browser">
+    <aside style={{ width, minWidth: BROWSER_WIDTH.min }} className="relative flex shrink flex-col border-l bg-background" aria-label="Browser">
       <ResizeHandle width={width} onWidth={onWidth} min={BROWSER_WIDTH.min} max={BROWSER_WIDTH.max} edge="left" reset={BROWSER_WIDTH.default} label="Resize browser" />
       <header data-tauri-drag-region className="flex h-(--title-bar-height) shrink-0 items-center gap-1 border-b px-2">
         <Button variant="ghost" size="icon-sm" aria-label="Reload" title="Reload" onClick={() => setReloads((n) => n + 1)}>
