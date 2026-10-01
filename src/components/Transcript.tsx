@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useId, useState, useSyncExternalStore } from "react";
 import Markdown, { type Components, defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, ArrowDown, ArrowUp, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, Cog, EyeOff, Folder, GitBranch, ImageOff, Network, MessageSquarePlus, RotateCcw, ScrollText, ServerCog, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
+import { AlertCircle, ArrowDown, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, Cog, EyeOff, Folder, GitBranch, ImageOff, Network, MessageSquarePlus, RotateCcw, ScrollText, ServerCog, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
 import { AgentKind, Decision, Forwarding, TaskView, readImage } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -238,24 +238,13 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
   return <ReplyImage src={url} alt={alt ?? ""} onError={() => setFailed(true)} />;
 }
 
-/** An image in the agent's reply, with a link back to the tool call that showed it first, if one did. */
+/** An image in the agent's reply. Recorded so the tool call that showed it first can point here. */
 function ReplyImage({ src, alt, onError }: { src: string; alt: string; onError: () => void }) {
   const anchor = `img-${useId()}`;
   const place = useContext(BlockPlace);
-  const links = useImageLinks();
+  const { images: links } = useContext(TranscriptContext);
   useEffect(() => (place ? links?.add("reply", src, { place, anchor }) : undefined), [links, src, place?.turn, place?.index, anchor]);
-  const viewed = place && links?.viewedIn(src, place);
-  const thumb = <Thumbnail id={anchor} src={src} alt={alt} thumbClass="max-h-72" onError={onError} />;
-  if (!viewed) return thumb;
-  return (
-    <span className="not-prose inline-flex max-w-full flex-col items-start gap-1 align-top">
-      {thumb}
-      <button onClick={() => reveal(viewed.anchor)} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-        <ArrowUp className="size-3" />
-        Viewed with <span className="font-medium">{viewed.tool}</span>
-      </button>
-    </span>
-  );
+  return <Thumbnail id={anchor} src={src} alt={alt} thumbClass="max-h-72" onError={onError} />;
 }
 
 /**
@@ -275,7 +264,7 @@ function ToolImages({ images, tool, id }: { images: string[]; tool: string; id: 
 function ToolImage({ src, tool, anchor }: { src: string; tool: string; anchor: string }) {
   const place = useContext(BlockPlace);
   const links = useImageLinks();
-  useEffect(() => (place ? links?.add("tool", src, { place, anchor, tool }) : undefined), [links, src, place?.turn, place?.index, anchor, tool]);
+  useEffect(() => (place ? links?.add("tool", src, { place, anchor }) : undefined), [links, src, place?.turn, place?.index, anchor]);
   const shown = place && links?.shownIn(src, place);
   if (!shown) return <Thumbnail id={anchor} src={src} alt={`Image from ${tool}`} thumbClass="max-h-72" />;
   return (
