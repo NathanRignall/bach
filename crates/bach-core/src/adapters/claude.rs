@@ -109,6 +109,71 @@ pub fn args(
     a
 }
 
+/// Claude Code keeps each conversation as `~/.claude/projects/<folder>/<session id>.jsonl`: a
+/// line per message, linked to the one before it by `parentUuid`. The folder is the one the session
+/// ran in, so it is looked for under all of them.
+fn transcript_file(session_id: &str) -> Option<std::path::PathBuf> {
+    if session_id.is_empty() || !session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return None;
+    }
+    let home = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".claude")))?;
+    std::fs::read_dir(home.join("projects"))
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|d| d.path().join(format!("{session_id}.jsonl")))
+        .find(|p| p.is_file())
+}
+
+/// What the user typed in a `user` line of the transcript file: none for tool results and other
+/// messages Claude Code adds itself.
+fn typed_text(line: &Value) -> Option<String> {
+    if line["type"] != "user" || line["isMeta"] == true || line["isSidechain"] == true {
+        return None;
+    }
+    match &line["message"]["content"] {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(parts) if !parts.iter().any(|p| p["type"] == "tool_result") => Some(
+            parts
+                .iter()
+                .filter(|p| p["type"] == "text")
+                .filter_map(|p| p["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        _ => None,
+    }
+}
+
+/// The message to continue a copy of session `session_id`'s conversation from so that it ends
+/// just before the user's `turn`th message (counting from 0): the last assistant message before it.
+/// `text` is that message's text, checked against the transcript file so the two agree on which
+/// one it is.
+pub fn fork_point(session_id: &str, turn: usize, text: &str) -> Result<String, String> {
+    let file = transcript_file(session_id).ok_or("Claude Code's record of this conversation isn't on this machine.")?;
+    let lines: Vec<Value> = std::fs::read_to_string(&file)
+        .map_err(|e| e.to_string())?
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    let (mut seen, mut last_assistant) = (0, None);
+    for line in &lines {
+        if let Some(typed) = typed_text(line) {
+            if seen == turn {
+                if typed.trim() != text.trim() {
+                    return Err("Claude Code's record of this conversation doesn't match the transcript.".into());
+                }
+                return last_assistant.ok_or_else(|| "There is nothing before that message to continue from.".to_string());
+            }
+            seen += 1;
+        } else if line["type"] == "assistant" && line["isSidechain"] != true {
+            last_assistant = line["uuid"].as_str().map(String::from);
+        }
+    }
+    Err("Claude Code's record of this conversation doesn't have that message.".into())
+}
+
 /// Claude Code's permission modes (`--permission-mode`), worded as its own picker does. "default"
 /// passes none: Claude Code asks before changes.
 pub fn permission_modes() -> Vec<bach_protocol::PermissionModeInfo> {
@@ -491,5 +556,31 @@ mod tests {
             run(r#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#),
             ""
         );
+    }
+
+    #[test]
+    fn forks_continue_from_the_assistant_message_before_the_user_one() {
+        let home = std::env::temp_dir().join(format!("bach-claude-home-{}", std::process::id()));
+        let project = home.join("projects/-some-folder");
+        std::fs::create_dir_all(&project).unwrap();
+        let lines = [
+            r#"{"type":"queue-operation"}"#,
+            r#"{"type":"user","uuid":"u1","message":{"content":"first"}}"#,
+            r#"{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"ok"}]}}"#,
+            r#"{"type":"user","uuid":"t1","message":{"content":[{"type":"tool_result","tool_use_id":"x","content":"r"}]}}"#,
+            r#"{"type":"assistant","uuid":"a2","isSidechain":true,"message":{"content":[]}}"#,
+            r#"{"type":"assistant","uuid":"a3","message":{"content":[{"type":"text","text":"done"}]}}"#,
+            r#"{"type":"user","uuid":"u2","message":{"content":[{"type":"text","text":"second"}]}}"#,
+        ];
+        std::fs::write(project.join("abc-123.jsonl"), lines.join("\n")).unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", &home);
+        // Tool results and sub-agent messages aren't turns.
+        assert_eq!(fork_point("abc-123", 1, "second").unwrap(), "a3");
+        // It is the user's message that is checked, so a transcript out of step is noticed.
+        assert!(fork_point("abc-123", 1, "something else").is_err());
+        assert!(fork_point("abc-123", 0, "first").is_err(), "nothing comes before the first message");
+        assert!(fork_point("abc-123", 2, "third").is_err());
+        assert!(fork_point("missing", 1, "second").is_err() && fork_point("../x", 1, "second").is_err());
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

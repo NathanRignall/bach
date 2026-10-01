@@ -91,6 +91,7 @@ async fn begin(dir: &Path, request: &str, rules: &[&str]) -> Waiting {
                 images: vec![],
                 cwd: Some(dir.to_string_lossy().into()),
                 session_id: None,
+                fork: None,
                 model: None,
                 permission_mode: None,
                 effort: None,

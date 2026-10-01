@@ -15,6 +15,7 @@ How Bach works under the hood. For what it is and how to get it running, see the
 - [Terminals](#terminals)
 - [Background tasks](#background-tasks)
 - [Agents starting sessions](#agents-starting-sessions)
+- [Forking and handing off](#forking-and-handing-off)
 
 ## Overview
 
@@ -227,3 +228,45 @@ or model, and by default in a new worktree branched from the branch the caller s
 the sidebar like any other session. Agents ask before calling it, like `task_start`: it starts
 another agent that spends usage and works on the machine; "Allow for this session" lets one
 session hand off freely.
+
+## Forking and handing off
+
+Both start a new session from an existing one (`Launcher::fork_session` / `handoff_session` in
+`api.rs`), copy its settings, record where it came from in `Session.origin` (the sidebar and the
+session header link back to it) and send its first message like `start_session` does. The source
+is never changed.
+
+**Worktree snapshots** (`snapshots.rs`). Just before each user message reaches the agent, the
+session's folder is saved as a commit under `refs/bach/snapshots/<session>/<seq of the message>`:
+a throwaway copy of the index gets `add -A`, then `write-tree` and `commit-tree` (parent: `HEAD`).
+Uncommitted, staged and untracked files are in it; ignored files (`node_modules`, build output)
+are not. The branch, the real index, the stash and the files are never touched. Deleting a session
+drops its refs; a fork gets copies of the refs for the messages it inherited, so it can be forked
+too.
+
+**Fork** (from any user message, via the fork button on it). The new session gets the transcript
+before that message with the same `seq` numbers, a new worktree on a new branch restored from the
+snapshot (`HEAD` as it was, files as they were), and the message, editable, as its first prompt.
+Outside a git repository there is no worktree to restore and the fork shares the folder. The
+agent's own conversation is forked natively, on the first run (`Session.pending_fork`, cleared once
+the agent reports the new session's id):
+
+| Agent | How |
+| --- | --- |
+| Claude Code | `--resume <source> --fork-session --resume-session-at <uuid>`, the last assistant message before the forked one, found in `~/.claude/projects/*/<id>.jsonl`. The session is found from any folder, and the copy lands in the new worktree's. |
+| Codex | `thread/read` the source's turns, then `thread/fork` with `lastTurnId` (the turn before the forked message) on the same app-server connection. |
+| opencode | `POST /session/{id}/fork` with the `messageID` of the forked user message (which it leaves out). |
+
+If a native fork isn't possible (the agent's session id or Claude Code's transcript file is
+missing or disagrees with Bach's), the new session starts a fresh conversation whose first
+prompt is preceded by the transcript as text (`handoff::transcript_seed`). Forking from the first
+message needs nothing: there's no conversation yet. There is no separate "rewind": a fork from an
+earlier message covers it, and the original stays in the sidebar.
+
+**Hand off** (the header's button). A different agent (or the same) continues in the *same*
+folder, branch and worktree. Its first message is a draft the user edits first
+(`handoff_summary`): the goal (first message), each exchange's ask and result, where the agent
+left off, unsent queued messages and the files touched (from git), written from the transcript
+and the worktree rather than by asking the agent, so it costs nothing and works when the old agent
+is unavailable. The permission mode is kept if the new agent has one by that name; model, effort
+and approved rules are not. The source must not be running, since both would use one worktree.

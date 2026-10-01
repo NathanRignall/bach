@@ -62,6 +62,14 @@ pub struct Session {
     #[serde(default)]
     pub archived: bool,
 
+    /// The session this one was forked or handed off from.
+    #[serde(default)]
+    pub origin: Option<SessionOrigin>,
+    /// A fork's first run continues from this point of the source's own conversation instead of
+    /// resuming `agent_session_id`; cleared once the agent reports the new session's id.
+    #[serde(default)]
+    pub pending_fork: Option<NativeFork>,
+
     /// The agent run in progress, if any.
     #[serde(default)]
     pub run_id: Option<String>,
@@ -84,6 +92,41 @@ pub struct Session {
     /// `seq` of the latest transcript entry (0 when there are none).
     #[serde(default)]
     pub last_seq: u64,
+}
+
+/// How a session came from another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum OriginKind {
+    /// Continues from an earlier message of the source, in a worktree as it was then.
+    Fork,
+    /// Continues the source's task with another agent, in the same worktree.
+    Handoff,
+}
+
+/// The session a session was made from. The source may have been deleted since.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionOrigin {
+    pub kind: OriginKind,
+    pub session_id: String,
+    /// For a fork: `seq` of the user message it was forked before.
+    #[serde(default)]
+    pub seq: Option<u64>,
+}
+
+/// Where in an agent's own conversation a fork continues from. What each agent needs differs:
+/// Claude Code wants the id of the last message to keep (`at`), Codex and opencode the number of
+/// turns to keep (`turn`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeFork {
+    /// The source's own session id with its agent.
+    pub agent_session_id: String,
+    /// How many of the source's user messages come before the fork point (at least 1).
+    pub turn: u32,
+    #[serde(default)]
+    pub at: Option<String>,
 }
 
 /// How an agent run ended.

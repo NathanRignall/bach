@@ -133,6 +133,8 @@ pub struct Turn<'a> {
     pub files: &'a [SavedFile],
     /// The agent's own session id, to continue.
     pub session_id: Option<&'a str>,
+    /// Instead of continuing `session_id`: start from part of another conversation.
+    pub fork: Option<&'a bach_protocol::NativeFork>,
     pub cwd: Option<&'a str>,
     /// Permission rules approved earlier in the session.
     pub allowed_tools: &'a [String],
@@ -140,6 +142,25 @@ pub struct Turn<'a> {
     pub permission_mode: Option<&'a str>,
     /// Thinking effort, one of the model's levels.
     pub effort: Option<&'a str>,
+}
+
+/// Extra arguments that make `claude` (resuming the fork's source) continue a copy of its
+/// conversation up to the fork point instead.
+pub fn fork_args(agent: AgentKind, fork: &bach_protocol::NativeFork) -> Vec<String> {
+    match (agent, &fork.at) {
+        (AgentKind::Claude, Some(at)) => vec!["--fork-session".into(), "--resume-session-at".into(), at.clone()],
+        _ => vec![],
+    }
+}
+
+/// For agents that continue a fork from a message (Claude Code): the message to keep up to, given
+/// which of the conversation's user messages (`turn`, counting from 0, with its `text`) is forked
+/// before. Others fork by turn number, so need none.
+pub fn fork_point(agent: AgentKind, session_id: &str, turn: usize, text: &str) -> Result<Option<String>, String> {
+    match agent {
+        AgentKind::Claude => claude::fork_point(session_id, turn, text).map(Some),
+        _ => Ok(None),
+    }
 }
 
 /// One run's exchange with the agent process over stdin/stdout.

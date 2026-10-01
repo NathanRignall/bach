@@ -24,9 +24,9 @@ Planned features and known issues, roughly grouped by area.
 - [x] **Status in the sidebar**: show whether each session is working, waiting on you,
   done or failed.
 - [x] **Search**: find past sessions by title or transcript text.
-- [ ] **Fork or rewind**: branch a session from an earlier message to try another
+- [x] **Fork or rewind**: branch a session from an earlier message to try another
   approach, with the worktree as it was at that point.
-- [ ] **Hand off to another agent**: continue a session's task with a different agent
+- [x] **Hand off to another agent**: continue a session's task with a different agent
   (e.g. Claude to Codex) on the same worktree, with a summary of the work so far.
 - [x] **Agents can spawn sessions**: let an agent start a new session in the same
   project for a separate task, so side tasks it spots don't derail the current one.

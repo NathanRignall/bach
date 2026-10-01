@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useId, useState, useSyncExternalStore } from "react";
 import Markdown, { type Components, defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertCircle, ArrowDown, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, Cog, EyeOff, Folder, GitBranch, ImageOff, Network, MessageSquarePlus, RotateCcw, ScrollText, ServerCog, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
+import { AlertCircle, ArrowDown, Ban, MessageCircleQuestion, Bot, Brain, CheckCircle2, ChevronRight, Cog, EyeOff, Folder, GitBranch, GitFork, ImageOff, Network, MessageSquarePlus, RotateCcw, ScrollText, ServerCog, ShieldAlert, ShieldCheck, ShieldX, Wrench, XCircle } from "lucide-react";
 import { AgentKind, Decision, Forwarding, TaskView, readImage } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,6 +33,8 @@ export interface TranscriptActions {
   showTask?: (id: string) => void;
   /** Opens another session (one this transcript's agent started). */
   showSession?: (id: string) => void;
+  /** Starts a fork of the session from the user's message `seq`. */
+  fork?: (seq: number, text: string) => void;
   /** The session works in a git repository (so sessions it starts get worktrees by default). */
   inRepo?: boolean;
   /** The images shown so far, so a tool's image and the same one in the reply can point at each other. */
@@ -112,7 +114,7 @@ function Elapsed({ since }: { since?: number }) {
 export function BlockView({ block, live }: { block: Block; live: boolean }) {
   switch (block.kind) {
     case "user":
-      return <UserMessage text={block.text} images={block.images} />;
+      return <UserMessage text={block.text} images={block.images} seq={block.seq} />;
 
     case "text":
       return (
@@ -502,10 +504,22 @@ function SubagentCard({ block, live }: { block: ToolBlock; live: boolean }) {
   );
 }
 
-function UserMessage({ text, images }: { text: string; images?: string[] }) {
-  const { retry } = useContext(TranscriptContext);
+function UserMessage({ text, images, seq }: { text: string; images?: string[]; seq?: number }) {
+  const { retry, fork } = useContext(TranscriptContext);
   return (
     <div className="group/msg ml-auto flex max-w-[85%] items-center gap-1.5">
+      {fork && seq !== undefined && (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          className="opacity-0 group-hover/msg:opacity-100 focus-visible:opacity-100"
+          title="Fork from this message: a new session with the conversation and files as they were before it"
+          aria-label="Fork from this message"
+          onClick={() => fork(seq, text)}
+        >
+          <GitFork />
+        </Button>
+      )}
       {retry && (
         <Button
           variant="ghost"

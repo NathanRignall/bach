@@ -50,6 +50,7 @@ async fn a_background_sub_agent_keeps_the_run_going() {
                 images: vec![],
                 cwd: Some(dir.to_string_lossy().into()),
                 session_id: None,
+                fork: None,
                 model: None,
                 permission_mode: None,
                 effort: None,

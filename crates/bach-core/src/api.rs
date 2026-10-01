@@ -16,7 +16,7 @@ use bach_tasks::{Tasks, StartTask};
 use bach_tasks_protocol::*;
 use serde_json::Value;
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -257,7 +257,7 @@ impl Launcher {
                             s.queued.insert(0, QueuedMessage { id, text, images });
                             Ok(())
                         }),
-                    Ok(s) => worker.launch(&id, s, n.run_id, n.prompt, n.images).await,
+                    Ok(s) => worker.launch(&id, s, n.run_id, n.prompt, n.images, None).await,
                     Err(e) => Err(e),
                 };
                 if let Err(e) = launched {
@@ -314,6 +314,8 @@ impl Launcher {
             context: None,
             run_id: None,
             archived: false,
+            origin: None,
+            pending_fork: None,
             open_approvals: vec![],
             unseen: None,
             queued: vec![],
@@ -332,10 +334,203 @@ impl Launcher {
         }
     }
 
+    /// Starts a session from an earlier message of another: its transcript up to there, and the
+    /// worktree as it was when that message was sent. Its agent continues a copy of the
+    /// conversation where it can do that itself (see [`NativeFork`]), and is otherwise told it.
+    pub(crate) async fn fork_session(&self, a: ForkSessionArgs) -> Result<Session, ApiError> {
+        let source = self.sessions.get(&a.session_id)?;
+        let entries = self.sessions.entries(&a.session_id, 0)?;
+        let at = entries
+            .iter()
+            .position(|e| e.seq == a.seq)
+            .ok_or_else(|| ApiError::not_found("That message isn't in the session."))?;
+        let Entry::User { text: original, images } = &entries[at].entry else {
+            return Err(ApiError::invalid("Only a message you sent can be forked from."));
+        };
+        let before = &entries[..at];
+        let prompt = a.prompt.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).unwrap_or_else(|| original.trim().to_string());
+        check_message(&prompt, images)?;
+        if source.cwd.trim().is_empty() {
+            return Err(ApiError::invalid("This session has no project folder."));
+        }
+
+        // The agent's own conversation: its turns before this message (a message that never
+        // reached the agent isn't one).
+        let turn = before
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| {
+                matches!(e.entry, Entry::User { .. }) && !matches!(before.get(i + 1).map(|n| &n.entry), Some(Entry::Failed { .. }))
+            })
+            .count();
+        let mut preamble = None;
+        let pending_fork = if turn == 0 {
+            None
+        } else {
+            let native = async {
+                let agent_session_id = source.agent_session_id.clone().ok_or("the agent's session wasn't recorded")?;
+                let (agent, id, text) = (source.agent, agent_session_id.clone(), original.clone());
+                let at = tokio::task::spawn_blocking(move || crate::adapters::fork_point(agent, &id, turn, &text))
+                    .await
+                    .map_err(|e| e.to_string())??;
+                Ok::<_, String>(NativeFork { agent_session_id, turn: turn as u32, at })
+            };
+            match native.await {
+                Ok(f) => Some(f),
+                // Nothing to fork natively (or it can't be found): the agent gets the transcript instead.
+                Err(why) => {
+                    eprintln!("forking session {} from its transcript instead: {why}", source.id);
+                    preamble = Some(crate::handoff::transcript_seed(before));
+                    None
+                }
+            }
+        };
+
+        // Where it runs: a worktree of its own with the files as they were, or (without git) the
+        // same folder.
+        let info = self.git.info(source.cwd.clone()).await.map_err(ApiError::failed)?;
+        let (workdir, git_branch, worktree) = if let Some(root) = info.root.clone().filter(|_| info.is_repo) {
+            let (root, id, seq) = (PathBuf::from(root), source.id.clone(), a.seq);
+            let snapshot = tokio::task::spawn_blocking(move || crate::snapshots::find(&root, &id, seq))
+                .await
+                .map_err(|e| ApiError::failed(e.to_string()))?
+                .ok_or_else(|| ApiError::invalid("Bach didn't save the files as they were before that message, so it can't be forked from."))?;
+            let ws = self
+                .git
+                .prepare(source.cwd.clone(), None, true, Some(branch_name_for(&prompt)))
+                .await
+                .map_err(ApiError::failed)?;
+            let dir = ws.workdir.clone();
+            let restored = tokio::task::spawn_blocking(move || crate::snapshots::restore(Path::new(&dir), &snapshot))
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r);
+            if let Err(e) = restored {
+                let _ = self.git.remove_worktree(ws.workdir, true, true).await;
+                return Err(ApiError::failed(format!("Couldn't restore the files as they were: {e}")));
+            }
+            (ws.workdir, ws.branch, true)
+        } else {
+            (source.workdir.clone().unwrap_or_else(|| source.cwd.clone()), None, false)
+        };
+
+        let now = now_ms();
+        let session = Session {
+            id: uuid::Uuid::new_v4().to_string(),
+            title: format!("{} (fork)", source.title.trim_end_matches(" (fork)")),
+            title_edited: false,
+            workdir: Some(workdir),
+            git_branch,
+            worktree,
+            workdir_removed: false,
+            agent_session_id: None,
+            model: None,
+            context: None,
+            run_id: None,
+            archived: false,
+            origin: Some(SessionOrigin { kind: OriginKind::Fork, session_id: source.id.clone(), seq: Some(a.seq) }),
+            pending_fork,
+            open_approvals: vec![],
+            unseen: None,
+            queued: vec![],
+            created_at: now,
+            updated_at: now,
+            last_seq: 0,
+            ..source.clone()
+        };
+        self.sessions.put_with_entries(&session, before)?;
+        if info.is_repo {
+            let (root, from, to, seq) = (PathBuf::from(info.root.unwrap_or_default()), source.id.clone(), session.id.clone(), a.seq);
+            let _ = tokio::task::spawn_blocking(move || crate::snapshots::copy(&root, &from, &to, seq)).await;
+        }
+        match self.send_with(&session.id, prompt, images.clone(), preamble).await {
+            Ok(s) => Ok(s),
+            Err(e) => {
+                // Like a new session, it is only kept once its first message reached the agent.
+                self.sessions.delete(&session.id)?;
+                Err(e)
+            }
+        }
+    }
+
+    /// A draft of the message that hands session `id`'s task to another agent.
+    pub(crate) async fn handoff_summary(&self, id: &str) -> Result<String, ApiError> {
+        let source = self.sessions.get(id)?;
+        let entries = self.sessions.entries(id, 0)?;
+        let dir = source.workdir.clone().filter(|_| !source.workdir_removed);
+        let base = source.branch.clone();
+        let files = match dir {
+            Some(dir) => tokio::task::spawn_blocking(move || crate::snapshots::changed_files(Path::new(&dir), base.as_deref()))
+                .await
+                .unwrap_or_default(),
+            None => vec![],
+        };
+        Ok(crate::handoff::summary(&source.title, source.agent, &entries, &source.queued, &files))
+    }
+
+    /// Starts a session with another agent in the same folder and worktree as session
+    /// `a.session_id`, carrying its task on with `a.prompt`.
+    pub(crate) async fn handoff_session(&self, a: HandoffSessionArgs) -> Result<Session, ApiError> {
+        let source = self.sessions.get(&a.session_id)?;
+        if source.workdir_removed {
+            return Err(ApiError::invalid("This session's worktree was removed, so its work can't be handed on."));
+        }
+        if source.run_id.is_some() {
+            return Err(ApiError::invalid("The agent is still working. Stop it or wait for it to finish first."));
+        }
+        let prompt = a.prompt.trim().to_string();
+        check_message(&prompt, &[])?;
+        let now = now_ms();
+        let session = Session {
+            id: uuid::Uuid::new_v4().to_string(),
+            title_edited: false,
+            agent: a.agent,
+            model_choice: model_choice(a.model_choice),
+            permission_mode: permission_mode(a.permission_mode),
+            effort: effort(a.effort),
+            // Rules the other agent approved are in its own words.
+            allow_rules: vec![],
+            agent_session_id: None,
+            model: None,
+            context: None,
+            run_id: None,
+            archived: false,
+            origin: Some(SessionOrigin { kind: OriginKind::Handoff, session_id: source.id.clone(), seq: None }),
+            pending_fork: None,
+            open_approvals: vec![],
+            unseen: None,
+            queued: vec![],
+            created_at: now,
+            updated_at: now,
+            last_seq: 0,
+            ..source
+        };
+        self.sessions.put_quietly(&session)?;
+        match self.send(&session.id, prompt, vec![]).await {
+            Ok(s) => Ok(s),
+            Err(e) => {
+                self.sessions.delete(&session.id)?;
+                Err(e)
+            }
+        }
+    }
+
     /// Sends `prompt` (and `images`) to session `id`'s agent: records it, marks the session
     /// running and starts the run. A run that can't start is recorded as failed. While the agent
     /// is busy, the message is queued instead.
     async fn send(&self, id: &str, prompt: String, images: Vec<String>) -> Result<Session, ApiError> {
+        self.send_with(id, prompt, images, None).await
+    }
+
+    /// Like [`send`](Self::send), with `preamble` (context for a session continuing another's
+    /// work) put before the prompt for the agent, though not in the transcript.
+    async fn send_with(
+        &self,
+        id: &str,
+        prompt: String,
+        images: Vec<String>,
+        preamble: Option<String>,
+    ) -> Result<Session, ApiError> {
         let prompt = prompt.trim().to_string();
         check_message(&prompt, &images)?;
         let run_id = uuid::Uuid::new_v4().to_string();
@@ -364,7 +559,7 @@ impl Launcher {
         if queued {
             return Ok(s);
         }
-        self.launch(id, s, run_id, prompt, images).await
+        self.launch(id, s, run_id, prompt, images, preamble).await
     }
 
     /// Sends queued message `message_id` now. The session must be idle.
@@ -394,11 +589,12 @@ impl Launcher {
             Ok(())
         })?;
         let QueuedMessage { text, images, .. } = message.expect("taken above");
-        self.launch(id, s, run_id, text, images).await
+        self.launch(id, s, run_id, text, images, None).await
     }
 
     /// Records `prompt` (and `images`) and starts run `run_id` of session `s`, which is already
-    /// marked running.
+    /// marked running. Before the agent touches anything, the worktree is saved as it is (see
+    /// [`crate::snapshots`]), so the session can be forked from this message.
     async fn launch(
         &self,
         id: &str,
@@ -406,20 +602,37 @@ impl Launcher {
         run_id: String,
         prompt: String,
         images: Vec<String>,
+        preamble: Option<String>,
     ) -> Result<Session, ApiError> {
-        self.sessions.append(
+        let logged = self.sessions.append(
             id,
             Entry::User {
                 text: prompt.clone(),
                 images: images.clone(),
             },
         )?;
+        if let Some(dir) = s.workdir.clone().filter(|_| !s.workdir_removed) {
+            let (session_id, seq) = (id.to_string(), logged.seq);
+            let taken = tokio::task::spawn_blocking(move || crate::snapshots::take(Path::new(&dir), &session_id, seq))
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r);
+            // A fork from this message just won't be possible; the turn goes on.
+            if let Err(e) = taken {
+                eprintln!("couldn't save session {id}'s worktree before message {seq}: {e}", seq = logged.seq);
+            }
+        }
+        let fork = s.pending_fork.clone();
         let req = RunRequest {
             agent: s.agent,
-            prompt: prompt.clone(),
+            prompt: match &preamble {
+                Some(p) => format!("{p}\n\n{prompt}"),
+                None => prompt.clone(),
+            },
             images,
             cwd: s.workdir.clone().or(Some(s.cwd.clone())),
-            session_id: s.agent_session_id.clone(),
+            session_id: s.agent_session_id.clone().filter(|_| fork.is_none()),
+            fork,
             model: s.model_choice.clone(),
             permission_mode: s.permission_mode.clone(),
             effort: s.effort.clone(),
@@ -649,7 +862,29 @@ impl Handler for Api {
     async fn delete_session(&self, a: DeleteSessionArgs) -> Result<(), ApiError> {
         // A deleted session's agent run must not outlive it (its background tasks do).
         self.runs.cancel_session(&a.session_id).await;
-        self.sessions.delete(&a.session_id)
+        let project = self.sessions.get(&a.session_id).map(|s| s.cwd).unwrap_or_default();
+        self.sessions.delete(&a.session_id)?;
+        // Its saved worktree states go with it (forks keep their own).
+        let id = a.session_id;
+        let _ = tokio::task::spawn_blocking(move || {
+            if std::path::Path::new(&project).is_dir() {
+                crate::snapshots::remove(Path::new(&project), &id);
+            }
+        })
+        .await;
+        Ok(())
+    }
+
+    async fn fork_session(&self, a: ForkSessionArgs) -> Result<Session, ApiError> {
+        self.launcher.fork_session(a).await
+    }
+
+    async fn handoff_summary(&self, a: HandoffSummaryArgs) -> Result<String, ApiError> {
+        self.launcher.handoff_summary(&a.session_id).await
+    }
+
+    async fn handoff_session(&self, a: HandoffSessionArgs) -> Result<Session, ApiError> {
+        self.launcher.handoff_session(a).await
     }
 
     async fn list_dir(&self, a: ListDirArgs) -> Result<DirListing, ApiError> {

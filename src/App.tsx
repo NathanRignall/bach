@@ -34,6 +34,7 @@ import { UsageIndicator, usePlanUsage } from "@/components/UsageIndicator";
 import { Composer } from "@/components/Composer";
 import { NewSessionPage } from "@/components/NewSessionPage";
 import { SessionHeader, SessionView } from "@/components/SessionHeader";
+import { ForkDialog, HandoffDialog } from "@/components/ContinueDialogs";
 import { useReview } from "@/lib/review";
 import { DiffMode, DiffView, diffBase, useDiff } from "@/components/DiffView";
 import { ConnectionBanner, pausedReason, useConnection } from "@/components/ConnectionPicker";
@@ -79,6 +80,8 @@ const upsert = (all: Session[], s: Session) => [...all.filter((x) => x.id !== s.
 export function App() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
+  /** A fork or hand-off being set up from the open session. */
+  const [continuing, setContinuing] = useState<{ kind: "fork"; seq: number; text: string } | { kind: "handoff" }>();
   /** The open session; none means the create page. */
   const [activeId, setActiveId] = useState<string>();
   // A fresh set per session: images only link within the transcript they're in.
@@ -220,6 +223,7 @@ export function App() {
     setView("chat");
     setDiffMode(active && diffBase(active) ? "branch" : "uncommitted");
     setDiffCommit(undefined);
+    setContinuing(undefined);
   }, [activeId]);
 
   useEffect(() => {
@@ -490,6 +494,24 @@ export function App() {
       />
       )}
 
+      {active && continuing?.kind === "fork" && (
+        <ForkDialog
+          session={active}
+          seq={continuing.seq}
+          text={continuing.text}
+          onClose={() => setContinuing(undefined)}
+          onStarted={(s) => (setSessions((all) => upsert(all, s)), setActiveId(s.id), setView("chat"), setContinuing(undefined))}
+        />
+      )}
+      {active && continuing?.kind === "handoff" && (
+        <HandoffDialog
+          session={active}
+          agents={agents}
+          onClose={() => setContinuing(undefined)}
+          onStarted={(s) => (setSessions((all) => upsert(all, s)), setActiveId(s.id), setView("chat"), setContinuing(undefined))}
+        />
+      )}
+
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
 
       {cleanupOpen && (
@@ -527,7 +549,7 @@ export function App() {
         )}
         {active && (
           <>
-            <SessionHeader session={active} inset={!sidebarOpen} view={view} onView={setView} changedFiles={diffMode === "commits" ? undefined : new Set(diff.diff?.files.map((f) => f.path)).size} />
+            <SessionHeader session={active} inset={!sidebarOpen} view={view} onView={setView} origin={sessions.find((s) => s.id === active.origin?.sessionId)} onOpenOrigin={setActiveId} onHandoff={!running && !starting && !active.workdirRemoved && active.lastSeq > 0 ? () => setContinuing({ kind: "handoff" }) : undefined} changedFiles={diffMode === "commits" ? undefined : new Set(diff.diff?.files.map((f) => f.path)).size} />
             {showChanges && <DiffView session={active} state={diff} mode={diffMode} onMode={setDiffMode} commit={diffCommit} onCommit={setDiffCommit} review={review} onAsk={canRun(active) ? ask : undefined} />}
             {showFiles && <FileBrowser key={active.id} session={active} />}
             {view === "chat" && (
@@ -543,6 +565,7 @@ export function App() {
                 forwarding,
                 showTask: (id) => (setTasksOpen(true), setViewingTask({ id })),
                 showSession: setActiveId,
+                fork: active.cwd.trim() ? (seq, text) => setContinuing({ kind: "fork", seq, text }) : undefined,
                 inRepo: !!active.gitBranch,
                 images: imageLinks,
               }}

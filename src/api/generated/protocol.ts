@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "34b418d055a4504e";
+export const PROTOCOL = "ee0bd272eafe0a9d";
 
 /**
  * Agent-independent events the UI renders.
@@ -324,6 +324,13 @@ truncated: boolean, };
 export type FileStatus = "added" | "modified" | "deleted" | "renamed";
 
 /**
+ * Starts a new session from the session's transcript before its user message `seq`, in a
+ * worktree as it was when that message was sent, and sends `prompt` (the message again unless
+ * changed) to continue. The source is left as it is.
+ */
+export type ForkSessionArgs = { sessionId: string, seq: number, prompt?: string, };
+
+/**
  * Port forwarding in the desktop app. Sent on the `bach-forwards` channel as it changes.
  */
 export type Forwarding = { 
@@ -438,6 +445,18 @@ export type GitStageHunkArgs = { path: string, file: string, hunk: number, heade
  * The current branch of the checkout at `path`: its upstream and how far ahead of or behind it.
  */
 export type GitStatusArgs = { path: string, };
+
+/**
+ * Continues a session's task with `agent` in the same worktree, starting with `prompt` (usually
+ * the edited summary). The source stays as it is; it must not be running.
+ */
+export type HandoffSessionArgs = { sessionId: string, agent: AgentKind, prompt: string, modelChoice?: string, permissionMode?: string, effort?: string, };
+
+/**
+ * A draft of the message that hands a session's task to another agent: the goal, what was done,
+ * where it stands and the files touched, written from its transcript and worktree.
+ */
+export type HandoffSummaryArgs = { sessionId: string, };
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
@@ -561,6 +580,21 @@ efforts: Array<string>,
 defaultEffort: string | null, };
 
 /**
+ * Where in an agent's own conversation a fork continues from. What each agent needs differs:
+ * Claude Code wants the id of the last message to keep (`at`), Codex and opencode the number of
+ * turns to keep (`turn`).
+ */
+export type NativeFork = { 
+/**
+ * The source's own session id with its agent.
+ */
+agentSessionId: string, 
+/**
+ * How many of the source's user messages come before the fork point (at least 1).
+ */
+turn: number, at: string | null, };
+
+/**
  * Starts your shell in a terminal on the backend host.
  */
 export type OpenTerminalArgs = { 
@@ -568,6 +602,11 @@ export type OpenTerminalArgs = {
  * Defaults to the home directory.
  */
 cwd?: string, cols: number, rows: number, };
+
+/**
+ * How a session came from another.
+ */
+export type OriginKind = "fork" | "handoff";
 
 /**
  * A permission mode an agent can run in, for the mode picker.
@@ -827,6 +866,15 @@ context: ContextUsage | null,
  */
 archived: boolean, 
 /**
+ * The session this one was forked or handed off from.
+ */
+origin: SessionOrigin | null, 
+/**
+ * A fork's first run continues from this point of the source's own conversation instead of
+ * resuming `agent_session_id`; cleared once the agent reports the new session's id.
+ */
+pendingFork: NativeFork | null, 
+/**
  * The agent run in progress, if any.
  */
 runId: string | null, 
@@ -863,6 +911,15 @@ export type SessionEvent = { "type": "changed", session: Session, } | { "type": 
  * A session with (part of) its transcript.
  */
 export type SessionLog = { session: Session, entries: Array<LogEntry>, };
+
+/**
+ * The session a session was made from. The source may have been deleted since.
+ */
+export type SessionOrigin = { kind: OriginKind, sessionId: string, 
+/**
+ * For a fork: `seq` of the user message it was forked before.
+ */
+seq: number | null, };
 
 /**
  * A piece of a snippet: `matched` ones are what the query found.
@@ -1175,6 +1232,22 @@ export type Commands = {
    * Deletes a session and stops its run (its background tasks keep going).
    */
   delete_session: { args: DeleteSessionArgs; output: null };
+  /**
+   * Starts a new session from the session's transcript before its user message `seq`, in a
+   * worktree as it was when that message was sent, and sends `prompt` (the message again unless
+   * changed) to continue. The source is left as it is.
+   */
+  fork_session: { args: ForkSessionArgs; output: Session };
+  /**
+   * A draft of the message that hands a session's task to another agent: the goal, what was done,
+   * where it stands and the files touched, written from its transcript and worktree.
+   */
+  handoff_summary: { args: HandoffSummaryArgs; output: string };
+  /**
+   * Continues a session's task with `agent` in the same worktree, starting with `prompt` (usually
+   * the edited summary). The source stays as it is; it must not be running.
+   */
+  handoff_session: { args: HandoffSessionArgs; output: Session };
   /**
    * Lists sub-directories on the backend host, for the folder picker.
    */
