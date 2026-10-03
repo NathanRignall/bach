@@ -1,7 +1,7 @@
 //! Directory browsing for the folder picker, reading images agents link to, and the file
 //! browser's view of a session's folder. Runs on the backend host, since that's where agents run
 //! (and so where project folders live).
-pub use bach_protocol::{ApiError, DirEntry, DirListing, ErrorCode, FileContent, FileList};
+pub use bach_protocol::{ApiError, DirEntry, DirListing, ErrorCode, FileContent, FileData, FileList};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use std::{
     path::{Component, Path, PathBuf},
@@ -233,6 +233,34 @@ pub fn read_file(root: &str, path: &str) -> Result<FileContent, ApiError> {
     Ok(file)
 }
 
+const MAX_DATA_BYTES: u64 = 100 * 1024 * 1024;
+
+fn mime_for(path: &str) -> &'static str {
+    let ext = Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("avif") => "image/avif",
+        Some("bmp") => "image/bmp",
+        Some("ico") => "image/x-icon",
+        Some("svg") => "image/svg+xml",
+        Some("pdf") => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
+/// The bytes of the file at `path` in `root` (same rules as [`read_file`]), up to 100 MB.
+pub fn read_file_data(root: &str, path: &str) -> Result<FileData, ApiError> {
+    let (full, meta) = file_in(root, path)?;
+    if meta.len() > MAX_DATA_BYTES {
+        return Err(ApiError::invalid(format!("{path}: larger than 100 MB")));
+    }
+    let bytes = std::fs::read(&full).map_err(|e| ApiError::failed(format!("{path}: {e}")))?;
+    Ok(FileData { mime: mime_for(path).to_string(), data: B64.encode(bytes) })
+}
+
 /// Replaces the text of the existing text file at `path` in `root` (same rules as [`read_file`]).
 /// `expected` is the [`FileContent::version`] the edit started from: if the file is something else
 /// now, it isn't written and the error's code is `Conflict`, unless `overwrite`. Returns the file
@@ -271,6 +299,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn reads_file_bytes_inside_the_folder() {
+        let root = temp("file-data");
+        std::fs::write(root.join("a.png"), [0u8, 1, 2]).unwrap();
+        let r = root.to_str().unwrap();
+        let d = read_file_data(r, "a.png").unwrap();
+        assert_eq!(d.mime, "image/png");
+        assert_eq!(B64.decode(d.data).unwrap(), [0, 1, 2]);
+        assert!(read_file_data(r, "../x").is_err());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

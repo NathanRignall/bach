@@ -1,11 +1,13 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { FolderTree, Pencil, RefreshCw, Search } from "lucide-react";
+import { Download, FolderTree, Pencil, RefreshCw, Search } from "lucide-react";
 import { FileContent, FileList, Session, listFiles, onReconnect, readFile } from "@/api";
 import { CodeView } from "@/components/CodeView";
 import { FileEditor, hasDraft } from "@/components/FileEditor";
+import { FilePreview } from "@/components/FilePreview";
 import { FileTree } from "@/components/FileTree";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { downloadFile, previewKind } from "@/lib/download";
 import { cn } from "@/lib/utils";
 
 /** The file each session last had open, so it's still open on coming back to the files. */
@@ -48,7 +50,8 @@ export function FileBrowser({ session }: { session: Session }) {
   // Whether the selected file is being edited. A file with unsaved edits goes on where it was left.
   const [editing, setEditing] = useState(() => !!selected && hasDraft(session.id, selected));
 
-  const refresh = () => (list.refresh(), file.refresh());
+  const [reloads, setReloads] = useState(0);
+  const refresh = () => (list.refresh(), file.refresh(), setReloads((n) => n + 1));
   // When the agent finishes (or starts), files have likely changed; so may they have while offline.
   const running = !!session.runId;
   const wasRunning = useRef(running);
@@ -104,6 +107,7 @@ export function FileBrowser({ session }: { session: Session }) {
               <FileTree key={filter ? "filtered" : "all"} files={shown} selected={selected} onSelect={(f) => select(f.path)}
                 collapsed={!filter}
                 label="Files"
+                actions={(f) => <DownloadButton sessionId={session.id} path={f.path} />}
                 decorate={(f) => (f.path !== selected && hasDraft(session.id, f.path) ? { after: <span className="size-1.5 shrink-0 rounded-full bg-primary" />, title: `${f.path} (unsaved edits)` } : {})}
               />
               {list.value.truncated && <p className="px-3 py-2 text-xs text-muted-foreground">Only the first {files.length.toLocaleString()} files are listed.</p>}
@@ -121,7 +125,8 @@ export function FileBrowser({ session }: { session: Session }) {
               path={selected}
               size={file.value?.path === selected ? file.value.size : undefined}
               loading={file.loading}
-              onEdit={file.value?.path === selected && file.value.editable && !editing ? () => setEditing(true) : undefined}
+              sessionId={session.id}
+              onEdit={file.value?.path === selected && file.value.editable && !editing && !previewKind(selected) ? () => setEditing(true) : undefined}
               unsaved={hasDraft(session.id, selected)}
             />
             <div className="flex min-h-0 flex-1 flex-col overflow-auto bg-card select-text">
@@ -133,6 +138,8 @@ export function FileBrowser({ session }: { session: Session }) {
                   onClose={() => setEditing(false)}
                   onSaved={() => (setEditing(false), file.refresh())}
                 />
+              ) : previewKind(selected) ? (
+                <FilePreview sessionId={session.id} path={selected} kind={previewKind(selected)!} version={reloads} />
               ) : file.error ? (
                 <Empty className="text-destructive">{file.error}</Empty>
               ) : !file.value ? (
@@ -154,7 +161,30 @@ export function FileBrowser({ session }: { session: Session }) {
   );
 }
 
-function FileHeader({ path, size, loading, onEdit, unsaved }: { path: string; size?: number; loading: boolean; onEdit?: () => void; unsaved?: boolean }) {
+/** Saves the file from the backend host; shows the error if it can't be read. */
+function DownloadButton({ sessionId, path, label = "Download" }: { sessionId: string; path: string; label?: string }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <Button
+      size="icon-xs"
+      variant="ghost"
+      disabled={busy}
+      title={`${label} ${path}`}
+      aria-label={`${label} ${path}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        setBusy(true);
+        downloadFile(sessionId, path)
+          .catch((err) => window.alert(String(err?.message ?? err)))
+          .finally(() => setBusy(false));
+      }}
+    >
+      {busy ? <Spinner /> : <Download />}
+    </Button>
+  );
+}
+
+function FileHeader({ path, size, loading, sessionId, onEdit, unsaved }: { path: string; size?: number; loading: boolean; sessionId: string; onEdit?: () => void; unsaved?: boolean }) {
   const i = path.lastIndexOf("/");
   return (
     <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2 text-xs">
@@ -164,6 +194,7 @@ function FileHeader({ path, size, loading, onEdit, unsaved }: { path: string; si
       </span>
       {loading && <Spinner className="text-muted-foreground" />}
       {size !== undefined && <span className="shrink-0 text-muted-foreground tabular-nums">{formatSize(size)}</span>}
+      <DownloadButton sessionId={sessionId} path={path} />
       {onEdit && (
         <Button size="xs" variant="outline" onClick={onEdit} title={unsaved ? "Continue editing (you have unsaved changes)" : "Edit this file"}>
           <Pencil /> {unsaved ? "Resume editing" : "Edit"}
