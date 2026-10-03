@@ -28,6 +28,7 @@ pub struct Paths {
     pub socket: PathBuf,
     pub lock: PathBuf,
     pub log: PathBuf,
+    pub ws_socket: PathBuf,
 }
 
 impl Paths {
@@ -37,6 +38,7 @@ impl Paths {
             socket: dir.join("bach.sock"),
             lock: dir.join("bach.lock"),
             log: dir.join("server.log"),
+            ws_socket: dir.join("ws.sock"),
             db,
         }
     }
@@ -53,14 +55,19 @@ pub fn lock(paths: &Paths) -> std::io::Result<Option<File>> {
     Ok(taken.then_some(file))
 }
 
+/// Binds a Unix socket only this user may connect to: what it serves runs agents as them.
+pub fn bind_private(path: &Path) -> std::io::Result<UnixListener> {
+    use std::os::unix::fs::PermissionsExt;
+    // Whatever is there is left over from a server that is gone (the caller holds the lock).
+    let _ = std::fs::remove_file(path);
+    let listener = UnixListener::bind(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
 /// Serves connections on the socket forever. Call only while holding the [`lock`].
 pub async fn listen(paths: &Paths, api: Arc<Api>) -> std::io::Result<()> {
-    // Whatever is there is left over from a server that is gone (we hold the lock).
-    let _ = std::fs::remove_file(&paths.socket);
-    let listener = UnixListener::bind(&paths.socket)?;
-    // Only this user may connect: the socket runs agents as them.
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&paths.socket, std::fs::Permissions::from_mode(0o600))?;
+    let listener = bind_private(&paths.socket)?;
     loop {
         let (stream, _) = listener.accept().await?;
         let api = api.clone();

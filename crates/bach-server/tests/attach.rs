@@ -14,11 +14,10 @@ struct Attached {
     lines: std::io::Lines<BufReader<ChildStdout>>,
 }
 
-fn attach(db: &Path, port: u16) -> Attached {
+fn attach(db: &Path) -> Attached {
     let mut child = Command::new(env!("CARGO_BIN_EXE_bach-server"))
         .arg("attach")
         .env("BACH_DB", db)
-        .env("BACH_PORT", port.to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -68,12 +67,9 @@ fn attach_starts_one_server_and_carries_frames() {
     let dir = std::env::temp_dir().join(format!("bach-attach-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let db = dir.join("data/bach.db");
-    // The WebSocket port is taken: the server must still come up, serving the socket only.
-    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = taken.local_addr().unwrap().port();
 
     // Two clients at once, with no server running: one server starts, both get through.
-    let (mut a, mut b) = (attach(&db, port), attach(&db, port));
+    let (mut a, mut b) = (attach(&db), attach(&db));
     for c in [&mut a, &mut b] {
         let hello = c.next();
         assert_eq!(hello["kind"], "hello", "{hello}");
@@ -87,6 +83,13 @@ fn attach_starts_one_server_and_carries_frames() {
     let servers = servers_for(&db);
     assert_eq!(servers.len(), 1, "{servers:?}");
 
+    // Browsers get a Unix socket only this user can open, not a TCP port.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(db.parent().unwrap().join("ws.sock")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
     // Hanging up ends `attach`, not the server.
     for mut c in [a, b] {
         drop(c.stdin);
@@ -94,13 +97,13 @@ fn attach_starts_one_server_and_carries_frames() {
         assert!(status.success());
     }
     assert_eq!(servers_for(&db), servers);
-    let mut again = attach(&db, port);
+    let mut again = attach(&db);
     assert_eq!(again.next()["kind"], "hello");
     drop(again.stdin);
     again.child.wait().unwrap();
 
     // A command followed straight away by the end of input still gets its answer.
-    let mut once = attach(&db, port);
+    let mut once = attach(&db);
     writeln!(once.stdin, "{}", json!({ "id": 3, "cmd": "list_agents", "args": {} })).unwrap();
     drop(once.stdin);
     let frames: Vec<Value> = once.lines.map(|l| serde_json::from_str(&l.unwrap()).unwrap()).collect();
@@ -111,7 +114,6 @@ fn attach_starts_one_server_and_carries_frames() {
     let restarted = Command::new(env!("CARGO_BIN_EXE_bach-server"))
         .arg("restart")
         .env("BACH_DB", &db)
-        .env("BACH_PORT", port.to_string())
         .output()
         .unwrap();
     assert!(restarted.status.success(), "{}", String::from_utf8_lossy(&restarted.stderr));
@@ -119,7 +121,7 @@ fn attach_starts_one_server_and_carries_frames() {
     assert_eq!(replaced.len(), 1, "{replaced:?}");
     assert_ne!(replaced, servers, "a new server process");
     let servers = replaced;
-    let mut after = attach(&db, port);
+    let mut after = attach(&db);
     assert_eq!(after.next()["kind"], "hello");
     drop(after.stdin);
     after.child.wait().unwrap();
@@ -128,7 +130,6 @@ fn attach_starts_one_server_and_carries_frames() {
     let out = Command::new(env!("CARGO_BIN_EXE_bach-server"))
         .arg("serve")
         .env("BACH_DB", &db)
-        .env("BACH_PORT", port.to_string())
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&out.stderr).contains("already running"));

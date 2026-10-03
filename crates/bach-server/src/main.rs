@@ -1,16 +1,15 @@
 //! `bach-server` — runs Bach's backend (agents, sessions, background tasks) where the agents should run.
 //!
 //! - `bach-server [serve]`: the server. Clients reach it on a private Unix socket next to the
-//!   session database (what `attach` uses), and browsers on a WebSocket at 127.0.0.1:3421 (reach
-//!   it from another machine with `ssh -L 3421:localhost:3421 orion`).
+//!   session database (what `attach` uses), and browsers on a WebSocket on a second Unix socket,
+//!   `ws.sock` (reach it with `ssh -L 3421:/home/<you>/.local/share/bach/ws.sock orion`).
 //! - `bach-server attach`: connects stdin/stdout to the server, starting it if needed. The desktop
 //!   app runs this over SSH: `ssh orion bach-server attach`.
 //!
 //! - `bach-server restart`: replaces the running server with this binary's (after an update leaves
 //!   an old one running, the app and the server disagree on the protocol).
 //!
-//! Env: BACH_DB (session database, default ~/.local/share/bach/bach.db), BACH_PORT (default
-//! 3421), BACH_ALLOWED_ORIGINS (comma-separated browser origins, replaces the defaults),
+//! Env: BACH_DB (session database, default ~/.local/share/bach/bach.db), BACH_ALLOWED_ORIGINS (comma-separated browser origins, replaces the defaults),
 //! BACH_AGENT_WRAPPER (see `bach_core::wrapper`).
 mod connection;
 mod local;
@@ -66,10 +65,6 @@ async fn serve(paths: Paths) {
         );
         return;
     };
-    let port: u16 = std::env::var("BACH_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(3421);
     let allowed_origins = match std::env::var("BACH_ALLOWED_ORIGINS") {
         Ok(v) => v.split(',').map(|s| s.trim().to_string()).collect(),
         // The Vite dev page, opened directly or through a tunnel. (The desktop app connects over
@@ -99,24 +94,15 @@ async fn serve(paths: Paths) {
     };
     eprintln!("bach-server on {}", paths.socket.display());
 
-    // Browsers are optional: without the port, the socket still serves the desktop app.
-    match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
-        Ok(listener) => {
-            eprintln!("bach-server listening on ws://127.0.0.1:{port}");
-            axum::serve(listener, router(Config { allowed_origins }, api))
-                .with_graceful_shutdown(async {
-                    let _ = tokio::signal::ctrl_c().await;
-                })
-                .await
-                .unwrap();
-        }
-        Err(e) => {
-            eprintln!("no WebSocket on port {port} ({e}); serving the socket only");
-            tokio::select! {
-                _ = socket => {}
-                _ = tokio::signal::ctrl_c() => {}
-            }
-        }
-    }
+    let listener = local::bind_private(&paths.ws_socket).expect("bind the browser socket");
+    eprintln!("bach-server (browsers) on {}", paths.ws_socket.display());
+    axum::serve(listener, router(Config { allowed_origins }, api))
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await
+        .unwrap();
+    socket.abort();
+    let _ = std::fs::remove_file(&paths.ws_socket);
     let _ = std::fs::remove_file(&paths.socket);
 }

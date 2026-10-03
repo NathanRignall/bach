@@ -125,9 +125,8 @@ async fn forwards_ports_over_the_apps_ssh_connection() {
     // What the app runs, with a config that points `testhost` at our sshd.
     let ssh_opts = vec!["-F".to_string(), config.display().to_string()];
     let remote_command = format!(
-        "BACH_DB='{}' BACH_PORT={} '{}' attach",
+        "BACH_DB='{}' '{}' attach",
         data.join("bach.db").display(),
-        free_port(),
         env!("CARGO_BIN_EXE_bach-server")
     );
     let command: Vec<String> = ["ssh".to_string()]

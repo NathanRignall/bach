@@ -17,12 +17,12 @@ fn tmp(label: &str) -> PathBuf {
 }
 
 /// `bach-server attach` for the database in `dir`, as a shell command so its environment is set.
-fn attach_command(dir: &Path, port: u16) -> Vec<String> {
+fn attach_command(dir: &Path) -> Vec<String> {
     vec![
         "sh".into(),
         "-c".into(),
         format!(
-            "BACH_DB='{}' BACH_PORT={port} exec '{}' attach",
+            "BACH_DB='{}' exec '{}' attach",
             dir.join("data/bach.db").display(),
             env!("CARGO_BIN_EXE_bach-server")
         ),
@@ -82,9 +82,7 @@ extern "C" {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn talks_to_a_remote_backend_and_reconnects() {
     let dir = tmp("remote");
-    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = taken.local_addr().unwrap().port();
-    let (remote, watch) = connect("testhost", attach_command(&dir, port));
+    let (remote, watch) = connect("testhost", attach_command(&dir));
 
     // Calls made while connecting wait for the connection.
     let agents = remote.call("list_agents", json!({})).await.unwrap();
