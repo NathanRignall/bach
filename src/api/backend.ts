@@ -1,6 +1,6 @@
 // Which backend commands go to. In the desktop app, always the app itself (it runs agents here or
 // relays to a server over SSH; see `ConnectionPicker`). In a plain browser, a `bach-server` over
-// a WebSocket, normally reached through `ssh -L 3421:localhost:3421 orion`.
+// a WebSocket, normally reached through `ssh -L 3421:/home/<you>/.local/share/bach/ws.sock orion`.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Connection, ConnectionStatus, Forwarding, PortForward } from "./generated/protocol";

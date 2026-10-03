@@ -34,7 +34,7 @@ terminals and background tasks. The UI is a client that can come and go.
                                             │  └─ bach-tasks ► detached tasks    │
  Browser (Vite dev page)                    │                 (MCP for agents)   │
 ┌──────────────────────┐   WebSocket        │                                    │
-│ UI                   │── 127.0.0.1:3421 ─►│                                    │
+│ UI                   │── ws.sock ────────►│                                    │
 └──────────────────────┘                    └────────────────────────────────────┘
 ```
 
@@ -99,23 +99,24 @@ used and shown next to it.
 
 ## From a browser
 
-`bach-server` also serves browsers, on a WebSocket at `127.0.0.1:3421` that rejects origins other
-than the Vite dev page, because it can run agents (and so shell commands) as your user.
+`bach-server` also serves browsers, on a WebSocket over a second Unix socket, `ws.sock` next to
+the database (mode 0600). It can run agents (and so shell commands) as your user, so it isn't on a
+TCP port, which every user on the machine could reach: only you can open the socket, and SSH is
+what lets you reach it from elsewhere. It also rejects origins other than the Vite dev page.
 
 ```sh
 # on the remote
 cargo run --bin bach-server &
 pnpm dev                                   # UI on http://<remote>:3420
 
-# on your computer
-ssh -L 3421:localhost:3421 <remote>        # then open http://<remote>:3420
+# on your computer: forward a local port to the remote socket
+ssh -L 3421:/home/<you>/.local/share/bach/ws.sock <remote>   # then open http://<remote>:3420
 ```
 
 | Variable | Effect |
 | --- | --- |
-| `BACH_PORT` | WebSocket port (default `3421`). |
 | `BACH_ALLOWED_ORIGINS` | Comma-separated browser origins, replacing the defaults. |
-| `VITE_BACH_WS` | Where the UI connects (default `ws://localhost:3421`). |
+| `VITE_BACH_WS` | Where the UI connects, (default `ws://localhost:3421`). |
 | `BACH_AGENT_WRAPPER` | A command to start the agent CLIs through (`sandbox` runs `sandbox claude …`), fixed when the server starts; `restart` keeps it. Needs bach-server built with `--features wrappers`, which otherwise refuses to start. |
 | `BACH_TASK_WRAPPER` | A command to start background tasks through, taking `sh -c <command>` after it (`sandbox exec --`). Without it tasks run unsandboxed, as bach-server, even when agents are wrapped: set both. The wrapper starts in the task's project and the command `cd`s to the task's folder inside it, so the sandbox covers the project whichever `cwd` the agent names. Same rules as `BACH_AGENT_WRAPPER`: fixed at start, kept by `restart`, needs `wrappers`. |
 | `BACH_AGENT_WRAPPER_CODEX_SANDBOX` | `1` keeps Codex's own sandbox inside the wrapper's. Otherwise Codex runs anything the wrapper allows, asking only before commands it thinks are dangerous (Manual asks before any change), and the app's mode picker says so. |

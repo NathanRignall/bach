@@ -1,8 +1,9 @@
 //! The WebSocket bridge, for browsers: frames are WebSocket text messages (see
 //! [`crate::connection`]).
 //!
-//! It runs agent CLIs as the current user, so it must only be reachable locally (SSH tunnel) and
-//! only from allowed browser origins.
+//! It runs agent CLIs as the current user, so it listens on a Unix socket only this user can open
+//! (not a TCP port, which every user on the machine could reach) and only accepts allowed browser
+//! origins. A browser gets to it through `ssh -L <port>:<ws.sock path> <host>`.
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
