@@ -962,6 +962,13 @@ impl Handler for Api {
             .map_err(|e| ApiError::failed(e.to_string()))?
     }
 
+    async fn read_file_data(&self, a: ReadFileDataArgs) -> Result<FileData, ApiError> {
+        let root = self.session_folder(&a.session_id)?;
+        tokio::task::spawn_blocking(move || crate::fs::read_file_data(&root, &a.path))
+            .await
+            .map_err(|e| ApiError::failed(e.to_string()))?
+    }
+
     async fn write_file(&self, a: WriteFileArgs) -> Result<FileContent, ApiError> {
         let root = self.session_folder(&a.session_id)?;
         let path = a.path.clone();

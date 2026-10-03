@@ -1,7 +1,7 @@
 // Generated from crates/bach-protocol by `cargo test -p bach-protocol`. Don't edit.
 
 /** Must match the server's `hello`; see `fingerprint` in bach-protocol. */
-export const PROTOCOL = "d2310969751c3bdd";
+export const PROTOCOL = "401bf0883b60e0de";
 
 /**
  * Agent-independent events the UI renders.
@@ -324,6 +324,19 @@ version: string,
  * `text` can be edited and written back: it's all valid UTF-8 (else it was read lossily).
  */
 editable: boolean, };
+
+/**
+ * A file's bytes, for previewing images and PDFs and for downloads.
+ */
+export type FileData = { 
+/**
+ * Guessed from the extension; `application/octet-stream` when unknown.
+ */
+mime: string, 
+/**
+ * The contents, base64-encoded.
+ */
+data: string, };
 
 export type FileDiff = { path: string, 
 /**
@@ -725,6 +738,12 @@ export type ReadFileArgs = { sessionId: string,
  * lead out are refused.
  */
 path: string, };
+
+/**
+ * A file in a session's folder as bytes (any kind, up to 100 MB), for previews and downloads.
+ * `path` is as for `read_file`.
+ */
+export type ReadFileDataArgs = { sessionId: string, path: string, };
 
 /**
  * An image file on the backend host as a `data:` URL, so the UI can show images an agent
@@ -1335,6 +1354,11 @@ export type Commands = {
    * A file in a session's folder, for reading. Text files up to 1 MB come with their text.
    */
   read_file: { args: ReadFileArgs; output: FileContent };
+  /**
+   * A file in a session's folder as bytes (any kind, up to 100 MB), for previews and downloads.
+   * `path` is as for `read_file`.
+   */
+  read_file_data: { args: ReadFileDataArgs; output: FileData };
   /**
    * Replaces the text of an existing text file in a session's folder (on the backend host), for
    * edits made by hand. Returns the file as written. The agent is told about the edit with its next

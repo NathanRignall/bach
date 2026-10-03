@@ -139,6 +139,16 @@ pub struct FileList {
     pub truncated: bool,
 }
 
+/// A file's bytes, for previewing images and PDFs and for downloads.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FileData {
+    /// Guessed from the extension; `application/octet-stream` when unknown.
+    pub mime: String,
+    /// The contents, base64-encoded.
+    pub data: String,
+}
+
 /// A file in a session's folder, for the file viewer.
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]

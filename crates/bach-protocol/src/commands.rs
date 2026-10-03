@@ -8,7 +8,7 @@
 //! arguments are a struct named after it with an `Args` suffix; its doc comment documents the
 //! command.
 use crate::{
-    AgentInfo, AgentKind, ApiError, BudgetUsage, ModelInfo, Decision, DirListing, FileContent, FileList, GitDiff, GitInfo, GitLog, BranchStatus, CommitInfo, PlanUsage, SearchResult, Session,
+    AgentInfo, AgentKind, ApiError, BudgetUsage, ModelInfo, Decision, DirListing, FileContent, FileData, FileList, GitDiff, GitInfo, GitLog, BranchStatus, CommitInfo, PlanUsage, SearchResult, Session,
     SessionLog, TerminalInfo, TerminalSnapshot, WorktreeEntry,
 };
 use bach_tasks_protocol::{
@@ -113,6 +113,7 @@ commands! {
     read_image(ReadImageArgs) -> String;
     list_files(ListFilesArgs) -> FileList;
     read_file(ReadFileArgs) -> FileContent;
+    read_file_data(ReadFileDataArgs) -> FileData;
     write_file(WriteFileArgs) -> FileContent;
     git_info(GitInfoArgs) -> GitInfo;
     git_diff(GitDiffArgs) -> GitDiff;
@@ -369,6 +370,15 @@ pub struct ReadFileArgs {
     pub session_id: String,
     /// Relative to the session's folder, and inside it: `..`, absolute paths and symlinks that
     /// lead out are refused.
+    pub path: String,
+}
+
+/// A file in a session's folder as bytes (any kind, up to 100 MB), for previews and downloads.
+/// `path` is as for `read_file`.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadFileDataArgs {
+    pub session_id: String,
     pub path: String,
 }
 

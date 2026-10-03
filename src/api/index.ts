@@ -110,6 +110,8 @@ export const readImage = (path: string) => call("read_image", { path });
 export const listFiles = (sessionId: string) => call("list_files", { sessionId });
 /** A file in the session's folder; `path` is relative to it. */
 export const readFile = (sessionId: string, path: string) => call("read_file", { sessionId, path });
+/** A file's bytes (base64) and MIME type, for previews and downloads. */
+export const readFileData = (sessionId: string, path: string) => call("read_file_data", { sessionId, path });
 /** Replaces the text of a file in the session's folder; fails with code `conflict` if the file is no longer at `expectedVersion`. */
 export const writeFile = (args: Args<"write_file">) => call("write_file", args);
 export const gitInfo = (path: string) => call("git_info", { path });
